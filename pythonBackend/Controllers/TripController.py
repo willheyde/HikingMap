@@ -67,7 +67,7 @@ def create_trip(
         return trip.to_dict()
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-
+    
 
 @router.get("/{trip_id}", response_model=TripResponse)
 def get_trip(
@@ -87,3 +87,17 @@ def delete_trip(
 ):
     service.delete_trip(trip_id)
     return {"status": "deleted"}
+@router.get("/", response_model = TripResponse)
+def createTrip(req: TripCreateRequest, user_id: UUID, service: TripService = Depends(get_trip_service)):
+    try:
+        trip = service.create_trip(
+            user_id=user_id,
+            hike_id=req.hike_id,
+            start_date=req.start_date,
+            end_date=req.end_date,
+            origin_point=req.origin_point,
+            travel_mode=TravelMode(req.travel_mode.value),
+        )
+        return trip.to_dict()
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))

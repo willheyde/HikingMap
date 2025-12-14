@@ -13,12 +13,14 @@ class UserRepository(BaseRepository[User]):
                     """
                     INSERT INTO users VALUES (
                         %(id)s, %(email)s, %(hashed_password)s, %(name)s,
-                        %(avatar_url)s, %(home_location)s, %(timezone)s, %(created_at)s
+                        %(avatar_url)s, %(home_location)s, %(timezone)s,
+                        %(items)s, %(created_at)s
                     )
                     """,
                     user.to_dict()
                 )
         return user
+
 
     def get_by_id(self, user_id: UUID) -> Optional[User]:
         with get_connection() as conn:
@@ -47,13 +49,15 @@ class UserRepository(BaseRepository[User]):
                         name=%(name)s,
                         avatar_url=%(avatar_url)s,
                         home_location=%(home_location)s,
-                        timezone=%(timezone)s
+                        timezone=%(timezone)s,
+                        items=%(items)s
                     WHERE id=%(id)s
                     """,
                     user.to_dict()
                 )
         return user
 
+    
     def delete(self, user_id: UUID) -> None:
         with get_connection() as conn:
             with conn.cursor() as cur:
