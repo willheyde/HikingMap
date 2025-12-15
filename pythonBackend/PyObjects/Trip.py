@@ -1,9 +1,8 @@
 
-from ast import Dict
 from dataclasses import field
 from datetime import datetime
 from enum import Enum
-from typing import Any, List
+from typing import Any, List, Dict
 from uuid import UUID
 
 from attr import dataclass

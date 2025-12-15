@@ -1,7 +1,7 @@
 from uuid import UUID, uuid4
 from typing import List
 
-from PyObjects.Item import Item
+from PyObjects.Items import Item
 from Repos.ItemRepo import ItemRepository
 
 
