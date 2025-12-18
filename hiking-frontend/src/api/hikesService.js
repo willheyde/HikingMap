@@ -1,20 +1,36 @@
-import api from "./client";
+import apiClient from "./client";
 
-export const getHikes = (filters) =>
-  api.get("/hikes", { params: filters });
+/**
+ * HIKES
+ */
 
-export const getHikeById = (id) =>
-  api.get(`/hikes/${id}`);
-export const createHike = (hikeData) =>
-  api.post("/hikes", hikeData);
-export const updateHike = (id, hikeData) =>
-  api.put(`/hikes/${id}`, hikeData);
-export const deleteHike = (id) =>
-  api.delete(`/hikes/${id}`);
-export const getUserHikes = (userId) =>
-  api.get(`/hikes/user/${userId}`);
-export const saveHikeForUser = (userId, hikeId) =>
-  api.post(`/users/${userId}/hikes/${hikeId}`);
+export const listHikes = async () => {
+  const res = await apiClient.get("/hikes/");
+  return res.data;
+};
 
-export const removeUserHike = (userId, hikeId) =>
-  api.delete(`/users/${userId}/hikes/${hikeId}`);
+export const getHikeById = async (hikeId) => {
+  const res = await apiClient.get(`/hikes/${hikeId}`);
+  return res.data;
+};
+
+export const createHike = async (hikeData) => {
+  const res = await apiClient.post("/hikes/", hikeData);
+  return res.data;
+};
+
+export const updateHike = async (hikeId, hikeData) => {
+  const res = await apiClient.put(`/hikes/${hikeId}`, hikeData);
+  return res.data;
+};
+
+export const deleteHike = async (hikeId) => {
+  await apiClient.delete(`/hikes/${hikeId}`);
+};
+
+export const searchHikes = async (filters = {}) => {
+  const res = await apiClient.get("/hikes/search", {
+    params: filters,
+  });
+  return res.data;
+};

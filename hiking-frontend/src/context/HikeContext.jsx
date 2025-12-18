@@ -1,115 +1,86 @@
 import { createContext, useContext, useState } from "react";
-import {
-  getHikes,
-  getHikeById,
-  getUserHikes,
-  createHike,
-  updateHike,
-  deleteHike
-} from "../api/hikesService";
+import * as hikeService from "../api/hikeService";
 
-const HikeContext = createContext();
+const HikeContext = createContext(null);
+
+export const useHikes = () => {
+  return useContext(HikeContext);
+};
 
 export const HikeProvider = ({ children }) => {
   const [hikes, setHikes] = useState([]);
   const [selectedHike, setSelectedHike] = useState(null);
-  const [userHikes, setUserHikes] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
 
-  // 🔹 Fetch filtered hikes (map view)
-  const fetchHikes = async (filters = {}) => {
+  // -------------------------
+  // Hike actions
+  // -------------------------
+
+  const loadHikes = async () => {
     setLoading(true);
     try {
-      const res = await getHikes(filters);
-      setHikes(res.data);
+      const data = await hikeService.listHikes();
+      setHikes(data);
     } catch (err) {
-      setError(err);
+      setError(err.response?.data?.detail || err.message);
     } finally {
       setLoading(false);
     }
   };
 
-  // 🔹 Fetch all hikes (admin / debug)
-  const fetchAllHikes = async () => {
+  const loadHikeById = async (hikeId) => {
     setLoading(true);
     try {
-      const res = await getHikes();
-      setHikes(res.data);
+      const hike = await hikeService.getHikeById(hikeId);
+      setSelectedHike(hike);
+      return hike;
     } catch (err) {
-      setError(err);
+      setError(err.response?.data?.detail || err.message);
     } finally {
       setLoading(false);
     }
   };
 
-  // 🔹 Fetch single hike
-  const fetchHikeById = async (id) => {
+  const searchHikes = async (filters) => {
     setLoading(true);
     try {
-      const res = await getHikeById(id);
-      setSelectedHike(res.data);
+      const results = await hikeService.searchHikes(filters);
+      setHikes(results);
     } catch (err) {
-      setError(err);
+      setError(err.response?.data?.detail || err.message);
     } finally {
       setLoading(false);
     }
   };
 
-  // 🔹 Fetch user-specific hikes
-  const fetchUserHikes = async (userId) => {
-    setLoading(true);
-    try {
-      const res = await getUserHikes(userId);
-      setUserHikes(res.data);
-    } catch (err) {
-      setError(err);
-    } finally {
-      setLoading(false);
-    }
+  const selectHike = (hike) => {
+    setSelectedHike(hike);
   };
 
-  // 🔹 Admin / ingestion
-  const addHike = async (hikeData) => {
-    const res = await createHike(hikeData);
-    setHikes((prev) => [...prev, res.data]);
-    return res.data;
+  const clearSelectedHike = () => {
+    setSelectedHike(null);
   };
 
-  const editHike = async (id, hikeData) => {
-    const res = await updateHike(id, hikeData);
-    setHikes((prev) =>
-      prev.map((h) => (h.id === id ? res.data : h))
-    );
-    return res.data;
-  };
+  // -------------------------
+  // Context value
+  // -------------------------
 
-  const removeHike = async (id) => {
-    await deleteHike(id);
-    setHikes((prev) => prev.filter((h) => h.id !== id));
+  const value = {
+    hikes,
+    selectedHike,
+    loading,
+    error,
+    loadHikes,
+    loadHikeById,
+    searchHikes,
+    selectHike,
+    clearSelectedHike,
   };
 
   return (
-    <HikeContext.Provider
-      value={{
-        hikes,
-        selectedHike,
-        userHikes,
-        loading,
-        error,
-        fetchHikes,
-        fetchAllHikes,
-        fetchHikeById,
-        fetchUserHikes,
-        addHike,
-        editHike,
-        removeHike,
-        setSelectedHike,
-      }}
-    >
+    <HikeContext.Provider value={value}>
       {children}
     </HikeContext.Provider>
   );
 };
-
-export const useHikes = () => useContext(HikeContext);

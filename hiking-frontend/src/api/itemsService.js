@@ -1,16 +1,24 @@
-import api from "./client";
+import apiClient from "./client";
 
-export const getUserItems = (userId) =>
-  api.get(`/users/${userId}/items`);
+/**
+ * ITEMS
+ */
 
-export const addUserItem = (userId, item) =>
-  api.post(`/users/${userId}/items`, item);
+export const createItem = async (itemData) => {
+  const res = await apiClient.post("/items/", itemData);
+  return res.data;
+};
 
-export const removeUserItem = (userId, itemId) =>
-  api.delete(`/users/${userId}/items/${itemId}`);
-export const updateUserItem = (userId, itemId, itemData) =>
-  api.put(`/users/${userId}/items/${itemId}`, itemData);
-export const getAllItems = () =>
-  api.get("/items");
-export const getItemById = (itemId) =>
-  api.get(`/items/${itemId}`);
+export const getItemById = async (itemId) => {
+  const res = await apiClient.get(`/items/${itemId}`);
+  return res.data;
+};
+
+export const listItems = async () => {
+  const res = await apiClient.get("/items/");
+  return res.data;
+};
+
+export const deleteItem = async (itemId) => {
+  await apiClient.delete(`/items/${itemId}`);
+};
