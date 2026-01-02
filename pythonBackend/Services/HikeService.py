@@ -35,3 +35,20 @@ class HikeService:
 
     def delete_hike(self, hike_id: UUID) -> None:
         self.repo.delete(hike_id)
+    def search_hikes(
+        self,
+        min_length_km=None,
+        min_elevation_gain_m=None,
+        farthest_hike_latitude_m=None,
+        farthest_hike_longitude_m=None,
+        difficulty=None,
+        region=None,
+        month=None,
+    ):
+        return self.repo.search(
+            min_length_km=min_length_km,
+            min_elevation_gain_m=min_elevation_gain_m,
+            difficulty=difficulty,
+            region=region,
+            month=month,
+        )

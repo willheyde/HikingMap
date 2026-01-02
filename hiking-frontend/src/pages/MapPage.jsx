@@ -3,128 +3,249 @@ import { useNavigate } from "react-router-dom";
 import mapboxgl from "mapbox-gl";
 import "mapbox-gl/dist/mapbox-gl.css";
 
-// Set your token here
-mapboxgl.accessToken = "YOUR_MAPBOX_ACCESS_TOKEN";
-
 import FilterBar from "../components/FilterBar";
 import HikeSummaryCard from "../components/HikeSummaryCard";
 import MapLegend from "../components/MapLegend";
 import { useUserLocation } from "../components/UserLocation";
+import { useHikes } from "../context/HikeContext";
+
+// Mapbox token
+mapboxgl.accessToken = "pk.eyJ1Ijoid3doZXlkZSIsImEiOiJjbWpjNHQ1enYwb3I1M2ZvbzMycTA2NGliIn0.vUtDLKMdB88W62j3JDcBUA";
 
 export default function MapPage() {
   const navigate = useNavigate();
   const mapContainer = useRef(null);
   const map = useRef(null);
-  const markers = useRef([]); // To keep track of markers and remove old ones
+  const markers = useRef([]);
 
-  const [hikes, setHikes] = useState([]);
-  const [loading, setLoading] = useState(false);
+  const {
+    hikes,
+    loading,
+    searchHikes,
+    selectHike
+  } = useHikes();
+
   const [filters, setFilters] = useState({
-    maxDistanceMiles: null,
+    minLengthKm: null,
+    minElevationGainM: null,
     difficulty: null,
-    minLengthMiles: null,
-    meetRequirementsOnly: false
+    region: null,
+    month: null
   });
 
-  const { location, loading: locationLoading, error: locationError } = useUserLocation();
+
+  const {
+    location,
+    loading: locationLoading,
+    error: locationError
+  } = useUserLocation();
 
   /* -----------------------------
      Initialize Map
   ------------------------------*/
   useEffect(() => {
-    if (map.current) return; // Initialize map only once
+    if (map.current) return;
+
     map.current = new mapboxgl.Map({
       container: mapContainer.current,
-      style: "mapbox://styles/mapbox/outdoors-v12", // Great style for hiking
-      center: [-122.4194, 37.7749], // Default center (SF)
-      zoom: 9
+      style: "mapbox://styles/mapbox/outdoors-v12",
+      center: [-98.5795, 39.8283], // Continental US
+      zoom: 4
     });
 
-    map.current.addControl(new mapboxgl.NavigationControl(), "top-right");
+    map.current.addControl(
+      new mapboxgl.NavigationControl(),
+      "top-right"
+    );
   }, []);
 
   /* -----------------------------
-     Fetch Hikes
+     Search Hikes (via context)
   ------------------------------*/
   useEffect(() => {
-    const fetchHikes = async () => {
-      setLoading(true);
-      try {
-        const response = await fetch("/api/hikes/search", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ filters, userLocation: location })
-        });
-        const data = await response.json();
-        setHikes(data);
-      } catch (err) {
-        console.error("Failed to load hikes", err);
-      } finally {
-        setLoading(false);
-      }
-    };
+  const searchParams = {};
 
-    if (location || !filters.maxDistanceMiles) {
-      fetchHikes();
-    }
-  }, [filters, location]);
+  if (filters.minLengthKm !== null) {
+    searchParams.min_length_km = filters.minLengthKm;
+  }
+
+  if (filters.minElevationGainM !== null) {
+    searchParams.min_elevation_gain_m = filters.minElevationGainM;
+  }
+
+  if (filters.difficulty) {
+    searchParams.difficulty = filters.difficulty;
+  }
+
+  if (filters.region) {
+    searchParams.region = filters.region;
+  }
+
+  if (filters.month) {
+    searchParams.month = filters.month;
+  }
+
+  if (location) {
+    searchParams.farthest_hike_latitude_m = location.lat;
+    searchParams.farthest_hike_longitude_m = location.lng;
+  }
+
+  searchHikes(searchParams);
+}, [filters, location]);
+
 
   /* -----------------------------
-     Update Map Markers
-  ------------------------------*/
-  useEffect(() => {
-    if (!map.current) return;
+   Update Map Markers
+-------------------------------*/
+useEffect(() => {
+  if (!map.current) return;
 
-    // Clear existing markers
-    markers.current.forEach((m) => m.remove());
-    markers.current = [];
+  // Remove old markers
+  markers.current.forEach((m) => m.remove());
+  markers.current = [];
 
-    // Add new markers
-    hikes.forEach((hike) => {
-      // Assuming hike.geometry contains [longitude, latitude]
-      const coords = hike.geometry?.coordinates || [0, 0];
+  hikes.forEach((hike) => {
+    if (!hike.geometry?.coordinates) return;
+
+    // Handle different geometry types
+    let markerPosition;
+    
+    if (hike.geometry.type === 'LineString') {
+      // For trails, use the first coordinate (start of trail)
+      markerPosition = hike.geometry.coordinates[0];
       
-      const marker = new mapboxgl.Marker({ color: "#22c55e" }) // Tailwind green-500
-        .setLngLat(coords)
-        .setPopup(new mapboxgl.Popup().setHTML(`<h4>${hike.name}</h4>`))
-        .addTo(map.current);
+      // Add trail line to map
+      const trailId = `trail-${hike.id}`;
+      
+      if (!map.current.getSource(trailId)) {
+        map.current.addSource(trailId, {
+          type: 'geojson',
+          data: {
+            type: 'Feature',
+            geometry: hike.geometry
+          }
+        });
 
-      marker.getElement().addEventListener('click', () => {
-        navigate(`/hikes/${hike.id}`);
-      });
+        map.current.addLayer({
+          id: trailId,
+          type: 'line',
+          source: trailId,
+          layout: {
+            'line-join': 'round',
+            'line-cap': 'round'
+          },
+          paint: {
+            'line-color': '#22c55e',
+            'line-width': 3,
+            'line-opacity': 0.8
+          }
+        });
+      }
+    } else if (hike.geometry.type === 'Point') {
+      // For points, use the coordinate directly
+      markerPosition = hike.geometry.coordinates;
+    } else {
+      console.warn(`Unsupported geometry type: ${hike.geometry.type}`);
+      return;
+    }
 
-      markers.current.push(marker);
+    const marker = new mapboxgl.Marker({
+      color: "#22c55e"
+    })
+      .setLngLat(markerPosition)
+      .setPopup(
+        new mapboxgl.Popup().setHTML(
+          `<strong>${hike.name}</strong>`
+        )
+      )
+      .addTo(map.current);
+
+    marker.getElement().addEventListener("click", () => {
+      selectHike(hike);
+      navigate(`/hikes/${hike.id}`);
     });
 
-    // Fit map to markers if they exist
-    if (hikes.length > 0) {
-      const bounds = new mapboxgl.LngLatBounds();
-      hikes.forEach(h => bounds.extend(h.geometry.coordinates));
-      map.current.fitBounds(bounds, { padding: 50 });
-    }
-  }, [hikes, navigate]);
+    markers.current.push(marker);
+  });
 
+  // Fit map to results
+  if (hikes.length > 0) {
+    const bounds = new mapboxgl.LngLatBounds();
+    
+    hikes.forEach((h) => {
+      if (!h.geometry?.coordinates) return;
+      
+      if (h.geometry.type === 'LineString') {
+        // For LineString, extend bounds with all coordinates
+        h.geometry.coordinates.forEach(coord => {
+          bounds.extend(coord);
+        });
+      } else if (h.geometry.type === 'Point') {
+        bounds.extend(h.geometry.coordinates);
+      }
+    });
+    
+    map.current.fitBounds(bounds, { padding: 60 });
+  }
+}, [hikes, navigate, selectHike]);
+
+  /* -----------------------------
+     Render
+  ------------------------------*/
   return (
     <div className="flex h-screen">
-      {/* LEFT: Mapbox */}
+
+      {/* LEFT: Map */}
       <div className="relative flex-1">
         <div ref={mapContainer} className="h-full w-full" />
         <MapLegend />
       </div>
 
-      {/* RIGHT: Controls + Results */}
+      {/* RIGHT: Filters + Results */}
       <div className="w-96 border-l bg-gray-50 flex flex-col">
+
+        {/* Filters */}
         <div className="p-4 border-b">
-          <FilterBar filters={filters} onChange={setFilters} />
-          {locationLoading && <p className="text-xs text-gray-500 mt-2">Getting your location...</p>}
+          <FilterBar
+            filters={filters}
+            onChange={setFilters}
+          />
+
+          {locationLoading && (
+            <p className="text-xs text-gray-500 mt-2">
+              Getting your location…
+            </p>
+          )}
+
+          {locationError && (
+            <p className="text-xs text-red-500 mt-2">
+              {locationError}
+            </p>
+          )}
         </div>
 
+        {/* Results */}
         <div className="flex-1 overflow-y-auto p-4 space-y-4">
-          {loading && <p className="text-center text-gray-500">Loading hikes...</p>}
+          {loading && (
+            <p className="text-center text-gray-500">
+              Loading hikes…
+            </p>
+          )}
+
+          {!loading && hikes.length === 0 && (
+            <p className="text-center text-gray-500">
+              No hikes match your filters
+            </p>
+          )}
+
           {hikes.map((hike) => (
-            <HikeSummaryCard key={hike.id} hike={hike} />
+            <HikeSummaryCard
+              key={hike.id}
+              hike={hike}
+            />
           ))}
         </div>
+
       </div>
     </div>
   );

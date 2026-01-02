@@ -1,5 +1,5 @@
 import { createContext, useContext, useState } from "react";
-import * as hikeService from "../api/hikeService";
+import * as hikeService from "../api/hikesService";
 
 const HikeContext = createContext(null);
 

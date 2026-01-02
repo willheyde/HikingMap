@@ -1,4 +1,4 @@
-import GreenTreeButton from "./GreenTreeButton";
+import GreenTreeButton from "./GreenHikeButton";
 
 export default function HikeSummaryCard({ hike }) {
   return (

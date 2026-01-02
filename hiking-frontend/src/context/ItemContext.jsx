@@ -1,100 +1,89 @@
 import { createContext, useContext, useState } from "react";
-import {
-  getUserItems,
-  addUserItem,
-  removeUserItem,
-  updateUserItem,
-  getAllItems,
-  getItemById
-} from "../api/itemsService";
+import * as itemService from "../api/itemService";
 
-const InventoryContext = createContext();
+const ItemContext = createContext(null);
 
-export const InventoryProvider = ({ children }) => {
-  const [items, setItems] = useState([]);        // user's items
-  const [allItems, setAllItems] = useState([]);  // master catalog
+export const useItems = () => {
+  return useContext(ItemContext);
+};
+
+export const ItemProvider = ({ children }) => {
+  const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
 
-  // 🔹 Fetch user's inventory
-  const fetchUserItems = async (userId) => {
+  // -------------------------
+  // Item actions
+  // -------------------------
+
+  const loadItems = async () => {
     setLoading(true);
     try {
-      const res = await getUserItems(userId);
-      setItems(res.data);
+      const fetched = await itemService.listItems();
+      setItems(fetched);
     } catch (err) {
-      setError(err);
+      setError(err.response?.data?.detail || err.message);
     } finally {
       setLoading(false);
     }
   };
 
-  // 🔹 Fetch master item list
-  const fetchAllItems = async () => {
+  const getItem = async (itemId) => {
     setLoading(true);
     try {
-      const res = await getAllItems();
-      setAllItems(res.data);
+      return await itemService.getItemById(itemId);
     } catch (err) {
-      setError(err);
+      setError(err.response?.data?.detail || err.message);
+      throw err;
     } finally {
       setLoading(false);
     }
   };
 
-  // 🔹 Fetch single item (rarely needed, but useful)
-  const fetchItemById = async (itemId) => {
+  const createItem = async (itemData) => {
     setLoading(true);
     try {
-      const res = await getItemById(itemId);
-      return res.data;
+      const created = await itemService.createItem(itemData);
+      setItems((prev) => [...prev, created]);
+      return created;
     } catch (err) {
-      setError(err);
+      setError(err.response?.data?.detail || err.message);
+      throw err;
     } finally {
       setLoading(false);
     }
   };
 
-  // 🔹 Add item to user
-  const addItem = async (userId, item) => {
-    const res = await addUserItem(userId, item);
-    setItems((prev) => [...prev, res.data]);
-    return res.data;
+  const deleteItem = async (itemId) => {
+    setLoading(true);
+    try {
+      await itemService.deleteItem(itemId);
+      setItems((prev) => prev.filter((i) => i.id !== itemId));
+    } catch (err) {
+      setError(err.response?.data?.detail || err.message);
+      throw err;
+    } finally {
+      setLoading(false);
+    }
   };
 
-  // 🔹 Update user item
-  const updateItem = async (userId, itemId, itemData) => {
-    const res = await updateUserItem(userId, itemId, itemData);
-    setItems((prev) =>
-      prev.map((i) => (i.id === itemId ? res.data : i))
-    );
-    return res.data;
-  };
+  // -------------------------
+  // Context value
+  // -------------------------
 
-  // 🔹 Remove item from user
-  const removeItem = async (userId, itemId) => {
-    await removeUserItem(userId, itemId);
-    setItems((prev) => prev.filter((i) => i.id !== itemId));
+  const value = {
+    items,
+    loading,
+    error,
+    loadItems,
+    getItem,
+    createItem,
+    deleteItem,
   };
 
   return (
-    <InventoryContext.Provider
-      value={{
-        items,
-        allItems,
-        loading,
-        error,
-        fetchUserItems,
-        fetchAllItems,
-        fetchItemById,
-        addItem,
-        updateItem,
-        removeItem,
-      }}
-    >
+    <ItemContext.Provider value={value}>
       {children}
-    </InventoryContext.Provider>
+    </ItemContext.Provider>
   );
 };
-
-export const useInventory = () => useContext(InventoryContext);
