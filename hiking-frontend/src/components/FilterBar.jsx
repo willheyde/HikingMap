@@ -1,14 +1,6 @@
-export default function FilterBar({ filters, onChange }) {
-  /**
-   * filters shape:
-   * {
-   *   maxDistanceMiles: number | null,
-   *   difficulty: "easy" | "moderate" | "hard" | null,
-   *   minLengthMiles: number | null,
-   *   meetRequirementsOnly: boolean
-   * }
-   */
+import React from "react";
 
+export default function FilterBar({ filters, onChange }) {
   const update = (key, value) => {
     onChange({
       ...filters,
@@ -16,83 +8,137 @@ export default function FilterBar({ filters, onChange }) {
     });
   };
 
+  // Common input classes for consistency and compression
+  const inputClass = "w-full px-2 py-1 text-sm border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-green-500";
+  const labelClass = "block text-xs font-semibold text-gray-600 mb-0.5";
+
   return (
-    <div className="bg-white shadow rounded-lg p-4 flex flex-wrap gap-4 items-end">
-      
-      {/* Distance from User */}
-      <div className="flex flex-col">
-        <label className="text-sm font-medium">
-          Max Distance (mi)
-        </label>
-        <input
-          type="number"
-          min="0"
-          value={filters.maxDistanceMiles ?? ""}
-          onChange={(e) =>
-            update(
-              "maxDistanceMiles",
-              e.target.value === "" ? null : Number(e.target.value)
-            )
-          }
-          className="border rounded px-2 py-1 w-28"
-        />
-      </div>
-
-      {/* Difficulty */}
-      <div className="flex flex-col">
-        <label className="text-sm font-medium">
-          Difficulty
-        </label>
-        <select
-          value={filters.difficulty ?? ""}
-          onChange={(e) =>
-            update(
-              "difficulty",
-              e.target.value === "" ? null : e.target.value
-            )
-          }
-          className="border rounded px-2 py-1"
+    <div className="space-y-2">
+      <div className="flex justify-between items-center mb-2">
+        <h2 className="text-sm font-bold text-gray-800">Filters</h2>
+        <button
+          onClick={() => onChange({
+            maxDistanceMiles: null, difficulty: null, minLengthMiles: null,
+            maxLengthMiles: null, meetRequirementsOnly: false, state: null,
+            region: null, month: null
+          })}
+          className="text-xs text-green-600 hover:text-green-800 underline"
         >
-          <option value="">Any</option>
-          <option value="easy">Easy</option>
-          <option value="moderate">Moderate</option>
-          <option value="hard">Hard</option>
-        </select>
+          Reset
+        </button>
       </div>
 
-      {/* Minimum Length */}
-      <div className="flex flex-col">
-        <label className="text-sm font-medium">
-          Min Length (mi)
-        </label>
-        <input
-          type="number"
-          min="0"
-          value={filters.minLengthMiles ?? ""}
-          onChange={(e) =>
-            update(
-              "minLengthMiles",
-              e.target.value === "" ? null : Number(e.target.value)
-            )
-          }
-          className="border rounded px-2 py-1 w-28"
-        />
+      {/* Row 1: State & Difficulty */}
+      <div className="grid grid-cols-2 gap-2">
+        <div>
+          <label className={labelClass}>State</label>
+          <select
+            value={filters.state ?? ""}
+            onChange={(e) => update("state", e.target.value || null)}
+            className={inputClass}
+          >
+            <option value="">All</option>
+            <option value="California">CA</option>
+            <option value="Colorado">CO</option>
+            <option value="Washington">WA</option>
+            <option value="Oregon">OR</option>
+            <option value="Montana">MT</option>
+            <option value="Wyoming">WY</option>
+            <option value="Utah">UT</option>
+            <option value="Arizona">AZ</option>
+          </select>
+        </div>
+        <div>
+          <label className={labelClass}>Difficulty</label>
+          <select
+            value={filters.difficulty ?? ""}
+            onChange={(e) => update("difficulty", e.target.value || null)}
+            className={inputClass}
+          >
+            <option value="">Any</option>
+            <option value="EASY">Easy</option>
+            <option value="MODERATE">Moderate</option>
+            <option value="HARD">Hard</option>
+          </select>
+        </div>
       </div>
 
-      {/* Requirements / Gear Match */}
-      <div className="flex items-center gap-2 mt-6">
+      {/* Row 2: Trail Length */}
+      <div>
+        <label className={labelClass}>Trail Length (mi)</label>
+        <div className="flex gap-2">
+          <input
+            type="number"
+            min="0"
+            step="0.1"
+            placeholder="Min"
+            value={filters.minLengthMiles ?? ""}
+            onChange={(e) => update("minLengthMiles", e.target.value === "" ? null : Number(e.target.value))}
+            className={inputClass}
+          />
+          <input
+            type="number"
+            min="0"
+            step="0.1"
+            placeholder="Max"
+            value={filters.maxLengthMiles ?? ""}
+            onChange={(e) => update("maxLengthMiles", e.target.value === "" ? null : Number(e.target.value))}
+            className={inputClass}
+          />
+        </div>
+      </div>
+
+      {/* Row 3: Max Dist & Month */}
+      <div className="grid grid-cols-2 gap-2">
+        <div>
+          <label className={labelClass}>Max Radius (mi)</label>
+          <input
+            type="number"
+            min="0"
+            step="1"
+            placeholder="From you"
+            value={filters.maxDistanceMiles ?? ""}
+            onChange={(e) => update("maxDistanceMiles", e.target.value === "" ? null : Number(e.target.value))}
+            className={inputClass}
+          />
+        </div>
+        <div>
+          <label className={labelClass}>Best Month</label>
+          <select
+            value={filters.month ?? ""}
+            onChange={(e) => update("month", e.target.value === "" ? null : Number(e.target.value))}
+            className={inputClass}
+          >
+            <option value="">Any</option>
+            <option value="1">Jan</option>
+            <option value="2">Feb</option>
+            <option value="3">Mar</option>
+            <option value="4">Apr</option>
+            <option value="5">May</option>
+            <option value="6">Jun</option>
+            <option value="7">Jul</option>
+            <option value="8">Aug</option>
+            <option value="9">Sep</option>
+            <option value="10">Oct</option>
+            <option value="11">Nov</option>
+            <option value="12">Dec</option>
+          </select>
+        </div>
+      </div>
+
+      {/* Row 4: Gear Requirement */}
+      <div className="flex items-center pt-1">
         <input
+          id="meet-requirements"
           type="checkbox"
-          checked={filters.meetRequirementsOnly}
-          onChange={(e) =>
-            update("meetRequirementsOnly", e.target.checked)
-          }
+          checked={!!filters.meetRequirementsOnly}
+          onChange={(e) => update("meetRequirementsOnly", e.target.checked)}
+          className="h-3.5 w-3.5 text-green-600 rounded border-gray-300 focus:ring-green-500"
         />
-        <label className="text-sm font-medium">
-          Meet My Gear
+        <label htmlFor="meet-requirements" className="ml-2 text-xs text-gray-700 select-none">
+          My gear only
         </label>
       </div>
-
     </div>
   );
 }

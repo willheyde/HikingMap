@@ -3,7 +3,6 @@ import apiClient from "./client";
 /**
  * USERS
  */
-
 export const createUser = async (userData) => {
   const res = await apiClient.post("/users/", userData);
   return res.data;
@@ -26,10 +25,15 @@ export const updateUser = async (userId, userData) => {
 
 export const deleteUser = async (userId) => {
   await apiClient.delete(`/users/${userId}`);
-};  
+};
+
+export const loginUser = async (credentials) => {
+  const res = await apiClient.post("/users/login", credentials);
+  return res.data;
+};
 
 /**
- * USER ITEMS
+ * USER ITEMS (Updated for ID-based logic)
  */
 
 export const getUserItems = async (userId) => {
@@ -37,11 +41,24 @@ export const getUserItems = async (userId) => {
   return res.data;
 };
 
-export const addUserItem = async (userId, item) => {
-  const res = await apiClient.post(`/users/${userId}/items`, item);
+// 1. Add Single Item by ID
+// Backend expects: { "item_id": "uuid..." }
+export const addUserItem = async (userId, itemId) => {
+  const payload = { item_id: itemId };
+  const res = await apiClient.post(`/users/${userId}/items`, payload);
+  // Backend now returns the FULL updated list of items
   return res.data;
 };
 
-export const deleteUserItem = async (userId, itemIndex) => {
-  await apiClient.delete(`/users/${userId}/items/${itemIndex}`);
+// 2. Add Batch Items by IDs
+// Backend expects: ["uuid1", "uuid2"]
+export const addUserItemsBatch = async (userId, itemIds) => {
+  const res = await apiClient.post(`/users/${userId}/items/batch`, itemIds);
+  // Backend now returns the FULL updated list of items
+  return res.data;
+};
+
+// 3. Delete Item by ID (not index)
+export const deleteUserItem = async (userId, itemId) => {
+  await apiClient.delete(`/users/${userId}/items/${itemId}`);
 };

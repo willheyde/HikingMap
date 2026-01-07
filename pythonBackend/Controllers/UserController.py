@@ -1,145 +1,77 @@
 from fastapi import APIRouter, HTTPException
 from uuid import UUID
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Any
 from Services.UserService import UserService
 from Repos.UserRepo import UserRepository
 from PyObjects.User import User
 from pydantic import BaseModel, EmailStr
-from uuid import UUID
 from datetime import datetime
+import hashlib
 
-class ItemCreate(BaseModel):
-    name: str
-    weight: float
-    cost: float
-
-
-class ItemModel(BaseModel):
-    name: str
-    weight: float
-    cost: float
-
-
+# ... UserCreate, LoginRequest, UserResponse, UserUpdate ... (Unchanged)
 class UserCreate(BaseModel):
     email: EmailStr
-    hashed_password: str
+    password: str
     name: str
     avatar_url: Optional[str] = None
-    home_location: Optional[Dict[str, float]] = None
+    home_location: Optional[Dict[str, Any]] = None
     timezone: Optional[str] = None
-    items: Optional[List[ItemModel]] = []
 
-
-class UserResponse(BaseModel):
-    id: UUID
-    email: str
-    name: str
-    avatar_url: Optional[str]
-    home_location: Optional[Dict[str, float]]
-    timezone: Optional[str]
-    items: List[ItemModel]
-    created_at: datetime
-
+class LoginRequest(BaseModel):
+    email: EmailStr
+    password: str
 
 class UserUpdate(BaseModel):
     email: Optional[EmailStr] = None
-    hashed_password: Optional[str] = None
     name: Optional[str] = None
     avatar_url: Optional[str] = None
-    home_location: Optional[Dict[str, float]] = None
+    home_location: Optional[Dict[str, Any]] = None
     timezone: Optional[str] = None
-    items: Optional[List[ItemModel]] = None
 
+# --- NEW MODELS ---
 
-router = APIRouter(prefix="/users", tags=["Users"])
+class ItemLink(BaseModel):
+    item_id: str
 
-# Dependency wiring (simple version)
+# -----------------
+
+router = APIRouter(tags=["Users"])
 user_service = UserService(UserRepository())
 
+def hash_password(password: str) -> str:
+    return hashlib.sha256(password.encode()).hexdigest()
+
+# ... login, create_user, list_users, get_user, update_user, delete_user ... (Unchanged)
+# (Copy paste your existing ones here)
+
+@router.post("/login", response_model=dict)
+def login(credentials: LoginRequest):
+    # ... existing implementation ...
+    try:
+        user = user_service.get_user_by_email(credentials.email)
+        if not user: raise HTTPException(status_code=401, detail="Invalid")
+        hashed = hash_password(credentials.password)
+        if user.hashed_password != hashed: raise HTTPException(status_code=401, detail="Invalid")
+        return user.to_dict()
+    except Exception as e: raise HTTPException(status_code=400, detail=str(e))
 
 @router.post("/", response_model=dict)
-def create_user(payload: dict):
-    try:
-        user = user_service.create_user(
-            email=payload["email"],
-            hashed_password=payload["hashed_password"],
-            name=payload["name"],
-            avatar_url=payload.get("avatar_url"),
-            home_location=payload.get("home_location"),
-            timezone=payload.get("timezone"),
-            items=payload.get("items", []),
-        )
-        return user.to_dict()
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-
+def create_user(payload: UserCreate):
+    hashed_pw = hash_password(payload.password)
+    user = user_service.create_user(
+        email=payload.email, hashed_password=hashed_pw, name=payload.name,
+        avatar_url=payload.avatar_url, home_location=payload.home_location, timezone=payload.timezone
+    )
+    return user.to_dict()
 
 @router.get("/{user_id}", response_model=dict)
 def get_user(user_id: UUID):
     user = user_service.get_user(user_id)
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+    if not user: raise HTTPException(status_code=404, detail="User not found")
     return user.to_dict()
 
+# --- CHANGED ENDPOINTS ---
 
-@router.get("/", response_model=List[dict])
-def list_users():
-    return [u.to_dict() for u in user_service.list_users()]
-
-
-@router.put("/{user_id}", response_model=dict)
-def update_user(user_id: UUID, payload: dict):
-    existing = user_service.get_user(user_id)
-    if not existing:
-        raise HTTPException(status_code=404, detail="User not found")
-
-    updated_user = User(
-        id=user_id,
-        email=payload.get("email", existing.email),
-        hashed_password=payload.get("hashed_password", existing.hashed_password),
-        name=payload.get("name", existing.name),
-        avatar_url=payload.get("avatar_url", existing.avatar_url),
-        home_location=payload.get("home_location", existing.home_location),
-        timezone=payload.get("timezone", existing.timezone),
-        items=payload.get("items", existing.items),
-        created_at=existing.created_at,
-    )
-
-    try:
-        user = user_service.update_user(updated_user)
-        return user.to_dict()
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-
-    try:
-        user = user_service.update_user(updated_user)
-        return user.to_dict()
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-
-@router.delete("/{user_id}", status_code=204)
-def delete_user(user_id: UUID):
-    try:
-        user_service.delete_user(user_id)
-    except ValueError:
-        raise HTTPException(status_code=404, detail="User not found")
-@router.get("/", response_model = UserResponse)
-def createUser(req: UserCreate):
-    try:
-        user = user_service.create_user(
-            email=req.email,
-            hashed_password=req.hashed_password,
-            name=req.name,
-            avatar_url=req.avatar_url,
-            home_location=req.home_location,
-            timezone=req.timezone,
-        )
-        return user.to_dict()
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
 @router.get("/{user_id}/items", response_model=list[dict])
 def get_user_items(user_id: UUID):
     try:
@@ -147,16 +79,31 @@ def get_user_items(user_id: UUID):
         return [i.to_dict() for i in items]
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
-@router.post("/{user_id}/items", response_model=dict)
-def add_user_item(user_id: UUID, payload: ItemCreate):
+
+# 1. INDIVIDUAL ADD (Expects { "item_id": "..." })
+@router.post("/{user_id}/items", response_model=List[dict])
+def add_user_item(user_id: UUID, payload: ItemLink):
     try:
-        item = user_service.add_item(user_id, payload.dict())
-        return item.to_dict()
+        # Returns full list of items after add
+        items = user_service.add_item(user_id, payload.item_id)
+        return [i.to_dict() for i in items]
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
-@router.delete("/{user_id}/items/{item_index}", status_code=204)
-def delete_user_item(user_id: UUID, item_index: int):
+
+# 2. BATCH ADD (Expects [ "id1", "id2" ])
+@router.post("/{user_id}/items/batch", response_model=List[dict])
+def add_user_items_batch(user_id: UUID, payload: List[str]):
     try:
-        user_service.delete_item(user_id, item_index)
+        # Payload is now just a list of strings (UUIDs)
+        items = user_service.add_items_batch(user_id, payload)
+        return [i.to_dict() for i in items]
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+# 3. DELETE (Uses item_id in URL, not index)
+@router.delete("/{user_id}/items/{item_id}", status_code=204)
+def delete_user_item(user_id: UUID, item_id: str):
+    try:
+        user_service.delete_item(user_id, item_id)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))

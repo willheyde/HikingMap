@@ -7,18 +7,44 @@ from attrs import asdict
 from PyObjects.Items import Item
 
 
-@dataclass
 class User:
-    id: UUID
-    email: str
-    hashed_password: str
-    name: str
-    avatar_url: Optional[str] = None
-    home_location: Optional[Dict[str, float]] = None
-    timezone: Optional[str] = None
-    items: List[Item] = field(default_factory=list)
-    created_at: datetime = field(default_factory=datetime.utcnow)
+    def __init__(
+        self,
+        id: UUID,
+        email: str,
+        hashed_password: str,
+        name: str,
+        avatar_url: Optional[str] = None,
+        home_location: Optional[Dict[str, Any]] = None,  # Changed to Any
+        timezone: Optional[str] = None,
+        items: Optional[List] = None,
+        created_at: Optional[datetime] = None,
+    ):
+        self.id = id
+        self.email = email
+        self.hashed_password = hashed_password
+        self.name = name
+        self.avatar_url = avatar_url
+        self.home_location = home_location
+        self.timezone = timezone
+        self.items = items or []
+        self.created_at = created_at or datetime.now()
+    
+    # PyObjects/User.py
 
+    def to_dict(self):
+        return {
+            "id": str(self.id),
+            "email": self.email,
+            "hashed_password": self.hashed_password,
+            "name": self.name,
+            "avatar_url": self.avatar_url,
+            "home_location": self.home_location,
+            "timezone": self.timezone,
+            # FIX: Convert Item objects to dicts, otherwise JSON serialization fails
+            "items": [i.to_dict() for i in self.items] if self.items else [],
+            "created_at": self.created_at.isoformat()
+        }
     def __post_init__(self) -> None:
         if not self.email:
             raise ValueError("email must not be empty")
@@ -31,12 +57,6 @@ class User:
         if not isinstance(self.items, list):
             raise ValueError("items must be a list")
 
-    def to_dict(self) -> Dict[str, Any]:
-        d = asdict(self)
-        d["id"] = str(self.id)
-        d["created_at"] = self.created_at.isoformat()
-        d["items"] = [item.to_dict() for item in self.items]
-        return d
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "User":

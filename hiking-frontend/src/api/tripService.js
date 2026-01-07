@@ -20,3 +20,10 @@ export const getTripById = async (tripId) => {
 export const deleteTrip = async (tripId) => {
   await apiClient.delete(`/trips/${tripId}`);
 };
+// Add to tripsService.js
+export const getUserTrips = async (userId) => {
+  const res = await apiClient.get(`/trips/`, {
+    params: { user_id: userId }
+  });
+  return res.data;
+};
