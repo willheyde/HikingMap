@@ -150,3 +150,16 @@ def list_items():
 @router.delete("/{item_id}", status_code=204)
 def delete_item(item_id: UUID):
     service.delete_item(item_id)
+
+
+@router.get("/by-name/{name}", response_model=ItemResponseSchema)
+def get_item_by_name(name: str):
+    """
+    Retrieve a single item by its exact name.
+    Note: this returns the first matching item. Consider making a
+    case-insensitive or fuzzy search if you want multiple/more flexible matches.
+    """
+    item = service.get_item_by_name(name)
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+    return item_to_response(item)

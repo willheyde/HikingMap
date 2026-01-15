@@ -12,7 +12,9 @@ export const UserProvider = ({ children }) => {
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
-  const [globalUserLocation, setGlobalUserLocation] = useState(null);
+  
+  // New state for location handling
+  const [loadingLocation, setLoadingLocation] = useState(false);
   const [authModalOpen, setAuthModalOpen] = useState(false);
 
   // Check for existing session on mount
@@ -33,10 +35,85 @@ export const UserProvider = ({ children }) => {
     }
   }, []);
 
+  // --- NEW: Auto-fetch location if null ---
+  useEffect(() => {
+    // Only run if user is logged in, not loading, and location is strictly null/undefined
+    if (user && !loadingLocation && !user.home_location) {
+      console.log("Home location missing, attempting auto-update...");
+      updateLocation();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user]); // We intentionally depend on user to check the home_location property
+
   // Helper to sync state changes to LocalStorage
   const updateLocalUser = (updatedUser) => {
     setUser(updatedUser);
     localStorage.setItem("hike_user", JSON.stringify(updatedUser));
+  };
+
+  // --- NEW: Location Update Logic ---
+  const updateLocation = () => {
+    if (!navigator.geolocation) {
+      setError("Geolocation is not supported by your browser.");
+      return;
+    }
+
+    setLoadingLocation(true);
+
+    navigator.geolocation.getCurrentPosition(
+      async (position) => {
+        try {
+          const { latitude, longitude } = position.coords;
+
+          // 1. Reverse Geocode (Get City Name)
+          // Using OpenStreetMap Nominatim API (Free, requires User-Agent)
+          let locationName = `${latitude.toFixed(2)}, ${longitude.toFixed(2)}`;
+          try {
+            const geoRes = await fetch(
+              `https://nominatim.openstreetmap.org/reverse?format=json&lat=${latitude}&lon=${longitude}&zoom=10`,
+              { headers: { "User-Agent": "HikePlannerApp/1.0" } }
+            );
+            const geoData = await geoRes.json();
+            // Try to construct a readable name: "Raleigh, North Carolina"
+            if (geoData.address) {
+              const city = geoData.address.city || geoData.address.town || geoData.address.village;
+              const state = geoData.address.state;
+              if (city && state) locationName = `${city}, ${state}`;
+              else if (state) locationName = state;
+            }
+          } catch (geoErr) {
+            console.warn("Reverse geocoding failed, using coords", geoErr);
+          }
+
+          // 2. Prepare Data
+          const locationData = {
+            name: locationName,
+            lat: latitude,
+            lon: longitude,
+          };
+
+          // 3. Update User in Backend
+          // We assume updateUser accepts partial updates
+          const updatedUser = await userService.updateUser(user.id, {
+            home_location: locationData,
+          });
+
+          // 4. Update Context & LocalStorage
+          updateLocalUser(updatedUser);
+          
+        } catch (err) {
+          console.error("Failed to update location:", err);
+          setError("Failed to save location data.");
+        } finally {
+          setLoadingLocation(false);
+        }
+      },
+      (geoError) => {
+        console.error("Geolocation permission denied or failed:", geoError);
+        setLoadingLocation(false);
+        // We don't set a global error here to avoid annoying the user if they simply denied permission
+      }
+    );
   };
 
   const login = async (email, password) => {
@@ -76,7 +153,6 @@ export const UserProvider = ({ children }) => {
       setAuthModalOpen(false);
       return created;
     } catch (err) {
-      // (Your existing robust error handling logic here...)
       let errorMsg = "Failed to create user";
       if (err.response?.status === 422) {
          const detail = err.response.data.detail;
@@ -94,23 +170,14 @@ export const UserProvider = ({ children }) => {
     }
   };
 
-  // --- UPDATED ITEM METHODS ---
-
-  // Adds a single item by ID
   const addItem = async (userId, itemId) => {
     setLoading(true);
     try {
-      // API now returns the FULL LIST of items
       const updatedItemsList = await userService.addUserItem(userId, itemId);
-      
-      // 1. Update Items State directly
       setItems(updatedItemsList);
-      
-      // 2. Sync User object + LocalStorage
       if (user) {
         updateLocalUser({ ...user, items: updatedItemsList });
       }
-      
       return updatedItemsList;
     } catch (err) {
       setError(err.response?.data?.detail || err.message);
@@ -120,21 +187,14 @@ export const UserProvider = ({ children }) => {
     }
   };
 
-  // Adds multiple items by IDs
   const addItemsBatch = async (userId, itemIds) => {
     setLoading(true);
     try {
-      // API now returns the FULL LIST of items
       const updatedItemsList = await userService.addUserItemsBatch(userId, itemIds);
-      
-      // 1. Update Items State directly
       setItems(updatedItemsList);
-      
-      // 2. Sync User object + LocalStorage
       if (user) {
         updateLocalUser({ ...user, items: updatedItemsList });
       }
-      
       return updatedItemsList;
     } catch (err) {
       setError(err.response?.data?.detail || err.message);
@@ -144,17 +204,12 @@ export const UserProvider = ({ children }) => {
     }
   };
 
-  // Deletes item by ID (changed from Index)
   const deleteItem = async (userId, itemId) => {
     setLoading(true);
     try {
       await userService.deleteUserItem(userId, itemId);
-      
-      // 1. Filter out the deleted item from current state
       const updatedItems = items.filter((item) => item.id !== itemId);
       setItems(updatedItems);
-      
-      // 2. Sync User object + LocalStorage
       if (user) {
         updateLocalUser({ ...user, items: updatedItems });
       }
@@ -173,14 +228,14 @@ export const UserProvider = ({ children }) => {
     error,
     authModalOpen,
     setAuthModalOpen,
+    loadingLocation, // Exported so Profile can use it
+    updateLocation,  // Exported so Profile can call it manually
     login,
     logout,
     createUser,
-    addItem,        // Now takes (userId, itemId)
-    deleteItem,     // Now takes (userId, itemId)
-    addItemsBatch,  // Now takes (userId, [itemId, itemId])
-    globalUserLocation, 
-    setGlobalUserLocation
+    addItem,
+    deleteItem,
+    addItemsBatch,
   };
 
   return (

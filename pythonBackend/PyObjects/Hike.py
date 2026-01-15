@@ -1,8 +1,8 @@
-import json  # <--- Make sure this is imported!
+import json
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any, Optional, Dict, List
+from typing import Any, Optional, Dict, List, Union
 from uuid import UUID
 
 class DifficultyLevel(Enum):
@@ -25,6 +25,10 @@ class Hike:
     region: str
     season_start_month: int
     season_end_month: int
+    # --- New Fields ---
+    latitude: float = 0.0
+    longitude: float = 0.0
+    # ------------------
     required_gear_tags: List[str] = field(default_factory=list)
     permits_required: bool = False
     nearest_airport_code: Optional[str] = None
@@ -34,9 +38,28 @@ class Hike:
     def __post_init__(self) -> None:
         if not self.name:
             raise ValueError("name must not be empty")
+        
         # Ensure numbers are floats (handles string numbers from DB)
         self.length_km = float(self.length_km)
         self.elevation_gain_m = float(self.elevation_gain_m)
+
+        # --- AUTO-CALCULATE LAT/LONG IF MISSING ---
+        # If lat/long are 0, try to extract start point from geometry (GeoJSON)
+        if (self.latitude == 0.0 or self.longitude == 0.0) and self.geometry:
+            try:
+                # GeoJSON format: {"type": "LineString", "coordinates": [[lon, lat], [lon, lat]]}
+                coords = self.geometry.get("coordinates")
+                if coords and isinstance(coords, list) and len(coords) > 0:
+                    # Get the first point (Start of hike)
+                    # Handle both Point ([lon, lat]) and LineString ([[lon, lat], ...])
+                    first_point = coords[0] if isinstance(coords[0], list) else coords
+                    
+                    # GeoJSON is [Longitude, Latitude]
+                    self.longitude = float(first_point[0])
+                    self.latitude = float(first_point[1])
+            except (IndexError, TypeError, ValueError):
+                # Keep as 0.0 if extraction fails
+                pass
 
     def to_dict(self) -> Dict[str, Any]:
         d = asdict(self)
@@ -54,16 +77,13 @@ class Hike:
             data_copy["id"] = UUID(data_copy["id"])
             
         # 2. Handle Difficulty Enum
-        # Maps "MODERATE" (string from DB) to DifficultyLevel.MODERATE
         if isinstance(data_copy.get("difficulty"), str):
             try:
                 data_copy["difficulty"] = DifficultyLevel[data_copy["difficulty"]]
             except KeyError:
-                # Fallback if DB has invalid string
                 data_copy["difficulty"] = DifficultyLevel.MODERATE
 
-        # 3. Handle JSON Fields (The specific fix for your 126 errors)
-        # If geometry comes back as a string '{"type":...}', we parse it to a dict
+        # 3. Handle JSON Fields
         for field_name in ["geometry", "required_gear_tags", "parking_coordinates"]:
             val = data_copy.get(field_name)
             if isinstance(val, str):
@@ -75,5 +95,11 @@ class Hike:
         # 4. Handle Datetime
         if isinstance(data_copy.get("last_synced_at"), str):
             data_copy["last_synced_at"] = datetime.fromisoformat(data_copy["last_synced_at"])
+
+        # 5. Handle Lat/Long strings (if DB returns them as strings)
+        if "latitude" in data_copy:
+            data_copy["latitude"] = float(data_copy["latitude"])
+        if "longitude" in data_copy:
+            data_copy["longitude"] = float(data_copy["longitude"])
 
         return cls(**data_copy)

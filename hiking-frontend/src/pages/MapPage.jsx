@@ -9,6 +9,7 @@ import MapLegend from "../components/MapLegend";
 import { useUserLocation } from "../components/UserLocation";
 import { useHikes } from "../context/HikeContext";
 import { useUser } from "../context/UserContext";
+import { updateUser } from "../api/usersService";
 // Mapbox token
 mapboxgl.accessToken = "pk.eyJ1Ijoid3doZXlkZSIsImEiOiJjbWpjNHQ1enYwb3I1M2ZvbzMycTA2NGliIn0.vUtDLKMdB88W62j3JDcBUA";
 
@@ -19,14 +20,9 @@ export default function MapPage() {
   const map = useRef(null);
   const markers = useRef([]);
   const trailLayers = useRef(new Set());
-  const { setGlobalUserLocation } = useUser();
+  const { user, setGlobalUserLocation } = useUser();
   const userMarkerRef = useRef(null);
-  const {
-    hikes,
-    loading,
-    searchHikes,
-    selectHike
-  } = useHikes();
+  const { hikes, loading, searchHikes, selectHike } = useHikes();
 
   const [filters, setFilters] = useState({
     maxDistanceMiles: null,
@@ -68,6 +64,7 @@ export default function MapPage() {
       "top-right"
     );
   }, []);
+  
   useEffect(() => {
     // Sync local hook data to Global Context
     if (userLocation) {

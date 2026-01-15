@@ -1,6 +1,7 @@
 import psycopg
 from uuid import UUID
 from typing import Optional, List
+from urllib.parse import unquote  # <--- Added for URL decoding
 from PyObjects.Items import Item, Backpack, Clothing, Shoes, WeatherConditions
 
 class ItemRepository:
@@ -14,7 +15,6 @@ class ItemRepository:
         """Create an item and its subtype record"""
         with self._get_conn() as conn:
             with conn.cursor() as cur:
-                # Insert base item
                 cur.execute(
                     """
                     INSERT INTO items (id, name, weight, cost, item_type)
@@ -23,38 +23,23 @@ class ItemRepository:
                     (item.id, item.name, item.weight, item.cost, item.item_type)
                 )
                 
-                # Insert subtype-specific data
                 if isinstance(item, Shoes):
-                    # First insert into clothing
                     cur.execute(
-                        """
-                        INSERT INTO clothing (item_id, weatherconditions)
-                        VALUES (%s, %s)
-                        """,
+                        "INSERT INTO clothing (item_id, weatherconditions) VALUES (%s, %s)",
                         (item.id, item.weather_conditions.value)
                     )
-                    # Then insert into shoes
                     cur.execute(
-                        """
-                        INSERT INTO shoes (item_id, crampons)
-                        VALUES (%s, %s)
-                        """,
+                        "INSERT INTO shoes (item_id, crampons) VALUES (%s, %s)",
                         (item.id, item.crampons)
                     )
                 elif isinstance(item, Clothing):
                     cur.execute(
-                        """
-                        INSERT INTO clothing (item_id, weatherconditions)
-                        VALUES (%s, %s)
-                        """,
+                        "INSERT INTO clothing (item_id, weatherconditions) VALUES (%s, %s)",
                         (item.id, item.weather_conditions.value)
                     )
                 elif isinstance(item, Backpack):
                     cur.execute(
-                        """
-                        INSERT INTO backpacks (item_id, capacity_liters)
-                        VALUES (%s, %s)
-                        """,
+                        "INSERT INTO backpacks (item_id, capacity_liters) VALUES (%s, %s)",
                         (item.id, item.capacity_liters)
                     )
                 
@@ -62,7 +47,6 @@ class ItemRepository:
         return item.id
     
     def update_item_image(self, item_id: UUID, image_url: str) -> None:
-        """Updates the image_url for a specific item"""
         with self._get_conn() as conn:
             with conn.cursor() as cur:
                 cur.execute(
@@ -72,10 +56,8 @@ class ItemRepository:
                 conn.commit()
 
     def get_item(self, item_id: UUID) -> Optional[Item]:
-        """Retrieve an item with all subtype data"""
         with self._get_conn() as conn:
             with conn.cursor() as cur:
-                # UPDATED: Added image_url to SELECT
                 cur.execute(
                     "SELECT id, name, weight, cost, item_type, image_url FROM items WHERE id = %s",
                     (item_id,)
@@ -84,12 +66,9 @@ class ItemRepository:
                 if not row:
                     return None
                 
-                # Unpack new column
                 id, name, weight, cost, item_type, image_url = row
-                
                 item_obj = None
 
-                # Fetch subtype-specific data
                 if item_type == "shoes":
                     cur.execute(
                         """
@@ -101,59 +80,76 @@ class ItemRepository:
                         (item_id,)
                     )
                     subtype_row = cur.fetchone()
-                    weather, crampons = subtype_row
-                    item_obj = Shoes(id, name, weight, cost, WeatherConditions(weather), crampons)
+                    if subtype_row:
+                        weather, crampons = subtype_row
+                        item_obj = Shoes(id, name, weight, cost, WeatherConditions(weather), crampons)
                 
                 elif item_type == "clothing":
-                    cur.execute(
-                        "SELECT weatherconditions FROM clothing WHERE item_id = %s",
-                        (item_id,)
-                    )
+                    cur.execute("SELECT weatherconditions FROM clothing WHERE item_id = %s", (item_id,))
                     subtype_row = cur.fetchone()
-                    weather = subtype_row[0]
-                    item_obj = Clothing(id, name, weight, cost, WeatherConditions(weather))
+                    if subtype_row:
+                        weather = subtype_row[0]
+                        item_obj = Clothing(id, name, weight, cost, WeatherConditions(weather))
                 
                 elif item_type == "backpack":
-                    cur.execute(
-                        "SELECT capacity_liters FROM backpacks WHERE item_id = %s",
-                        (item_id,)
-                    )
+                    cur.execute("SELECT capacity_liters FROM backpacks WHERE item_id = %s", (item_id,))
                     subtype_row = cur.fetchone()
-                    capacity = subtype_row[0]
-                    item_obj = Backpack(id, name, weight, cost, capacity)
+                    if subtype_row:
+                        capacity = subtype_row[0]
+                        item_obj = Backpack(id, name, weight, cost, capacity)
                 
-                else:
-                    # Fallback
+                if not item_obj:
                     item_obj = Item(id, name, weight, cost, item_type)
 
-                # Manually set the image_url after instantiation
-                # This ensures we don't break the subclass __init__ methods
-                if item_obj:
-                    item_obj.image_url = image_url
-
+                item_obj.image_url = image_url
                 return item_obj
     
     def get_item_by_name(self, name: str) -> Optional[Item]:
-        """Get item by name"""
+        """
+        Get item by name with fuzzy matching logic to handle:
+        1. URL Encoded strings (Sun%20Hat)
+        2. Kebab-case (sun-hat)
+        3. Partial matching (sun-hat -> finds 'Wide Brim Sun Hat')
+        """
+        # 1. Clean the input: decode URL chars and lower case
+        clean_name = unquote(name).lower()
+        
+        # 2. Create a "spaced" version (sun-hat -> sun hat)
+        spaced_name = clean_name.replace("-", " ")
+
         with self._get_conn() as conn:
             with conn.cursor() as cur:
-                cur.execute("SELECT id FROM items WHERE name = %s", (name,))
+                # Attempt 1: Exact match (Case Insensitive)
+                # Matches: "20L Daypack" if input is "20L Daypack"
+                cur.execute("SELECT id FROM items WHERE LOWER(name) = %s", (clean_name,))
                 row = cur.fetchone()
+
+                # Attempt 2: Spaced match (Case Insensitive)
+                # Matches: "sun hat" if input is "sun-hat"
+                if not row:
+                    cur.execute("SELECT id FROM items WHERE LOWER(name) = %s", (spaced_name,))
+                    row = cur.fetchone()
+                
+                # Attempt 3: Partial "Fuzzy" Match (The "Hail Mary")
+                # Matches: "Wide Brim Sun Hat" if input is "sun-hat" (checks if "sun hat" is PART of the name)
+                if not row:
+                    # Uses Postgres ILIKE with wildcards: '%sun hat%'
+                    cur.execute("SELECT id FROM items WHERE LOWER(name) LIKE %s", (f"%{spaced_name}%",))
+                    row = cur.fetchone()
+
                 if row:
                     return self.get_item(row[0])
+                
                 return None
     
     def list_items(self) -> List[Item]:
-        """List all items"""
         with self._get_conn() as conn:
             with conn.cursor() as cur:
                 cur.execute("SELECT id FROM items")
                 ids = [row[0] for row in cur.fetchall()]
-        
         return [self.get_item(id) for id in ids]
     
     def delete_item(self, item_id: UUID) -> None:
-        """Delete an item (CASCADE will handle subtypes)"""
         with self._get_conn() as conn:
             with conn.cursor() as cur:
                 cur.execute("DELETE FROM items WHERE id = %s", (item_id,))

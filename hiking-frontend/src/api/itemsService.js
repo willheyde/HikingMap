@@ -22,3 +22,7 @@ export const listItems = async () => {
 export const deleteItem = async (itemId) => {
   await apiClient.delete(`/items/${itemId}`);
 };
+export const getItemByName = async (name) => {
+  const res = await apiClient.get(`/items/by-name/${encodeURIComponent(name)}`);
+  return res.data;
+};

@@ -1,39 +1,14 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from uuid import UUID
-from typing import List, Optional, Dict, Any
-from Services.UserService import UserService
-from Repos.UserRepo import UserRepository
-from PyObjects.User import User
-from pydantic import BaseModel, EmailStr
-from datetime import datetime
+from typing import List, Dict, Any
 import hashlib
 
-# ... UserCreate, LoginRequest, UserResponse, UserUpdate ... (Unchanged)
-class UserCreate(BaseModel):
-    email: EmailStr
-    password: str
-    name: str
-    avatar_url: Optional[str] = None
-    home_location: Optional[Dict[str, Any]] = None
-    timezone: Optional[str] = None
+# --- FIX: Import Models from Schemas ---
+from Schemas.UserSchemas import UserCreate, LoginRequest, UserUpdate, ItemLink
+# ---------------------------------------
 
-class LoginRequest(BaseModel):
-    email: EmailStr
-    password: str
-
-class UserUpdate(BaseModel):
-    email: Optional[EmailStr] = None
-    name: Optional[str] = None
-    avatar_url: Optional[str] = None
-    home_location: Optional[Dict[str, Any]] = None
-    timezone: Optional[str] = None
-
-# --- NEW MODELS ---
-
-class ItemLink(BaseModel):
-    item_id: str
-
-# -----------------
+from Services.UserService import UserService
+from Repos.UserRepo import UserRepository
 
 router = APIRouter(tags=["Users"])
 user_service = UserService(UserRepository())
@@ -107,3 +82,20 @@ def delete_user_item(user_id: UUID, item_id: str):
         user_service.delete_item(user_id, item_id)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+# ... existing imports ...
+
+# In Routers/UserRouter.py
+
+@router.put("/{user_id}", response_model=dict)
+def update_user(user_id: UUID, payload: UserUpdate):
+    """
+    Accepts partial updates (like just home_location).
+    """
+    try:
+        # call the method you defined in UserService.py
+        updated_user = user_service.update_user_details(user_id, payload)
+        return updated_user.to_dict()
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))

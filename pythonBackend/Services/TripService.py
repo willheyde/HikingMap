@@ -47,3 +47,4 @@ class TripService:
 
     def delete_trip(self, trip_id: UUID) -> None:
         self.trip_repo.delete(trip_id)
+    

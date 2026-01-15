@@ -1,13 +1,30 @@
 import { useMemo, useState, useEffect } from "react";
 import { useUser } from "../context/UserContext";
 import { useNavigate } from "react-router-dom";
-import ScrollBar from "../components/ScrollBar"; // Import the new component
+import ScrollBar from "../components/ScrollBar";
 
 const Profile = () => {
-  const { user, items } = useUser();
+  // Pull updateLocation and loadingLocation from context
+  const { user, items, updateLocation, loadingLocation } = useUser();
   const navigate = useNavigate();
   const [trips, setTrips] = useState([]);
   const [loadingTrips, setLoadingTrips] = useState(false);
+
+  // --- DEBUGGING WRAPPER ---
+  const handleUpdateLocation = () => {
+    console.log("--- DEBUG: Manual Location Update Triggered ---");
+    console.log("Current User Object:", user);
+    console.log("User ID (for URL):", user?.id);
+    console.log("Current Home Location:", user?.home_location);
+    
+    // Check if the ID in the log matches the UUID in your error: 4294501a...
+    if (!user || !user.id) {
+        console.error("CRITICAL: User ID is missing!");
+    }
+
+    updateLocation();
+  };
+  // -------------------------
 
   // Fetch user's saved trips
   useEffect(() => {
@@ -57,7 +74,6 @@ const Profile = () => {
   }
 
   return (
-    /* Usage: Wrap the content and pass specific background/text colors here */
     <ScrollBar className="bg-slate-900 text-white">
       <div className="max-w-6xl mx-auto p-6 md:p-8 pb-20">
         
@@ -72,22 +88,34 @@ const Profile = () => {
               />
               <div>
                 <h1 className="text-3xl font-bold text-white mb-2">{user.name}</h1>
-                <p className="text-slate-400 flex items-center gap-2">
-                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/>
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"/>
-                  </svg>
-                  {user.home_location?.name || "Location not set"}
-                </p>
+                
+                {/* Location Display & Update Button */}
+                <div className="flex items-center gap-3">
+                  <p className="text-slate-400 flex items-center gap-2">
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/>
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"/>
+                    </svg>
+                    {user.home_location?.name || "Location not set"}
+                  </p>
+                  
+                  {/* Manual Update Button - UPDATED TO USE DEBUG WRAPPER */}
+                  <button 
+                    onClick={handleUpdateLocation}
+                    disabled={loadingLocation}
+                    className="text-xs text-blue-400 hover:text-blue-300 underline disabled:text-slate-600 disabled:no-underline"
+                  >
+                    {loadingLocation ? "Locating..." : "Update Location"}
+                  </button>
+                </div>
+
                 <p className="text-slate-500 text-sm mt-1">{user.email}</p>
               </div>
             </div>
             
             <div className="flex items-center gap-3">
-              {/* Back to Map button (near the top) */}
               <button
                 onClick={() => navigate("/map")}
-                aria-label="Back to map"
                 className="bg-slate-700 hover:bg-slate-600 text-white px-4 py-2 rounded-lg font-medium transition-all flex items-center gap-2 shadow-sm whitespace-nowrap"
               >
                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -247,7 +275,7 @@ const Profile = () => {
                         key={`${item.id}-${index}`}
                         className="bg-slate-900/50 rounded-lg p-4 border border-slate-700"
                       >
-                         <h4 className="font-medium text-white text-sm">{item.name}</h4>
+                          <h4 className="font-medium text-white text-sm">{item.name}</h4>
                       </div>
                     ))}
                   </div>

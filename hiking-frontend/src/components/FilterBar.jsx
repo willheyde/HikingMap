@@ -8,7 +8,6 @@ export default function FilterBar({ filters, onChange }) {
     });
   };
 
-  // Common input classes for consistency and compression
   const inputClass = "w-full px-2 py-1 text-sm border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-green-500";
   const labelClass = "block text-xs font-semibold text-gray-600 mb-0.5";
 
@@ -37,15 +36,16 @@ export default function FilterBar({ filters, onChange }) {
             onChange={(e) => update("state", e.target.value || null)}
             className={inputClass}
           >
+            {/* FIXED: Changed values to abbreviations to match standard API expectations */}
             <option value="">All</option>
-            <option value="California">CA</option>
-            <option value="Colorado">CO</option>
-            <option value="Washington">WA</option>
-            <option value="Oregon">OR</option>
-            <option value="Montana">MT</option>
-            <option value="Wyoming">WY</option>
-            <option value="Utah">UT</option>
-            <option value="Arizona">AZ</option>
+            <option value="CA">CA</option>
+            <option value="CO">CO</option>
+            <option value="WA">WA</option>
+            <option value="OR">OR</option>
+            <option value="MT">MT</option>
+            <option value="WY">WY</option>
+            <option value="UT">UT</option>
+            <option value="AZ">AZ</option>
           </select>
         </div>
         <div>
@@ -96,7 +96,7 @@ export default function FilterBar({ filters, onChange }) {
             type="number"
             min="0"
             step="1"
-            placeholder="From you"
+            placeholder="From center"
             value={filters.maxDistanceMiles ?? ""}
             onChange={(e) => update("maxDistanceMiles", e.target.value === "" ? null : Number(e.target.value))}
             className={inputClass}

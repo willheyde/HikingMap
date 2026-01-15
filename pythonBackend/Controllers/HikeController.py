@@ -147,20 +147,23 @@ def get_hike(hike_id: UUID):
         id=str(hike.id),
         source_id=hike.source_id,
         name=hike.name,
-        geometry=hike.geometry,  # ADD THIS
+        geometry=hike.geometry,
         difficulty=hike.difficulty.name,
         length_km=hike.length_km,
         elevation_gain_m=hike.elevation_gain_m,
-        min_altitude_m=hike.min_altitude_m,  # ADD THIS
-        max_altitude_m=hike.max_altitude_m,  # ADD THIS
+        min_altitude_m=hike.min_altitude_m,
+        max_altitude_m=hike.max_altitude_m,
         region=hike.region,
-        season_start_month=hike.season_start_month,  # ADD THIS
-        season_end_month=hike.season_end_month,  # ADD THIS
-        required_gear_tags=hike.required_gear_tags,
-        permits_required=hike.permits_required,  # ADD THIS
-        nearest_airport_code=hike.nearest_airport_code,  # ADD THIS
-        parking_coordinates=hike.parking_coordinates,  # ADD THIS
-        last_synced_at=hike.last_synced_at.isoformat()  # ADD THIS
+        season_start_month=hike.season_start_month,
+        season_end_month=hike.season_end_month,
+        required_gear_tags=hike.required_gear_tags, # This is the array we need for the frontend
+        permits_required=hike.permits_required,
+        nearest_airport_code=hike.nearest_airport_code,
+        parking_coordinates=hike.parking_coordinates,
+        last_synced_at=hike.last_synced_at.isoformat(),
+        # --- ADDED FIELDS ---
+        latitude=hike.latitude,
+        longitude=hike.longitude
     )
 
 @router.get("/list", response_model=List[HikeResponseSchema])

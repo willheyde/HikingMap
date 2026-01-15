@@ -1,5 +1,11 @@
+# File: Services/UserService.py
 from uuid import UUID, uuid4
 from typing import List, Optional
+
+# --- FIX: Import from Schemas, NOT Router ---
+from Schemas.UserSchemas import UserUpdate 
+# --------------------------------------------
+
 from PyObjects.User import User
 from Repos.UserRepo import UserRepository
 from PyObjects.Items import Item
@@ -62,3 +68,34 @@ class UserService:
     def delete_item(self, user_id: UUID, item_id: str) -> None:
         """Deletes item by ID (not index)"""
         self.user_repository.remove_user_item_link(user_id, item_id)
+    def update_user_details(self, user_id: UUID, updates: 'UserUpdate') -> User:
+        """
+        Fetches existing user, applies non-null updates, and saves to DB.
+        """
+        # 1. Fetch existing user
+        user = self.get_user(user_id)
+        if not user:
+            raise ValueError("User not found")
+
+        # 2. Update fields if they are provided in the payload
+        # checking "is not None" allows us to clear fields if we pass an empty string/dict if needed, 
+        # distinct from just not sending the field.
+        if updates.name is not None:
+            user.name = updates.name
+            
+        if updates.avatar_url is not None:
+            user.avatar_url = updates.avatar_url
+            
+        if updates.home_location is not None:
+            # The Repo handles the json.dumps conversion
+            user.home_location = updates.home_location 
+            
+        if updates.timezone is not None:
+            user.timezone = updates.timezone
+
+        if updates.email is not None:
+            # Note: usually you'd want to check if the new email is already taken here
+            user.email = updates.email
+
+        # 3. Persist changes
+        return self.user_repository.update(user)

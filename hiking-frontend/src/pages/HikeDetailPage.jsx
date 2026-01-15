@@ -1,11 +1,12 @@
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 
 import { useHikes } from "../context/HikeContext";
 import { useUser } from "../context/UserContext"; 
+import * as itemsService from "../api/itemsService";
 
 import ScrollBar from "../components/ScrollBar";
-import CostBreakdownPanel from "../components/CostBreakdownPanel"; // Assuming you still want cost logic
+import CostBreakdownPanel from "../components/CostBreakdownPanel"; 
 
 /* -----------------------------
    Helper Functions
@@ -31,80 +32,112 @@ export default function HikeDetailPage() {
   const { selectedHike, loadHikeById, loading, error } = useHikes();
   const { items } = useUser(); 
 
+  // State
+  const [gearDetails, setGearDetails] = useState([]); // Stores the fully resolved gear items
+  const [loadingGear, setLoadingGear] = useState(false);
+  const [calculatedCosts, setCalculatedCosts] = useState({ travel: 0, gear: 0, fees: 0 });
+
   /* -----------------------------
-     1. Load Hike Data
-  ------------------------------*/
+      1. Load Hike Data
+   ------------------------------*/
   useEffect(() => {
+    // Only load if we don't have it or if the ID doesn't match
     if (!selectedHike || String(selectedHike.id) !== String(hikeId)) {
       loadHikeById(hikeId);
     }
   }, [hikeId, selectedHike, loadHikeById]);
 
   /* -----------------------------
-     2. Gear & Logic Evaluation
-  ------------------------------*/
-  const hikeAnalysis = useMemo(() => {
-    if (!selectedHike) return null;
-
-    const lengthMiles = selectedHike.length_km * 0.621371;
-    const elevationFt = selectedHike.elevation_gain_m * 3.28084;
-    const isHard = selectedHike.difficulty === "DIFFICULT" || selectedHike.difficulty === "EXPERT";
-    
-    // Helper to check ownership
-    const userHas = (categoryOrType) => items?.some(i => i.category === categoryOrType || i.item_type === categoryOrType || i.type === categoryOrType);
-
-    // Define the Full Gear List for this specific hike
-    const requiredGear = [
-      // Basics (Always required)
-      { id: 'boots', name: 'Hiking Boots', category: 'boots', reason: 'Essentials' },
-      { id: 'backpack', name: 'Day Pack', category: 'backpack_small', reason: 'Essentials' },
-      { id: 'water_bottle', name: 'Water Bottle', category: 'water_bottle', reason: 'Essentials' },
+      2. Fetch Gear Details (Dynamic via ID)
+   ------------------------------*/
+  useEffect(() => {
+    const fetchDynamicGear = async () => {
+      // Wait for hike to load and verify it has tags
+      if (!selectedHike || !selectedHike.required_gear_tags) return;
       
-      // Conditional Gear
-      ...(lengthMiles > 8 
-          ? [{ id: 'hydro', name: 'Hydration Pack', category: 'hydration', reason: 'Long Distance (>8mi)' }] 
-          : []),
-      ...(elevationFt > 2000 
-          ? [{ id: 'poles', name: 'Trekking Poles', category: 'poles', reason: 'High Elevation' }] 
-          : []),
-      ...(isHard 
-          ? [{ id: 'aid', name: 'First Aid Kit', category: 'first_aid', reason: 'Difficult Terrain' }] 
-          : []),
-      ...((selectedHike.difficulty === "EXPERT") 
-          ? [{ id: 'nav', name: 'GPS / Compass', category: 'navigation', reason: 'Expert Route' }] 
-          : [])
-    ];
+      setLoadingGear(true);
+      
+      try {
+        // Iterate over the IDs provided by the DB
+        const promises = selectedHike.required_gear_tags.map(async (itemId) => {
+          try {
+            // 1. Fetch full details using ID
+            const itemDetails = await itemsService.getItemById(itemId);
+            
+            // 2. Determine ownership
+            // Check if user has an item with matching category, type, or specific name
+            // This allows generic matching (e.g., if Hike needs "Generic Boots", but you own "Pro Boots", it counts)
+            const isOwned = items?.some(
+              (userItem) => 
+                userItem.id === itemDetails.id || // Exact Match
+                (userItem.category && userItem.category === itemDetails.category) || // Category Match
+                (userItem.item_type && userItem.item_type === itemDetails.item_type) // Type Match
+            );
 
-    // Map ownership status
-    const gearList = requiredGear.map(gear => ({
-      ...gear,
-      owned: userHas(gear.category)
-    }));
+            return {
+              id: itemDetails.id, 
+              name: itemDetails.name,
+              category: itemDetails.category,
+              reason: "Required for this route", 
+              fullDetails: itemDetails,
+              owned: isOwned,
+              est_cost: itemDetails.cost || 40 // Fallback cost
+            };
+          } catch (err) {
+            console.warn(`Could not find item detail for ID: ${itemId}`);
+            // Return a placeholder if lookup fails so the UI doesn't crash
+            return {
+              id: itemId,
+              name: "Unknown Item", // Since we only have UUID, we can't guess the name on fail
+              owned: false,
+              reason: "Required",
+              est_cost: 0,
+              fullDetails: null
+            };
+          }
+        });
 
-    // Calculate Costs (simplified from original)
-    const travelCost = selectedHike.distance_from_user_miles
-        ? Math.round(selectedHike.distance_from_user_miles * 0.6)
-        : 0;
-    
-    // Estimate cost of missing gear
-    const missingGearCost = gearList
-      .filter(g => !g.owned)
-      .reduce((acc, curr) => acc + (curr.est_cost || 40), 0); // Arbitrary avg cost if not strictly defined
+        const resolvedGear = await Promise.all(promises);
+        setGearDetails(resolvedGear);
 
-    return {
-      gearList,
-      costs: {
-        travel: travelCost,
-        gear: missingGearCost,
-        fees: selectedHike.park_fee ?? 0
+      } catch (err) {
+        console.error("Error processing gear tags:", err);
+      } finally {
+        setLoadingGear(false);
       }
     };
+
+    fetchDynamicGear();
   }, [selectedHike, items]);
+
+  /* -----------------------------
+      3. Calculate Costs
+   ------------------------------*/
+  useEffect(() => {
+    if (!selectedHike) return;
+
+    // Travel Cost
+    const travelCost = selectedHike.distance_from_user_miles
+      ? Math.round(selectedHike.distance_from_user_miles * 0.6)
+      : 0;
+
+    // Gear Cost (Sum of unowned items)
+    const missingGearCost = gearDetails
+      .filter(g => !g.owned)
+      .reduce((acc, curr) => acc + (curr.est_cost || 0), 0);
+
+    setCalculatedCosts({
+      travel: travelCost,
+      gear: missingGearCost,
+      fees: selectedHike.park_fee ?? 0
+    });
+
+  }, [selectedHike, gearDetails]);
 
 
   /* -----------------------------
-     Render Helpers
-  ------------------------------*/
+      Render Helpers
+   ------------------------------*/
   const formatDifficulty = (diff) => {
     if (!diff) return "Unknown";
     return diff.charAt(0) + diff.slice(1).toLowerCase();
@@ -117,8 +150,8 @@ export default function HikeDetailPage() {
   };
 
   /* -----------------------------
-     Loading / Error States
-  ------------------------------*/
+      Loading / Error States
+   ------------------------------*/
   if (loading || (!selectedHike && !error)) {
     return (
       <ScrollBar className="bg-slate-900 flex items-center justify-center">
@@ -145,8 +178,8 @@ export default function HikeDetailPage() {
   if (!selectedHike) return null;
 
   /* -----------------------------
-     MAIN RENDER
-  ------------------------------*/
+      MAIN RENDER
+   ------------------------------*/
   return (
     <ScrollBar className="bg-slate-900 text-white">
       <div className="max-w-6xl mx-auto p-6 md:p-8 pb-24">
@@ -161,6 +194,17 @@ export default function HikeDetailPage() {
           </svg>
           Back to Map
         </button>
+
+        {/* Hike Image - Full Width */}
+        {selectedHike.image_url && (
+          <div className="w-full h-64 md:h-96 rounded-2xl overflow-hidden mb-8 shadow-2xl">
+            <img 
+              src={selectedHike.image_url} 
+              alt={selectedHike.name}
+              className="w-full h-full object-cover"
+            />
+          </div>
+        )}
 
         {/* Hero Section */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 mb-10">
@@ -215,33 +259,30 @@ export default function HikeDetailPage() {
 
           {/* Right: Cost / Quick Summary */}
           <div className="bg-slate-800 rounded-2xl p-6 border border-slate-700 h-fit">
-             <h2 className="text-xl font-bold mb-4 flex items-center gap-2">
+              <h2 className="text-xl font-bold mb-4 flex items-center gap-2">
                 <svg className="w-5 h-5 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
                 Est. Trip Cost
-             </h2>
-             {hikeAnalysis && <CostBreakdownPanel costs={hikeAnalysis.costs} theme="dark" />}
+              </h2>
+              <CostBreakdownPanel costs={calculatedCosts} theme="dark" />
           </div>
         </div>
 
         <div className="border-t border-slate-700 my-10"></div>
 
-        {/* -----------------------------
-            NEW: Gear Showcase Section
-        ------------------------------*/}
+        {/* Gear Showcase Section */}
         <div className="space-y-6">
           <div className="flex items-end justify-between">
             <div>
-                <h2 className="text-2xl font-bold text-white mb-2">Required Gear</h2>
-                <p className="text-slate-400">Based on terrain, weather, and hike duration.</p>
+              <h2 className="text-2xl font-bold text-white mb-2">Required Gear</h2>
+              <p className="text-slate-400">Items tagged specifically for this hike.</p>
             </div>
             
-            {/* Status Pill */}
             <div className={`px-4 py-2 rounded-full border text-sm font-semibold flex items-center gap-2 ${
-                hikeAnalysis?.gearList.every(g => g.owned) 
+                gearDetails.length > 0 && gearDetails.every(g => g.owned) 
                 ? "bg-green-900/30 border-green-500/50 text-green-400" 
                 : "bg-yellow-900/30 border-yellow-500/50 text-yellow-500"
             }`}>
-                {hikeAnalysis?.gearList.every(g => g.owned) ? (
+                {gearDetails.length > 0 && gearDetails.every(g => g.owned) ? (
                     <>
                         <span className="w-2 h-2 rounded-full bg-green-500"></span>
                         Fully Equipped
@@ -255,51 +296,93 @@ export default function HikeDetailPage() {
             </div>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-            {hikeAnalysis?.gearList.map((gear) => (
-              <div 
-                key={gear.id}
-                className={`relative p-5 rounded-xl border transition-all duration-300 ${
-                  gear.owned 
-                    ? "bg-green-900/10 border-green-500/50 shadow-[0_0_15px_rgba(34,197,94,0.1)]" 
-                    : "bg-slate-800 border-slate-700 opacity-80"
-                }`}
-              >
-                <div className="flex justify-between items-start mb-2">
-                    <span className={`text-xs font-bold uppercase tracking-wider ${
-                        gear.owned ? "text-green-500" : "text-slate-500"
-                    }`}>
-                        {gear.owned ? "Owned" : "Needed"}
-                    </span>
-                    {gear.owned && (
-                        <svg className="w-5 h-5 text-green-500" fill="currentColor" viewBox="0 0 20 20">
-                            <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
-                        </svg>
-                    )}
-                </div>
-
-                <h3 className={`font-bold text-lg mb-1 ${
-                    gear.owned ? "text-green-100" : "text-slate-300"
-                }`}>
-                    {gear.name}
-                </h3>
-                
-                <p className={`text-sm ${
-                    gear.owned ? "text-green-400/70" : "text-slate-500"
-                }`}>
-                    {gear.reason}
-                </p>
-
-                {/* Visual indicator for unowned items */}
-                {!gear.owned && (
-                    <div className="mt-4 pt-3 border-t border-slate-700/50 flex items-center gap-2 text-xs text-slate-400">
-                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.293 2.293c-.63.63-.184 1.707.707 1.707H17m0 0a2 2 0 100 4 2 2 0 000-4zm-8 2a2 2 0 11-4 0 2 2 0 014 0z"/></svg>
-                        Available in Shop
+          {loadingGear ? (
+            <div className="text-center text-slate-500 py-8">
+              <div className="animate-pulse">Loading gear details from database...</div>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+              {gearDetails.map((gear, index) => (
+                <div 
+                  key={`${gear.id}-${index}`}
+                  className={`relative rounded-xl border transition-all duration-300 overflow-hidden ${
+                    gear.owned 
+                      ? "bg-green-900/10 border-green-500/50 shadow-[0_0_15px_rgba(34,197,94,0.1)]" 
+                      : "bg-slate-800 border-slate-700 opacity-80"
+                  }`}
+                >
+                  {/* Item Image */}
+                  {gear.fullDetails?.image_url ? (
+                    <div className="w-full h-32 bg-slate-700 overflow-hidden">
+                      <img 
+                        src={gear.fullDetails.image_url} 
+                        alt={gear.name}
+                        className="w-full h-full object-cover"
+                      />
                     </div>
-                )}
-              </div>
-            ))}
-          </div>
+                  ) : (
+                    <div className="w-full h-32 bg-slate-700 flex items-center justify-center">
+                      <svg className="w-12 h-12 text-slate-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/>
+                      </svg>
+                    </div>
+                  )}
+
+                  <div className="p-5">
+                    <div className="flex justify-between items-start mb-2">
+                        <span className={`text-xs font-bold uppercase tracking-wider ${
+                            gear.owned ? "text-green-500" : "text-slate-500"
+                        }`}>
+                            {gear.owned ? "Owned" : "Needed"}
+                        </span>
+                        {gear.owned && (
+                            <svg className="w-5 h-5 text-green-500" fill="currentColor" viewBox="0 0 20 20">
+                                <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                            </svg>
+                        )}
+                    </div>
+
+                    <h3 className={`font-bold text-lg mb-1 ${
+                        gear.owned ? "text-green-100" : "text-slate-300"
+                    }`}>
+                        {gear.name}
+                    </h3>
+                    
+                    <p className={`text-sm mb-2 ${
+                        gear.owned ? "text-green-400/70" : "text-slate-500"
+                    }`}>
+                        {gear.reason}
+                    </p>
+
+                    {/* Show additional details if available */}
+                    {gear.fullDetails && (
+                      <div className={`text-xs space-y-1 ${
+                        gear.owned ? "text-green-400/60" : "text-slate-500"
+                      }`}>
+                        {gear.fullDetails.cost && (
+                          <div className="flex items-center gap-1">
+                            <span>Cost: ${gear.fullDetails.cost}</span>
+                          </div>
+                        )}
+                        {gear.fullDetails.weight && (
+                          <div className="flex items-center gap-1">
+                            <span>Weight: {gear.fullDetails.weight}oz</span>
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {!gear.owned && (
+                        <div className="mt-4 pt-3 border-t border-slate-700/50 flex items-center gap-2 text-xs text-slate-400">
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.293 2.293c-.63.63-.184 1.707.707 1.707H17m0 0a2 2 0 100 4 2 2 0 000-4zm-8 2a2 2 0 11-4 0 2 2 0 014 0z"/></svg>
+                            Available in Shop
+                        </div>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
 
       </div>
