@@ -113,10 +113,6 @@ npm install
 npm run dev
 ```
 
-The app will be available at `http://localhost:5173`.
-
----
-
 ## Current Limitations & Future Work
 
 - **Dataset** — Currently scoped to Rhode Island trails. Expanding to additional states requires re-running the OSM pipeline per state.
@@ -129,7 +125,6 @@ The app will be available at `http://localhost:5173`.
 ## What I'd Improve
 
 - Automate the OSM pipeline to support any U.S. state on demand
-- Add trail route rendering (draw the path on the map, not just a pin)
 - Improve the gear recommendation engine with user history
 - Deploy the backend to a cloud provider and host the DB externally rather than locally via Docker
 
