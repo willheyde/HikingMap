@@ -22,7 +22,8 @@ class HikeService:
 
     def get_hike(self, hike_id: UUID) -> Optional[Hike]:
         return self.repo.get_by_id(hike_id)
-
+    def get_by_source_id(self, source_id: str) -> Optional[Hike]:
+        return self.repo.get_by_source_id(source_id)
     def list_hikes(self) -> List[Hike]:
         return self.repo.list_all()
 
@@ -35,20 +36,34 @@ class HikeService:
 
     def delete_hike(self, hike_id: UUID) -> None:
         self.repo.delete(hike_id)
-    def search_hikes(
-        self,
-        min_length_km=None,
-        min_elevation_gain_m=None,
-        farthest_hike_latitude_m=None,
-        farthest_hike_longitude_m=None,
-        difficulty=None,
-        region=None,
-        month=None,
-    ):
-        return self.repo.search(
-            min_length_km=min_length_km,
-            min_elevation_gain_m=min_elevation_gain_m,
-            difficulty=difficulty,
-            region=region,
-            month=month,
-        )
+    # Services/HikeService.py
+
+    # Services/HikeService.py  — updated search_hikes()
+def search_hikes(
+    self,
+    min_length_km=None,
+    min_elevation_gain_m=None,
+    difficulty=None,
+    region=None,
+    month=None,
+    user_lat=None,
+    user_lon=None,
+    max_distance_km=None,
+    # ── NEW ────────────────────────────────────────────────
+    required_tags=None,
+    can_camp=None,
+    permits_required=None,
+):
+    return self.repo.search(
+        min_length_km=min_length_km,
+        min_elevation_gain_m=min_elevation_gain_m,
+        difficulty=difficulty,
+        region=region,
+        month=month,
+        user_lat=user_lat,
+        user_lon=user_lon,
+        max_distance_km=max_distance_km,
+        required_tags=required_tags,
+        can_camp=can_camp,
+        permits_required=permits_required,
+    )

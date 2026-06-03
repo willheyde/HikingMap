@@ -3,7 +3,7 @@ services:
     image: postgres:15
     environment:
       POSTGRES_USER: WillH
-      POSTGRES_PASSWORD: 12345
+      POSTGRES_PASSWORD: wolf*ware8
       POSTGRES_DB: hikingapp
     ports:
       - "5432:5432"

@@ -106,6 +106,7 @@ export default function HikeDetailPage() {
         setLoadingGear(false);
       }
     };
+    console.log("Specific hike", selectedHike);
 
     fetchDynamicGear();
   }, [selectedHike, items]);

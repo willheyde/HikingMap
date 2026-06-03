@@ -1,35 +1,68 @@
-from ingestion.osm_client import fetch_hiking_routes
-from ingestion.osm_geometry import build_points_from_relation
-from ingestion.hike_parser import parse_hike
-from ingestion.seeder import seed_hikes
+from osm_client     import fetch_hiking_routes
+from osm_geometry   import build_points_from_relation
+import os
+import sys
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+from hike_parser    import parse_hike
+from gear_inference import GearInferenceEngine
+from seeder         import seed_hikes
 
-# 1. Define a bounding box (lat_min, lon_min, lat_max, lon_max)
-# Example: Zermatt, Switzerland area
-BBOX = "45.9, 7.6, 46.1, 7.9"
+# Bounding box: lat_min, lon_min, lat_max, lon_max
+BBOX = "41.18, -71.91, 42.02, -71.08"
 
-print("Fetching data...")
-data = fetch_hiking_routes(BBOX)
+print(f"Fetching data for bbox: {BBOX} ...")
+data     = fetch_hiking_routes(BBOX)
 elements = data["elements"]
+print(f"Received {len(elements)} elements from Overpass.\n")
 
-hikes = []
-print(f"Processing {len(elements)} elements...")
+hikes_with_gear = []   # list of (Hike, gear_reqs)
+skipped_geo     = 0
+skipped_filt    = 0
+errors          = 0
 
-for el in elements:
-    # We only care about relations (routes), not individual nodes/ways
-    if el["type"] != "relation":
-        continue
+relations = [el for el in elements if el["type"] == "relation"]
+print(f"Processing {len(relations)} relation(s)...")
 
-    points = build_points_from_relation(el, elements)
-    if not points:
-        continue
+for el in relations:
+    try:
+        points = build_points_from_relation(el, elements)
+        if not points:
+            skipped_geo += 1
+            continue
 
-    # Inject points into the relation object so parser can use them
-    el["points"] = points
-    
-    hike = parse_hike(el)
-    if hike:
-        hikes.append(hike)
+        el["points"] = points
+        hike = parse_hike(el)
 
-print(f"Seeding {len(hikes)} hikes...")
-seed_hikes(hikes)
+        if hike is None:
+            skipped_filt += 1
+            continue
+
+        # Infer detailed gear requirements from this hike's physical stats
+        gear_reqs = GearInferenceEngine.infer_requirements(
+            length_km  = hike.length_km,
+            gain_m     = hike.elevation_gain_m,
+            max_alt_m  = hike.max_altitude_m or 0.0,
+            difficulty = hike.difficulty,
+            region     = hike.region,
+        )
+
+        hikes_with_gear.append((hike, gear_reqs))
+
+    except Exception as e:
+        name = el.get("tags", {}).get("name", f"id={el.get('id')}")
+        print(f"  Error parsing '{name}': {e}")
+        errors += 1
+
+print(f"\nParsing summary:")
+print(f"  Valid hikes:           {len(hikes_with_gear)}")
+print(f"  Skipped (no geometry): {skipped_geo}")
+print(f"  Skipped (too short):   {skipped_filt}")
+print(f"  Parse errors:          {errors}")
+
+if hikes_with_gear:
+    print(f"\nSeeding {len(hikes_with_gear)} hike(s)...")
+    seed_hikes(hikes_with_gear)
+else:
+    print("\nNo valid hikes to seed.")
+
 print("Done.")

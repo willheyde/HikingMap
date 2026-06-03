@@ -34,6 +34,8 @@ class Hike:
     nearest_airport_code: Optional[str] = None
     parking_coordinates: Optional[Dict[str, float]] = None
     last_synced_at: datetime = field(default_factory=datetime.utcnow)
+    tags: List[str] = field(default_factory=list)
+    can_camp: bool = False
 
     def __post_init__(self) -> None:
         if not self.name:
@@ -70,6 +72,11 @@ class Hike:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Hike":
+        tags = data.get("required_gear_tags")
+        if isinstance(tags, str):
+            data["required_gear_tags"] = json.loads(tags)
+        elif tags is None:
+            data["required_gear_tags"] = []
         data_copy = data.copy()
         
         # 1. Handle ID

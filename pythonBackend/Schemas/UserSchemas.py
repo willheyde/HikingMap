@@ -26,3 +26,8 @@ class UserUpdate(BaseModel):
 
 class ItemLink(BaseModel):
     item_id: str
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    user_id: str
+    name: str

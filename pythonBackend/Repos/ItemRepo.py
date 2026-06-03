@@ -1,156 +1,219 @@
 import psycopg
 from uuid import UUID
 from typing import Optional, List
-from urllib.parse import unquote  # <--- Added for URL decoding
-from PyObjects.Items import Item, Backpack, Clothing, Shoes, WeatherConditions
+from urllib.parse import unquote
+from DBConnection import get_connection
+
+from PyObjects.Items import (
+    Item, Backpack, Footwear, Shelter, SleepingBag, SleepingPad,
+    Clothing, WaterSystem, Kitchen, NavigationTool, Lighting,
+    SafetyGear, TechnicalGear, TrekkingPoles, ItemType
+)
+
+
+# ─── Helpers ──────────────────────────────────────────────────────────────────
+
+def _item_to_attributes(item: Item) -> dict:
+    """Serialize type-specific fields into the JSONB attributes dict."""
+    if isinstance(item, Backpack):
+        return {"capacity_liters": item.capacity_liters, "frame_type": item.frame_type}
+    if isinstance(item, Footwear):
+        return {"waterproof": item.waterproof, "crampon_compatible": item.crampon_compatible, "ankle_support": item.ankle_support}
+    if isinstance(item, Shelter):
+        return {"capacity_persons": item.capacity_persons, "season_rating": item.season_rating, "shelter_type": item.shelter_type}
+    if isinstance(item, SleepingBag):
+        return {"temp_rating_f": item.temp_rating_f, "fill_type": item.fill_type}
+    if isinstance(item, SleepingPad):
+        return {"r_value": item.r_value, "pad_type": item.pad_type}
+    if isinstance(item, Clothing):
+        return {"layer_type": item.layer_type, "waterproof": item.waterproof, "min_temp_f": item.min_temp_f}
+    if isinstance(item, WaterSystem):
+        return {"system_type": item.system_type, "flow_rate_lpm": item.flow_rate_lpm}
+    if isinstance(item, Kitchen):
+        return {"stove_type": item.stove_type, "cookware_included": item.cookware_included, "boil_time_min": item.boil_time_min}
+    if isinstance(item, NavigationTool):
+        return {"nav_type": item.nav_type}
+    if isinstance(item, Lighting):
+        return {"lumens": item.lumens, "lighting_type": item.lighting_type}
+    if isinstance(item, SafetyGear):
+        return {"safety_type": item.safety_type, "avalanche_rated": item.avalanche_rated}
+    if isinstance(item, TechnicalGear):
+        return {"technical_type": item.technical_type}
+    if isinstance(item, TrekkingPoles):
+        return {"adjustable": item.adjustable, "material": item.material}
+    return {}
+
+
+def _row_to_item(row) -> Item:
+    # ── Normalize to named locals regardless of cursor type ──────────────────
+    if hasattr(row, "keys"):          # dict / RealDictRow / psycopg dict_row
+        id_       = row["id"]
+        name      = row["name"]
+        weight    = row["weight"]
+        cost      = row["cost"]
+        item_type = row["item_type"]
+        image_url = row["image_url"]
+        attrs     = row.get("attributes") or {}
+    else:                             # plain tuple
+        id_, name, weight, cost, item_type, image_url, attrs = row
+        attrs = attrs or {}
+
+    def mk(cls, **kwargs):
+        obj = cls(id=id_, name=name, weight=float(weight), cost=float(cost), item_type=item_type, **kwargs)
+        obj.image_url = image_url
+        return obj
+    if item_type == ItemType.BACKPACK.value:
+        return mk(Backpack,
+                  capacity_liters=float(attrs.get("capacity_liters", 0)),
+                  frame_type=attrs.get("frame_type", "internal"))
+
+    if item_type == ItemType.FOOTWEAR.value:
+        return mk(Footwear,
+                  waterproof=attrs.get("waterproof", False),
+                  crampon_compatible=attrs.get("crampon_compatible", False),
+                  ankle_support=attrs.get("ankle_support", "low"))
+
+    if item_type == ItemType.SHELTER.value:
+        return mk(Shelter,
+                  capacity_persons=int(attrs.get("capacity_persons", 1)),
+                  season_rating=attrs.get("season_rating", "3_season"),
+                  shelter_type=attrs.get("shelter_type", "tent"))
+
+    if item_type == ItemType.SLEEPING_BAG.value:
+        return mk(SleepingBag,
+                  temp_rating_f=int(attrs.get("temp_rating_f", 32)),
+                  fill_type=attrs.get("fill_type", "synthetic"))
+
+    if item_type == ItemType.SLEEPING_PAD.value:
+        return mk(SleepingPad,
+                  r_value=float(attrs.get("r_value", 2.0)),
+                  pad_type=attrs.get("pad_type", "foam"))
+
+    if item_type == ItemType.CLOTHING.value:
+        return mk(Clothing,
+                  layer_type=attrs.get("layer_type", "mid"),
+                  waterproof=attrs.get("waterproof", False),
+                  min_temp_f=int(attrs.get("min_temp_f", 32)))
+
+    if item_type == ItemType.WATER.value:
+        return mk(WaterSystem,
+                  system_type=attrs.get("system_type", "filter"),
+                  flow_rate_lpm=float(attrs.get("flow_rate_lpm", 1.0)))
+
+    if item_type == ItemType.KITCHEN.value:
+        return mk(Kitchen,
+                  stove_type=attrs.get("stove_type"),
+                  cookware_included=attrs.get("cookware_included", False),
+                  boil_time_min=float(attrs.get("boil_time_min", 0.0)))
+
+    if item_type == ItemType.NAVIGATION.value:
+        return mk(NavigationTool, nav_type=attrs.get("nav_type", "map"))
+
+    if item_type == ItemType.LIGHTING.value:
+        return mk(Lighting,
+                  lumens=int(attrs.get("lumens", 0)),
+                  lighting_type=attrs.get("lighting_type", "headlamp"))
+
+    if item_type == ItemType.SAFETY.value:
+        return mk(SafetyGear,
+                  safety_type=attrs.get("safety_type", "first_aid"),
+                  avalanche_rated=attrs.get("avalanche_rated", False))
+
+    if item_type == ItemType.TECHNICAL.value:
+        return mk(TechnicalGear, technical_type=attrs.get("technical_type", "ice_axe"))
+
+    if item_type == ItemType.TREKKING_POLES.value:
+        return mk(TrekkingPoles,
+                  adjustable=attrs.get("adjustable", True),
+                  material=attrs.get("material", "aluminum"))
+
+    # Fallback for MISC or unknown types
+    obj = Item(id=id, name=name, weight=float(weight), cost=float(cost), item_type=item_type)
+    obj.image_url = image_url
+    return obj
+
+
+# ─── Repository ───────────────────────────────────────────────────────────────
 
 class ItemRepository:
-    def __init__(self, db_dsn: str = "dbname=hikingapp user=WillH password=12345 host=localhost"):
-        self.db_dsn = db_dsn
-    
+
+
     def _get_conn(self):
         return psycopg.connect(self.db_dsn)
-    
+
+    # ── Write ──────────────────────────────────────────────────────────────────
+
     def create_item(self, item: Item) -> UUID:
-        """Create an item and its subtype record"""
-        with self._get_conn() as conn:
+        attrs = _item_to_attributes(item)
+        with get_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    INSERT INTO items (id, name, weight, cost, item_type)
-                    VALUES (%s, %s, %s, %s, %s)
+                    INSERT INTO items (id, name, weight, cost, item_type, image_url, attributes)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb)
                     """,
-                    (item.id, item.name, item.weight, item.cost, item.item_type)
+                    (str(item.id), item.name, item.weight, item.cost,
+                     item.item_type, item.image_url, psycopg.types.json.Jsonb(attrs))
                 )
-                
-                if isinstance(item, Shoes):
-                    cur.execute(
-                        "INSERT INTO clothing (item_id, weatherconditions) VALUES (%s, %s)",
-                        (item.id, item.weather_conditions.value)
-                    )
-                    cur.execute(
-                        "INSERT INTO shoes (item_id, crampons) VALUES (%s, %s)",
-                        (item.id, item.crampons)
-                    )
-                elif isinstance(item, Clothing):
-                    cur.execute(
-                        "INSERT INTO clothing (item_id, weatherconditions) VALUES (%s, %s)",
-                        (item.id, item.weather_conditions.value)
-                    )
-                elif isinstance(item, Backpack):
-                    cur.execute(
-                        "INSERT INTO backpacks (item_id, capacity_liters) VALUES (%s, %s)",
-                        (item.id, item.capacity_liters)
-                    )
-                
                 conn.commit()
         return item.id
-    
+
     def update_item_image(self, item_id: UUID, image_url: str) -> None:
-        with self._get_conn() as conn:
+        with get_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     "UPDATE items SET image_url = %s WHERE id = %s",
-                    (image_url, item_id)
+                    (image_url, str(item_id))
                 )
                 conn.commit()
+
+    def delete_item(self, item_id: UUID) -> None:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM items WHERE id = %s", (str(item_id),))
+                conn.commit()
+
+    # ── Read ───────────────────────────────────────────────────────────────────
 
     def get_item(self, item_id: UUID) -> Optional[Item]:
-        with self._get_conn() as conn:
+        with get_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT id, name, weight, cost, item_type, image_url FROM items WHERE id = %s",
-                    (item_id,)
+                    "SELECT id, name, weight, cost, item_type, image_url, attributes FROM items WHERE id = %s",
+                    (str(item_id),)
                 )
                 row = cur.fetchone()
-                if not row:
-                    return None
-                
-                id, name, weight, cost, item_type, image_url = row
-                item_obj = None
+        return _row_to_item(row) if row else None
 
-                if item_type == "shoes":
-                    cur.execute(
-                        """
-                        SELECT c.weatherconditions, s.crampons
-                        FROM clothing c
-                        JOIN shoes s ON s.item_id = c.item_id
-                        WHERE c.item_id = %s
-                        """,
-                        (item_id,)
-                    )
-                    subtype_row = cur.fetchone()
-                    if subtype_row:
-                        weather, crampons = subtype_row
-                        item_obj = Shoes(id, name, weight, cost, WeatherConditions(weather), crampons)
-                
-                elif item_type == "clothing":
-                    cur.execute("SELECT weatherconditions FROM clothing WHERE item_id = %s", (item_id,))
-                    subtype_row = cur.fetchone()
-                    if subtype_row:
-                        weather = subtype_row[0]
-                        item_obj = Clothing(id, name, weight, cost, WeatherConditions(weather))
-                
-                elif item_type == "backpack":
-                    cur.execute("SELECT capacity_liters FROM backpacks WHERE item_id = %s", (item_id,))
-                    subtype_row = cur.fetchone()
-                    if subtype_row:
-                        capacity = subtype_row[0]
-                        item_obj = Backpack(id, name, weight, cost, capacity)
-                
-                if not item_obj:
-                    item_obj = Item(id, name, weight, cost, item_type)
-
-                item_obj.image_url = image_url
-                return item_obj
-    
     def get_item_by_name(self, name: str) -> Optional[Item]:
-        """
-        Get item by name with fuzzy matching logic to handle:
-        1. URL Encoded strings (Sun%20Hat)
-        2. Kebab-case (sun-hat)
-        3. Partial matching (sun-hat -> finds 'Wide Brim Sun Hat')
-        """
-        # 1. Clean the input: decode URL chars and lower case
-        clean_name = unquote(name).lower()
-        
-        # 2. Create a "spaced" version (sun-hat -> sun hat)
-        spaced_name = clean_name.replace("-", " ")
-
-        with self._get_conn() as conn:
+        clean = unquote(name).lower()
+        spaced = clean.replace("-", " ")
+        with get_connection() as conn:
             with conn.cursor() as cur:
-                # Attempt 1: Exact match (Case Insensitive)
-                # Matches: "20L Daypack" if input is "20L Daypack"
-                cur.execute("SELECT id FROM items WHERE LOWER(name) = %s", (clean_name,))
+                # 1. Exact (case-insensitive)
+                cur.execute("SELECT id FROM items WHERE LOWER(name) = %s", (clean,))
                 row = cur.fetchone()
-
-                # Attempt 2: Spaced match (Case Insensitive)
-                # Matches: "sun hat" if input is "sun-hat"
+                # 2. Hyphen-to-space
                 if not row:
-                    cur.execute("SELECT id FROM items WHERE LOWER(name) = %s", (spaced_name,))
+                    cur.execute("SELECT id FROM items WHERE LOWER(name) = %s", (spaced,))
                     row = cur.fetchone()
-                
-                # Attempt 3: Partial "Fuzzy" Match (The "Hail Mary")
-                # Matches: "Wide Brim Sun Hat" if input is "sun-hat" (checks if "sun hat" is PART of the name)
+                # 3. Partial / fuzzy
                 if not row:
-                    # Uses Postgres ILIKE with wildcards: '%sun hat%'
-                    cur.execute("SELECT id FROM items WHERE LOWER(name) LIKE %s", (f"%{spaced_name}%",))
+                    cur.execute("SELECT id FROM items WHERE LOWER(name) LIKE %s", (f"%{spaced}%",))
                     row = cur.fetchone()
+        return self.get_item(row[0]) if row else None
 
-                if row:
-                    return self.get_item(row[0])
-                
-                return None
-    
-    def list_items(self) -> List[Item]:
-        with self._get_conn() as conn:
+    def list_items(self, item_type: Optional[str] = None) -> List[Item]:
+        with get_connection() as conn:
             with conn.cursor() as cur:
-                cur.execute("SELECT id FROM items")
-                ids = [row[0] for row in cur.fetchall()]
-        return [self.get_item(id) for id in ids]
-    
-    def delete_item(self, item_id: UUID) -> None:
-        with self._get_conn() as conn:
-            with conn.cursor() as cur:
-                cur.execute("DELETE FROM items WHERE id = %s", (item_id,))
-                conn.commit()
+                if item_type:
+                    cur.execute(
+                        "SELECT id, name, weight, cost, item_type, image_url, attributes FROM items WHERE item_type = %s ORDER BY name",
+                        (item_type,)
+                    )
+                else:
+                    cur.execute(
+                        "SELECT id, name, weight, cost, item_type, image_url, attributes FROM items ORDER BY item_type, name"
+                    )
+                rows = cur.fetchall()
+        return [_row_to_item(r) for r in rows]

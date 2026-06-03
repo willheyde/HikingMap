@@ -32,5 +32,6 @@ export const searchHikes = async (filters = {}) => {
   const res = await apiClient.get("/hikes/search", {
     params: filters,
   });
+  console.log(res.data);
   return res.data;
 };

@@ -1,88 +1,96 @@
-import { createContext, useContext, useState } from "react";
+import { createContext, useContext, useState, useCallback } from "react";
 import * as itemService from "../api/itemService";
 
 const ItemContext = createContext(null);
 
-export const useItems = () => {
-  return useContext(ItemContext);
-};
+export const useItems = () => useContext(ItemContext);
 
 export const ItemProvider = ({ children }) => {
-  const [items, setItems] = useState([]);
+  const [items, setItems]   = useState([]);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState(null);
+  const [error, setError]   = useState(null);
 
-  // -------------------------
-  // Item actions
-  // -------------------------
+  // ─── Helpers ────────────────────────────────────────────────────────────────
 
-  const loadItems = async () => {
+  const withLoading = useCallback(async (fn) => {
     setLoading(true);
+    setError(null);
     try {
-      const fetched = await itemService.listItems();
-      setItems(fetched);
+      return await fn();
     } catch (err) {
-      setError(err.response?.data?.detail || err.message);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const getItem = async (itemId) => {
-    setLoading(true);
-    try {
-      return await itemService.getItemById(itemId);
-    } catch (err) {
-      setError(err.response?.data?.detail || err.message);
+      const msg = err.response?.data?.detail || err.message;
+      setError(msg);
       throw err;
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
-  const createItem = async (itemData) => {
-    setLoading(true);
-    try {
-      const created = await itemService.createItem(itemData);
+  // ─── Read ────────────────────────────────────────────────────────────────────
+
+  /**
+   * Load all items into state, optionally filtered by type.
+   * e.g. loadItems("backpack") populates state with only backpacks.
+   * Call with no argument to load everything.
+   */
+  const loadItems = useCallback((itemType = null) =>
+    withLoading(async () => {
+      const fetched = await itemService.listItems(itemType);
+      setItems(fetched);
+      return fetched;
+    }), [withLoading]);
+
+  const getItem = useCallback((itemId) =>
+    withLoading(() => itemService.getItemById(itemId)), [withLoading]);
+
+  const getItemByName = useCallback((name) =>
+    withLoading(() => itemService.getItemByName(name)), [withLoading]);
+
+  // ─── Create ──────────────────────────────────────────────────────────────────
+
+  /**
+   * Create an item of any type.
+   * @param {string} itemType  e.g. "backpack", "footwear", "shelter" …
+   * @param {object} data      Fields for that type
+   */
+  const createItem = useCallback((itemType, data) =>
+    withLoading(async () => {
+      const created = await itemService.createItem(itemType, data);
       setItems((prev) => [...prev, created]);
       return created;
-    } catch (err) {
-      setError(err.response?.data?.detail || err.message);
-      throw err;
-    } finally {
-      setLoading(false);
-    }
-  };
+    }), [withLoading]);
 
-  const deleteItem = async (itemId) => {
-    setLoading(true);
-    try {
+  // ─── Update ──────────────────────────────────────────────────────────────────
+
+  const updateItemImage = useCallback((itemId, imageUrl) =>
+    withLoading(async () => {
+      const updated = await itemService.updateItemImage(itemId, imageUrl);
+      setItems((prev) => prev.map((i) => (i.id === itemId ? updated : i)));
+      return updated;
+    }), [withLoading]);
+
+  // ─── Delete ──────────────────────────────────────────────────────────────────
+
+  const deleteItem = useCallback((itemId) =>
+    withLoading(async () => {
       await itemService.deleteItem(itemId);
       setItems((prev) => prev.filter((i) => i.id !== itemId));
-    } catch (err) {
-      setError(err.response?.data?.detail || err.message);
-      throw err;
-    } finally {
-      setLoading(false);
-    }
-  };
+    }), [withLoading]);
 
-  // -------------------------
-  // Context value
-  // -------------------------
-
-  const value = {
-    items,
-    loading,
-    error,
-    loadItems,
-    getItem,
-    createItem,
-    deleteItem,
-  };
+  // ─── Context value ───────────────────────────────────────────────────────────
 
   return (
-    <ItemContext.Provider value={value}>
+    <ItemContext.Provider value={{
+      items,
+      loading,
+      error,
+      loadItems,
+      getItem,
+      getItemByName,
+      createItem,
+      updateItemImage,
+      deleteItem,
+    }}>
       {children}
     </ItemContext.Provider>
   );

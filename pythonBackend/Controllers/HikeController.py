@@ -61,7 +61,7 @@ class HikeResponseSchema(BaseModel):
     # Optional computed fields for convenience
     latitude: Optional[float] = None
     longitude: Optional[float] = None
-
+    distance_km: Optional[float] = None
 class HikeUpdateSchema(BaseModel):
     name: Optional[str] = None
     difficulty: Optional[str] = None
@@ -245,7 +245,10 @@ def search_hikes(
     min_elevation_gain_m: Optional[float] = None,
     difficulty: Optional[str] = None,
     region: Optional[str] = None,
-    month: Optional[int] = None
+    month: Optional[int] = None,
+    user_lat: Optional[float] = None,  # <--- NEW
+    user_lon: Optional[float] = None,  # <--- NEW
+    max_dist: Optional[float] = None   # <--- NEW
 ):
     """Search hikes with filters"""
     difficulty_enum = None
@@ -254,14 +257,18 @@ def search_hikes(
             difficulty_enum = DifficultyLevel[difficulty.upper()]
         except KeyError:
             raise HTTPException(status_code=400, detail=f"Invalid difficulty: {difficulty}")
-    
+    print("Checkker")
     hikes = hike_service.search_hikes(
         min_length_km=min_length_km,
         min_elevation_gain_m=min_elevation_gain_m,
         difficulty=difficulty_enum,
         region=region,
-        month=month
+        month=month,
+        user_lat=user_lat,
+        user_lon=user_lon,
+        max_distance_km=max_dist
     )
+    print(hikes[0])  # Debugging
     
     response = []
     for h in hikes:
@@ -299,7 +306,8 @@ def search_hikes(
                 parking_coordinates=h.parking_coordinates,  # ADD THIS
                 last_synced_at=h.last_synced_at.isoformat(),  # ADD THIS
                 latitude=latitude,
-                longitude=longitude
+                longitude=longitude,
+                distance_km=getattr(h, 'distance_km', None)
             )
         )
         

@@ -9,9 +9,9 @@ import MapLegend from "../components/MapLegend";
 import { useUserLocation } from "../components/UserLocation";
 import { useHikes } from "../context/HikeContext";
 import { useUser } from "../context/UserContext";
-import { updateUser } from "../api/usersService";
+import AuthModal from "../components/AuthModal";
 // Mapbox token
-mapboxgl.accessToken = "pk.eyJ1Ijoid3doZXlkZSIsImEiOiJjbWpjNHQ1enYwb3I1M2ZvbzMycTA2NGliIn0.vUtDLKMdB88W62j3JDcBUA";
+mapboxgl.accessToken = MapAccess;
 
 export default function MapPage() {
   const navigate = useNavigate();
@@ -20,10 +20,13 @@ export default function MapPage() {
   const map = useRef(null);
   const markers = useRef([]);
   const trailLayers = useRef(new Set());
+  
+  // 1. Destructure 'user' here so we have access to the ID
   const { user, setGlobalUserLocation } = useUser();
+  
   const userMarkerRef = useRef(null);
   const { hikes, loading, searchHikes, selectHike } = useHikes();
-
+  const { authModalOpen } = AuthModal.authModalOpen ? AuthModal : { authModalOpen: false };
   const [filters, setFilters] = useState({
     maxDistanceMiles: null,
     difficulty: null,
@@ -64,10 +67,9 @@ export default function MapPage() {
       "top-right"
     );
   }, []);
-  
   useEffect(() => {
     // Sync local hook data to Global Context
-    if (userLocation) {
+    if (!authModalOpen && userLocation) {
       setGlobalUserLocation(userLocation);
     }
 
@@ -102,7 +104,7 @@ export default function MapPage() {
 
       const searchParams = {};
 
-      // 1. Trail Length (Min/Max)
+      // 1. Trail Length (Miles -> KM)
       if (filters.minLengthMiles && Number(filters.minLengthMiles) > 0) {
         searchParams.min_length_km = Number((filters.minLengthMiles * 1.60934).toFixed(3));
       }
@@ -122,15 +124,17 @@ export default function MapPage() {
         searchParams.meet_requirements_only = true;
       }
 
-      // 4. Max Distance (Radius from User)
+      // 4. Max Distance Radius (Miles -> KM)
+      // UPDATED: Changed param name to 'max_dist' to match Python Controller
       if (filters.maxDistanceMiles) {
-        searchParams.farthest_hike_distance_m = Math.round(filters.maxDistanceMiles * 1609.34);
+        searchParams.max_dist = Number((filters.maxDistanceMiles * 1.60934).toFixed(3));
       }
 
       // 5. User Location
+      // UPDATED: Changed param names to 'user_lat' / 'user_lon' to match Python Controller
       if (userLocation) {
-        searchParams.user_latitude = userLocation.lat; 
-        searchParams.user_longitude = userLocation.lng;
+        searchParams.user_lat = userLocation.lat; 
+        searchParams.user_lon = userLocation.lng;
       }
 
       searchHikesRef.current(searchParams);

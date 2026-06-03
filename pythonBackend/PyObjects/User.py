@@ -1,9 +1,6 @@
-from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Optional, Dict, List
 from uuid import UUID
-
-from attrs import asdict
 from PyObjects.Items import Item
 
 
@@ -15,11 +12,20 @@ class User:
         hashed_password: str,
         name: str,
         avatar_url: Optional[str] = None,
-        home_location: Optional[Dict[str, Any]] = None,  # Changed to Any
+        home_location: Optional[Dict[str, Any]] = None,
         timezone: Optional[str] = None,
         items: Optional[List] = None,
         created_at: Optional[datetime] = None,
     ):
+        if not email:
+            raise ValueError("email must not be empty")
+        if not hashed_password:
+            raise ValueError("hashed_password must not be empty")
+        if not name:
+            raise ValueError("name must not be empty")
+        if items is not None and not isinstance(items, list):
+            raise ValueError("items must be a list")
+
         self.id = id
         self.email = email
         self.hashed_password = hashed_password
@@ -29,8 +35,6 @@ class User:
         self.timezone = timezone
         self.items = items or []
         self.created_at = created_at or datetime.now()
-    
-    # PyObjects/User.py
 
     def to_dict(self):
         return {
@@ -41,22 +45,9 @@ class User:
             "avatar_url": self.avatar_url,
             "home_location": self.home_location,
             "timezone": self.timezone,
-            # FIX: Convert Item objects to dicts, otherwise JSON serialization fails
             "items": [i.to_dict() for i in self.items] if self.items else [],
             "created_at": self.created_at.isoformat()
         }
-    def __post_init__(self) -> None:
-        if not self.email:
-            raise ValueError("email must not be empty")
-        if not self.hashed_password:
-            raise ValueError("hashed_password must not be empty")
-        if not self.name:
-            raise ValueError("name must not be empty")
-        if self.items is None:
-            self.items = []
-        if not isinstance(self.items, list):
-            raise ValueError("items must be a list")
-
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "User":

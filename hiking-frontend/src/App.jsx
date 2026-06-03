@@ -5,6 +5,9 @@ import HikeDetailPage from "./pages/HikeDetailPage";
 import AuthModal from "./components/AuthModal"; // Import the modal
 import Profile from "./pages/Profile";  
 import QuickGearSetup from "./pages/QuickGearSetup";
+import GearOnboarding from "./pages/GearOnboarding"; // Assuming this is the correct path
+import TripPlanner from "./pages/TripPlanner";
+
 function App() {
   return (
     <div className="h-screen w-screen flex flex-col">
@@ -21,7 +24,9 @@ function App() {
           <Route path="/map" element={<MapPage />} />
           <Route path="/hike/:hikeId" element={<HikeDetailPage />} />
           <Route path="/profile" element={<Profile/>} />
-          <Route path="/onboarding" element={<QuickGearSetup />} />
+          <Route path="/gear" element={<QuickGearSetup />} />
+          <Route path="/onboarding" element={<GearOnboarding />} />
+          <Route path="/trip-planner" element={<TripPlanner />} />
         </Routes>
       </div>
     </div>

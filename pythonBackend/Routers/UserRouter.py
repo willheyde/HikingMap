@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from uuid import UUID
 from typing import List, Optional, Dict
 from datetime import datetime
@@ -10,6 +10,8 @@ from Services.UserService import UserService
 from Repos.UserRepo import UserRepository
 from PyObjects.User import User
 from PyObjects.Items import Item
+from Auth.authentication import hash_password, verify_password, create_access_token, get_current_user_id
+from Schemas.UserSchemas import TokenResponse
 
 # ---------------------------------------------------------
 # Pydantic Models (Request/Response Schemas)
@@ -26,7 +28,7 @@ class ItemCreate(BaseModel):
 
 class UserCreate(BaseModel):
     email: EmailStr
-    hashed_password: str
+    password: str
     name: str
     avatar_url: Optional[str] = None
     home_location: Optional[Dict[str, float]] = None
@@ -57,43 +59,37 @@ user_service = UserService(user_repo)
 # Auth Endpoints
 # ---------------------------------------------------------
 
-@router.post("/login", response_model=dict)
-def login(payload: LoginRequest):
-    """
-    Verifies email and password. Returns user data if successful.
-    """
-    # Note: verify you added login_user to UserService as discussed!
-    user = user_service.login_user(payload.email, payload.password)
-    if not user:
+@router.post("/login", response_model=TokenResponse)
+def login(credentials: LoginRequest):
+    user = user_service.get_user_by_email(credentials.email)
+    if not user or not verify_password(credentials.password, user.hashed_password):
         raise HTTPException(status_code=401, detail="Invalid email or password")
-    return user.to_dict()
+    
+    token = create_access_token(str(user.id))
+    return TokenResponse(access_token=token, user_id=str(user.id), name=user.name)
 
 # ---------------------------------------------------------
 # User CRUD
 # ---------------------------------------------------------
 
+# Create user — hash with bcrypt now
 @router.post("/", response_model=dict)
 def create_user(payload: UserCreate):
-    try:
-        user = user_service.create_user(
-            email=payload.email,
-            hashed_password=payload.hashed_password,
-            name=payload.name,
-            avatar_url=payload.avatar_url,
-            home_location=payload.home_location,
-            timezone=payload.timezone,
-            items=payload.items,
-        )
-        return user.to_dict()
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    hashed_pw = hash_password(payload.password)
+    user = user_service.create_user(
+        email=payload.email, hashed_password=hashed_pw, name=payload.name,
+        avatar_url=payload.avatar_url, home_location=payload.home_location, timezone=payload.timezone
+    )
+    return {"user_id": str(user.id), "name": user.name, "email": user.email}
 
 @router.get("/{user_id}", response_model=dict)
 def get_user(user_id: UUID):
     user = user_service.get_user(user_id)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
-    return user.to_dict()
+    data = user.to_dict()
+    data.pop("hashed_password", None)
+    return data
 
 @router.get("/", response_model=List[dict])
 def list_users():
@@ -137,13 +133,12 @@ def delete_user(user_id: UUID):
 # Item Sub-Endpoints
 # ---------------------------------------------------------
 
-@router.get("/{user_id}/items", response_model=List[dict])
-def get_user_items(user_id: UUID):
-    try:
-        items = user_service.list_items(user_id)
-        return [i.to_dict() for i in items]
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+@router.get("/{user_id}/items", response_model=list[dict])
+def get_user_items(user_id: UUID, current_user_id: str = Depends(get_current_user_id)):
+    if str(user_id) != current_user_id:
+        raise HTTPException(status_code=403, detail="F  orbidden")
+    items = user_service.list_items(user_id)
+    return [i.to_dict() for i in items]
 
 @router.post("/{user_id}/items", response_model=dict)
 def add_user_item(user_id: UUID, payload: ItemCreate):

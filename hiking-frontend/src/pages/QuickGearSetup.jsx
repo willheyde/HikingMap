@@ -2,101 +2,128 @@ import { useState, useEffect, useMemo } from "react";
 import { useUser } from "../context/UserContext";
 import { listItems } from "../api/itemsService";
 import { useNavigate } from "react-router-dom";
-import ScrollBar from "../components/ScrollBar"; // Adjust path as needed
+import ScrollBar from "../components/ScrollBar";
 
+/* ─── Category config ───────────────────────────────────────────────────── */
+const CATEGORY_MAP = {
+  backpack:       { label: "Backpacks",     icon: "🎒" },
+  footwear:       { label: "Footwear",       icon: "👟" },
+  shelter:        { label: "Shelter",        icon: "⛺" },
+  sleeping_bag:   { label: "Sleeping Bags",  icon: "🛌" },
+  sleeping_pad:   { label: "Sleeping Pads",  icon: "🟫" },
+  clothing:       { label: "Clothing",       icon: "🧥" },
+  water:          { label: "Water",          icon: "💧" },
+  kitchen:        { label: "Kitchen",        icon: "🔥" },
+  navigation:     { label: "Navigation",     icon: "🗺️" },
+  lighting:       { label: "Lighting",       icon: "🔦" },
+  safety:         { label: "Safety",         icon: "🚨" },
+  trekking_poles: { label: "Trekking Poles", icon: "🥢" },
+  technical:      { label: "Technical",      icon: "⛏️" },
+  misc:           { label: "Misc",           icon: "📦" },
+};
+
+const getCategoryLabel = (t) => CATEGORY_MAP[(t || "").toLowerCase()]?.label ?? "Other";
+const getCategoryIcon  = (t) => CATEGORY_MAP[(t || "").toLowerCase()]?.icon  ?? "📦";
+
+/* ─── Shared modal ──────────────────────────────────────────────────────── */
+const Modal = ({ children }) => (
+  <div style={{
+    position: "fixed", inset: 0, zIndex: 50,
+    display: "flex", alignItems: "center", justifyContent: "center",
+    background: "rgba(0,0,0,0.7)", backdropFilter: "blur(4px)", padding: 16,
+  }}>
+    <div style={{
+      background: "#1e160d", border: "1px solid rgba(90,58,26,0.6)",
+      borderRadius: 20, padding: "1.75rem", maxWidth: 360, width: "100%",
+      boxShadow: "0 32px 80px rgba(0,0,0,0.6)",
+    }}>
+      {children}
+    </div>
+  </div>
+);
+
+/* ─── Mountain mark ─────────────────────────────────────────────────────── */
+const MountainMark = () => (
+  <svg width="28" height="22" viewBox="0 0 40 32" fill="none" style={{ flexShrink: 0 }}>
+    <polygon points="20,2 38,30 2,30" fill="none" stroke="#c17a2e" strokeWidth="1.5" strokeLinejoin="round"/>
+    <polygon points="10,30 20,12 30,30" fill="#2a1810" stroke="#8b5e3c" strokeWidth="1" strokeLinejoin="round"/>
+  </svg>
+);
+
+/* ─── Main component ─────────────────────────────────────────────────────── */
 const QuickGearSetup = () => {
-  // Destructure the context functions
   const { user, items: userItems, addItemsBatch, deleteItem } = useUser();
   const navigate = useNavigate();
 
-  // --- DATA STATE ---
-  const [catalog, setCatalog] = useState([]);
+  const [catalog, setCatalog]               = useState([]);
   const [loadingCatalog, setLoadingCatalog] = useState(true);
-  
-  // --- UI STATE ---
   const [activeCategory, setActiveCategory] = useState("All");
-  const [selectedIds, setSelectedIds] = useState(new Set()); 
-  const [isProcessing, setIsProcessing] = useState(false);
+  const [selectedIds, setSelectedIds]       = useState(new Set());
+  const [isProcessing, setIsProcessing]     = useState(false);
+  const [itemToRemove, setItemToRemove]     = useState(null);
+  const [showUnsavedModal, setShowUnsavedModal] = useState(false);
 
-  // --- MODAL STATE ---
-  const [itemToRemove, setItemToRemove] = useState(null); 
-  const [showUnsavedModal, setShowUnsavedModal] = useState(false); 
-
-  // 1. Fetch Catalog
   useEffect(() => {
-    const fetchCatalog = async () => {
-      try {
-        const data = await listItems();
-        setCatalog(data);
-      } catch (err) {
-        console.error("Failed to load item catalog:", err);
-      } finally {
-        setLoadingCatalog(false);
-      }
-    };
-    fetchCatalog();
+    listItems()
+      .then(setCatalog)
+      .catch(err => console.error("Failed to load catalog:", err))
+      .finally(() => setLoadingCatalog(false));
   }, []);
 
-  // 2. Map item type to display category
-  const getCategoryForItem = (itemType) => {
-    const type = (itemType || "").toLowerCase();
-    if (type.includes('backpack')) return "Backpacks";
-    if (type.includes('shoe') || type.includes('footwear')) return "Shoes";
-    if (type.includes('clothing') || type.includes('apparel')) return "Clothing";
-    return "Items";
-  };
+  /* ── Derived ──────────────────────────────────────────────────────────── */
+  const isOwned    = (id) => (userItems || []).some(u => u.id === id);
+  const isSelected = (id) => selectedIds.has(id);
 
-  // 3. Derive Categories
+  const totalOwnedWeightKg = useMemo(() =>
+    (userItems || []).reduce((sum, i) => sum + (Number(i.weight) || 0), 0) / 1000,
+  [userItems]);
+
   const categories = useMemo(() => {
-    const categoriesSet = new Set(catalog.map(i => getCategoryForItem(i.item_type)));
-    return ["All", ...Array.from(categoriesSet).sort()];
+    const seen = new Set(catalog.map(i => getCategoryLabel(i.item_type)));
+    return ["All", ...Array.from(seen).sort()];
   }, [catalog]);
 
-  // 4. Filter Items based on Tab
+  /* Filter by tab, then sort: owned items first, then unowned alphabetically */
   const visibleItems = useMemo(() => {
-    if (activeCategory === "All") return catalog;
-    return catalog.filter(i => getCategoryForItem(i.item_type) === activeCategory);
-  }, [activeCategory, catalog]);
+    const filtered = activeCategory === "All"
+      ? catalog
+      : catalog.filter(i => getCategoryLabel(i.item_type) === activeCategory);
 
-  // 4. Helper: Check Ownership
-  const isOwned = (catalogItemId) => {
-    if (!userItems) return false;
-    return userItems.some(uItem => uItem.id === catalogItemId);
-  };
+    return [...filtered].sort((a, b) => {
+      const aOwned = isOwned(a.id);
+      const bOwned = isOwned(b.id);
+      if (aOwned && !bOwned) return -1;
+      if (!aOwned && bOwned) return  1;
+      return a.name.localeCompare(b.name);
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeCategory, catalog, userItems]);
 
-  // --- HANDLERS ---
+  const ownedCount = useMemo(
+    () => visibleItems.filter(i => isOwned(i.id)).length,
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  [visibleItems, userItems]);
 
+  /* ── Handlers ─────────────────────────────────────────────────────────── */
   const handleItemClick = (item) => {
     if (isProcessing) return;
-
-    if (isOwned(item.id)) {
-      setItemToRemove(item);
-    } else {
-      const newSet = new Set(selectedIds);
-      if (newSet.has(item.id)) {
-        newSet.delete(item.id);
-      } else {
-        newSet.add(item.id);
-      }
-      setSelectedIds(newSet);
-    }
+    if (isOwned(item.id)) { setItemToRemove(item); return; }
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      next.has(item.id) ? next.delete(item.id) : next.add(item.id);
+      return next;
+    });
   };
 
   const handleBulkAdd = async () => {
     if (!user || selectedIds.size === 0) return;
     setIsProcessing(true);
-    
-    const idsToSend = Array.from(selectedIds);
-
     try {
-      await addItemsBatch(user.id, idsToSend);
+      await addItemsBatch(user.id, Array.from(selectedIds));
       setSelectedIds(new Set());
-      
-      if (showUnsavedModal) {
-        navigate("/map");
-      }
+      if (showUnsavedModal) navigate("/map");
     } catch (err) {
-      console.error("Failed to bulk add items:", err);
+      console.error("Failed to add items:", err);
     } finally {
       setIsProcessing(false);
       setShowUnsavedModal(false);
@@ -110,224 +137,355 @@ const QuickGearSetup = () => {
       await deleteItem(user.id, itemToRemove.id);
       setItemToRemove(null);
     } catch (err) {
-      console.error("Failed to remove item:", err);
+      console.error("Failed to remove:", err);
     } finally {
       setIsProcessing(false);
     }
   };
 
-  const handleNavigation = () => {
-    if (selectedIds.size > 0) {
-      setShowUnsavedModal(true);
-    } else {
-      navigate("/map");
-    }
-  };
+  const handleNavigation = () =>
+    selectedIds.size > 0 ? setShowUnsavedModal(true) : navigate("/map");
 
-  /* ================= VISUALS ================= */
-
+  /* ── Loading ──────────────────────────────────────────────────────────── */
   if (loadingCatalog) {
     return (
-      <div className="h-screen bg-slate-900 text-white flex items-center justify-center">
-        Loading Gear...
+      <div style={{ height: "100vh", background: "#0d0a07", display: "flex",
+        flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 16 }}>
+        <MountainMark />
+        <p style={{ fontFamily: "'Trebuchet MS', sans-serif", fontSize: 12,
+          color: "#6b4f35", letterSpacing: "2px", textTransform: "uppercase" }}>
+          Loading your gear…
+        </p>
       </div>
     );
   }
 
+  /* ── Render ───────────────────────────────────────────────────────────── */
   return (
-    <div className="h-screen bg-slate-900 text-white flex flex-col relative overflow-hidden">
-      
-      {/* --- HEADER --- */}
-      <div className="flex-none bg-slate-800/80 backdrop-blur-md border-b border-slate-700 z-20 shadow-md">
-        <div className="p-4 md:p-6 flex justify-between items-center">
-          <div>
-            <h1 className="text-2xl md:text-3xl font-bold tracking-tight text-blue-100">Gear Locker</h1>
-            <p className="hidden md:block text-slate-400 text-sm mt-1">
-              Select items to add. Green items are owned.
-            </p>
+    <div style={{ height: "100vh", display: "flex", flexDirection: "column",
+      background: "#0d0a07", color: "#e8dcc8", overflow: "hidden", position: "relative" }}>
+
+      {/* ── Header ──────────────────────────────────────────────────────── */}
+      <div style={{
+        flexShrink: 0, zIndex: 20,
+        background: "rgba(20,13,7,0.94)", backdropFilter: "blur(12px)",
+        borderBottom: "1px solid rgba(90,58,26,0.5)",
+        boxShadow: "0 4px 24px rgba(0,0,0,0.4)",
+      }}>
+        <div style={{ padding: "14px 20px", display: "flex", alignItems: "center",
+          justifyContent: "space-between", gap: 12 }}>
+
+          {/* Left */}
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            <MountainMark />
+            <div>
+              <h1 style={{ fontFamily: "Georgia, serif", fontSize: 18, fontWeight: "normal",
+                color: "#f0e6d0", margin: 0, letterSpacing: "0.3px" }}>
+                Gear Locker
+              </h1>
+              <p style={{ fontFamily: "Palatino, Georgia, serif", fontSize: 12,
+                color: "#6b4f35", margin: "2px 0 0", fontStyle: "italic" }}>
+                Green items are in your pack
+              </p>
+            </div>
           </div>
 
-          <div className="flex items-center gap-4">
-            {/* Weight Counter */}
-            <div className="hidden md:flex flex-col items-end mr-4">
-              <span className="text-slate-500 text-[10px] uppercase font-bold tracking-wider">Total Weight</span>
-              <span className="text-lg font-mono text-blue-400">
-                {userItems.reduce((acc, curr) => acc + (Number(curr.weight) || 0), 0).toFixed(2)} kg
+          {/* Right */}
+          <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+            <div style={{ display: "none", flexDirection: "column", alignItems: "flex-end" }}
+              className="md-show">
+              <span style={{ fontFamily: "'Trebuchet MS', sans-serif", fontSize: 10,
+                color: "#5a3a1a", textTransform: "uppercase", letterSpacing: "1.5px" }}>
+                Pack Weight
+              </span>
+              <span style={{ fontFamily: "monospace", fontSize: 15, color: "#c17a2e" }}>
+                {totalOwnedWeightKg.toFixed(2)} kg
               </span>
             </div>
-
-            {/* Go To Map Button */}
-            <button 
+            <button
               onClick={handleNavigation}
-              className="bg-slate-700 hover:bg-slate-600 text-white px-5 py-2 rounded-lg font-semibold transition-all flex items-center gap-2 border border-slate-600"
+              style={{
+                display: "flex", alignItems: "center", gap: 6,
+                padding: "8px 16px", borderRadius: 8, fontSize: 13,
+                fontFamily: "'Trebuchet MS', sans-serif", fontWeight: 600,
+                background: "rgba(90,58,26,0.35)", color: "#c8a97a",
+                border: "1px solid rgba(193,122,46,0.3)", cursor: "pointer",
+                transition: "background 0.2s",
+              }}
+              onMouseEnter={e => e.currentTarget.style.background = "rgba(90,58,26,0.6)"}
+              onMouseLeave={e => e.currentTarget.style.background = "rgba(90,58,26,0.35)"}
             >
-              <span>Go to Map</span>
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              Go to Map
+              <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 5l7 7-7 7"/>
               </svg>
             </button>
           </div>
         </div>
 
-        {/* --- CATEGORY TABS --- */}
-        <ScrollBar className="px-4 md:px-6 pb-0 !h-auto overflow-x-auto !overflow-y-hidden flex gap-2">
+        {/* Category tabs */}
+        <ScrollBar className="px-5 pb-0 !h-auto overflow-x-auto !overflow-y-hidden flex gap-1">
           {categories.map(cat => (
-            <button
-              key={cat}
-              onClick={() => setActiveCategory(cat)}
-              className={`
-                whitespace-nowrap pb-3 px-2 border-b-2 text-sm font-medium transition-colors
-                ${activeCategory === cat 
-                  ? "border-blue-500 text-blue-400" 
-                  : "border-transparent text-slate-400 hover:text-slate-200 hover:border-slate-600"}
-              `}
+            <button key={cat} onClick={() => setActiveCategory(cat)}
+              style={{
+                whiteSpace: "nowrap", padding: "8px 12px 10px",
+                borderBottom: `2px solid ${activeCategory === cat ? "#c17a2e" : "transparent"}`,
+                color: activeCategory === cat ? "#c8a97a" : "#5a3a1a",
+                fontFamily: "'Trebuchet MS', sans-serif", fontSize: 13,
+                fontWeight: activeCategory === cat ? 600 : 400,
+                background: "none", border: "none",
+                borderBottom: `2px solid ${activeCategory === cat ? "#c17a2e" : "transparent"}`,
+                cursor: "pointer", transition: "color 0.15s",
+              }}
+              onMouseEnter={e => { if (activeCategory !== cat) e.currentTarget.style.color = "#a07850"; }}
+              onMouseLeave={e => { if (activeCategory !== cat) e.currentTarget.style.color = "#5a3a1a"; }}
             >
-              {cat.replace('_', ' ')}
+              {cat}
             </button>
           ))}
         </ScrollBar>
       </div>
 
-      {/* --- GRID AREA --- */}
-      <ScrollBar className="!h-auto flex-1 p-6 bg-slate-900 relative">
-        <div className="max-w-7xl mx-auto pb-24">
-          <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
-            {visibleItems.map((item) => {
-              const owned = isOwned(item.id);
-              const selected = selectedIds.has(item.id);
+      {/* ── Owned section label ──────────────────────────────────────────── */}
+      {ownedCount > 0 && (
+        <div style={{
+          padding: "10px 20px 0",
+          fontFamily: "'Trebuchet MS', sans-serif", fontSize: 11,
+          color: "#5a8a40", textTransform: "uppercase", letterSpacing: "1.5px",
+          background: "#0d0a07", flexShrink: 0,
+        }}>
+          ✓ In your pack — {ownedCount} item{ownedCount !== 1 ? "s" : ""}
+        </div>
+      )}
 
-              return (
-                <div 
-                  key={item.id}
-                  onClick={() => handleItemClick(item)}
-                  className={`
-                    relative group cursor-pointer rounded-xl transition-all duration-200 overflow-hidden border-2 flex flex-col
-                    ${owned 
-                      ? 'bg-green-900/20 border-green-600/50 shadow-[0_0_15px_rgba(34,197,94,0.1)]'
-                      : selected
-                        ? 'bg-blue-900/20 border-blue-500 shadow-[0_0_15px_rgba(59,130,246,0.3)] scale-[1.02]'
-                        : 'bg-slate-800 border-slate-700 hover:border-slate-500 hover:bg-slate-750'
-                    }
-                  `}
-                >
-                  {/* BADGES */}
-                  {owned && (
-                    <div className="absolute top-2 right-2 z-10 bg-green-600 text-white text-[10px] uppercase font-bold px-2 py-0.5 rounded-full shadow-sm flex items-center gap-1">
-                      <span>✓</span> Owned
-                    </div>
-                  )}
-                  {selected && !owned && (
-                    <div className="absolute top-2 right-2 z-10 bg-blue-600 text-white text-[10px] uppercase font-bold px-2 py-0.5 rounded-full shadow-sm">
-                      Selected
-                    </div>
-                  )}
+      {/* ── Grid ────────────────────────────────────────────────────────── */}
+      <ScrollBar className="!h-auto flex-1 p-5 relative" style={{ background: "#0d0a07" }}>
+        <div style={{ maxWidth: 1280, margin: "0 auto", paddingBottom: 100 }}>
 
-                  {/* IMAGE */}
-                  <div className={`h-32 w-full bg-slate-900 flex items-center justify-center overflow-hidden ${owned ? 'opacity-60 grayscale-[40%]' : ''}`}>
-                    {item.image_url ? (
-                      <img src={item.image_url} alt={item.name} className="w-full h-full object-cover" />
-                    ) : (
-                      <span className="text-4xl">🏔️</span>
-                    )}
-                  </div>
-
-                  {/* INFO */}
-                  <div className="p-3 flex-1 flex flex-col justify-between">
-                    <h3 className={`font-semibold text-sm leading-tight mb-1 ${owned ? 'text-green-200' : selected ? 'text-blue-200' : 'text-slate-200'}`}>
-                      {item.name}
-                    </h3>
-                    <div className="flex justify-between items-end mt-2 text-xs font-mono text-slate-500">
-                      <span>{Number(item.weight).toFixed(1)}kg</span>
-                      <span className="text-slate-400">${item.cost}</span>
-                    </div>
-                  </div>
-                  
-                  {/* OVERLAYS */}
-                  {owned && <div className="absolute inset-0 bg-green-900/10 pointer-events-none" />}
-                  {selected && !owned && <div className="absolute inset-0 bg-blue-900/5 pointer-events-none" />}
+          {/* Divider between owned / unowned */}
+          {ownedCount > 0 && ownedCount < visibleItems.length && (() => {
+            // We'll inject the divider inline in the grid via a wrapper approach
+            const owned   = visibleItems.filter(i => isOwned(i.id));
+            const unowned = visibleItems.filter(i => !isOwned(i.id));
+            return (
+              <>
+                {/* Owned grid */}
+                <div style={{
+                  display: "grid", gap: 12,
+                  gridTemplateColumns: "repeat(auto-fill, minmax(160px, 1fr))",
+                  marginBottom: 0,
+                }}>
+                  {owned.map(item => <ItemCard key={item.id} item={item}
+                    owned selected={false} onClick={() => handleItemClick(item)} />)}
                 </div>
-              );
-            })}
-          </div>
+
+                {/* Section break */}
+                <div style={{
+                  display: "flex", alignItems: "center", gap: 12,
+                  margin: "20px 0 16px",
+                }}>
+                  <div style={{ flex: 1, height: 1, background: "rgba(90,58,26,0.3)" }} />
+                  <span style={{ fontFamily: "'Trebuchet MS', sans-serif", fontSize: 11,
+                    color: "#5a3a1a", textTransform: "uppercase", letterSpacing: "1.5px",
+                    whiteSpace: "nowrap" }}>
+                    Not in pack
+                  </span>
+                  <div style={{ flex: 1, height: 1, background: "rgba(90,58,26,0.3)" }} />
+                </div>
+
+                {/* Unowned grid */}
+                <div style={{
+                  display: "grid", gap: 12,
+                  gridTemplateColumns: "repeat(auto-fill, minmax(160px, 1fr))",
+                }}>
+                  {unowned.map(item => <ItemCard key={item.id} item={item}
+                    owned={false} selected={isSelected(item.id)}
+                    onClick={() => handleItemClick(item)} />)}
+                </div>
+              </>
+            );
+          })()}
+
+          {/* All same status — no divider needed */}
+          {(ownedCount === 0 || ownedCount === visibleItems.length) && (
+            <div style={{
+              display: "grid", gap: 12,
+              gridTemplateColumns: "repeat(auto-fill, minmax(160px, 1fr))",
+            }}>
+              {visibleItems.map(item => (
+                <ItemCard key={item.id} item={item}
+                  owned={isOwned(item.id)} selected={isSelected(item.id)}
+                  onClick={() => handleItemClick(item)} />
+              ))}
+            </div>
+          )}
         </div>
       </ScrollBar>
 
-      {/* --- FLOATING "ADD" BUTTON --- */}
+      {/* ── Floating Add button ──────────────────────────────────────────── */}
       {selectedIds.size > 0 && (
-        <div className="absolute bottom-8 left-0 right-0 flex justify-center z-30 pointer-events-none">
+        <div style={{ position: "absolute", bottom: 28, left: 0, right: 0,
+          display: "flex", justifyContent: "center", zIndex: 30, pointerEvents: "none" }}>
           <button
-            onClick={handleBulkAdd}
-            disabled={isProcessing}
-            className="pointer-events-auto bg-blue-600 hover:bg-blue-500 text-white px-8 py-3 rounded-full font-bold shadow-2xl shadow-blue-900/50 flex items-center gap-3 transform transition-all hover:-translate-y-1 active:scale-95 animate-in fade-in slide-in-from-bottom-4"
+            onClick={handleBulkAdd} disabled={isProcessing}
+            style={{
+              pointerEvents: "auto", display: "flex", alignItems: "center", gap: 10,
+              padding: "12px 32px", borderRadius: 9999, fontWeight: 600, fontSize: 14,
+              fontFamily: "'Trebuchet MS', sans-serif", cursor: isProcessing ? "not-allowed" : "pointer",
+              background: isProcessing ? "#7a4a1e" : "#c17a2e", color: "#fff8ee",
+              border: "1px solid rgba(255,220,150,0.15)",
+              boxShadow: "0 8px 32px rgba(193,122,46,0.4)",
+              transition: "background 0.2s, transform 0.15s",
+            }}
+            onMouseEnter={e => { if (!isProcessing) { e.currentTarget.style.background = "#d98c38"; e.currentTarget.style.transform = "translateY(-2px)"; }}}
+            onMouseLeave={e => { if (!isProcessing) { e.currentTarget.style.background = "#c17a2e"; e.currentTarget.style.transform = "translateY(0)"; }}}
           >
-            {isProcessing ? (
-              <span>Saving...</span>
-            ) : (
+            {isProcessing ? "Saving…" : (
               <>
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 4v16m8-8H4"/>
                 </svg>
-                <span>Add {selectedIds.size} Item{selectedIds.size !== 1 && 's'}</span>
+                Add {selectedIds.size} Item{selectedIds.size !== 1 ? "s" : ""} to Pack
               </>
             )}
           </button>
         </div>
       )}
 
-      {/* --- DELETE CONFIRMATION MODAL --- */}
+      {/* ── Remove modal ─────────────────────────────────────────────────── */}
       {itemToRemove && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-          <div className="bg-slate-800 border border-slate-600 rounded-2xl p-6 max-w-sm w-full shadow-2xl">
-            <h3 className="text-xl font-bold text-white mb-2">Remove Item?</h3>
-            <p className="text-slate-300 mb-6">
-              Remove <strong className="text-green-400">{itemToRemove.name}</strong> from your pack?
-            </p>
-            <div className="flex gap-3">
-              <button 
-                onClick={() => setItemToRemove(null)} 
-                className="flex-1 px-4 py-2 rounded-lg bg-slate-700 hover:bg-slate-600 text-white"
-              >
-                Cancel
-              </button>
-              <button 
-                onClick={confirmRemove} 
-                disabled={isProcessing} 
-                className="flex-1 px-4 py-2 rounded-lg bg-red-600 hover:bg-red-500 text-white font-bold"
-              >
-                {isProcessing ? "..." : "Remove"}
-              </button>
-            </div>
+        <Modal>
+          <div style={{ textAlign: "center", marginBottom: 16 }}>
+            <MountainMark />
           </div>
-        </div>
+          <h3 style={{ fontFamily: "Georgia, serif", fontSize: 18, fontWeight: "normal",
+            color: "#f0e6d0", textAlign: "center", margin: "0 0 8px" }}>
+            Remove from pack?
+          </h3>
+          <p style={{ fontFamily: "Palatino, Georgia, serif", fontSize: 13,
+            color: "#8b6a4a", textAlign: "center", margin: "0 0 24px" }}>
+            <span style={{ color: "#9dcc85" }}>{itemToRemove.name}</span> will be removed from your inventory.
+          </p>
+          <div style={{ display: "flex", gap: 10 }}>
+            <button onClick={() => setItemToRemove(null)} style={{
+              flex: 1, padding: "10px 0", borderRadius: 10, cursor: "pointer",
+              background: "rgba(90,58,26,0.3)", border: "1px solid rgba(90,58,26,0.5)",
+              color: "#c8bfb0", fontFamily: "'Trebuchet MS', sans-serif", fontSize: 13,
+            }}>Cancel</button>
+            <button onClick={confirmRemove} disabled={isProcessing} style={{
+              flex: 1, padding: "10px 0", borderRadius: 10, cursor: isProcessing ? "not-allowed" : "pointer",
+              background: "#7a2e1e", border: "1px solid rgba(200,80,60,0.4)",
+              color: "#f8c8b8", fontFamily: "'Trebuchet MS', sans-serif", fontSize: 13, fontWeight: 600,
+            }}>
+              {isProcessing ? "…" : "Remove"}
+            </button>
+          </div>
+        </Modal>
       )}
 
-      {/* --- UNSAVED CHANGES MODAL --- */}
+      {/* ── Unsaved modal ────────────────────────────────────────────────── */}
       {showUnsavedModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
-          <div className="bg-slate-800 border border-blue-500/30 rounded-2xl p-6 max-w-md w-full shadow-2xl">
-            <h3 className="text-xl font-bold text-white mb-2">Unsaved Gear Selected</h3>
-            <p className="text-slate-300 mb-6">
-              You have <strong className="text-blue-400">{selectedIds.size} items</strong> selected but not added to your inventory. 
-              <br/><br/>
-              Do you want to add them before leaving?
-            </p>
-            <div className="flex gap-3">
-              <button 
-                onClick={() => navigate("/map")}
-                className="flex-1 px-4 py-2 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-300 transition-colors"
-              >
-                Discard & Leave
-              </button>
-              <button 
-                onClick={handleBulkAdd}
-                className="flex-1 px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-bold shadow-lg"
-              >
-                Add & Leave
-              </button>
-            </div>
+        <Modal>
+          <div style={{ textAlign: "center", marginBottom: 16 }}>
+            <MountainMark />
           </div>
-        </div>
+          <h3 style={{ fontFamily: "Georgia, serif", fontSize: 18, fontWeight: "normal",
+            color: "#f0e6d0", textAlign: "center", margin: "0 0 8px" }}>
+            Gear not saved yet
+          </h3>
+          <p style={{ fontFamily: "Palatino, Georgia, serif", fontSize: 13,
+            color: "#8b6a4a", textAlign: "center", margin: "0 0 24px" }}>
+            You have <span style={{ color: "#c8a97a" }}>{selectedIds.size} item{selectedIds.size !== 1 ? "s" : ""}</span> selected but not added to your pack.
+          </p>
+          <div style={{ display: "flex", gap: 10 }}>
+            <button onClick={() => navigate("/map")} style={{
+              flex: 1, padding: "10px 0", borderRadius: 10, cursor: "pointer",
+              background: "rgba(90,58,26,0.3)", border: "1px solid rgba(90,58,26,0.5)",
+              color: "#a07850", fontFamily: "'Trebuchet MS', sans-serif", fontSize: 13,
+            }}>Leave anyway</button>
+            <button onClick={handleBulkAdd} disabled={isProcessing} style={{
+              flex: 1, padding: "10px 0", borderRadius: 10,
+              cursor: isProcessing ? "not-allowed" : "pointer",
+              background: "#c17a2e", color: "#fff8ee",
+              border: "none", fontFamily: "'Trebuchet MS', sans-serif",
+              fontSize: 13, fontWeight: 600,
+            }}>
+              {isProcessing ? "Saving…" : "Add & Leave"}
+            </button>
+          </div>
+        </Modal>
       )}
+    </div>
+  );
+};
+
+/* ─── Item card ─────────────────────────────────────────────────────────── */
+const ItemCard = ({ item, owned, selected, onClick }) => {
+  const bg     = owned   ? "rgba(28,42,18,0.7)"
+               : selected ? "rgba(30,20,10,0.85)"
+               : "#1a110a";
+  const border = owned   ? "rgba(90,160,60,0.55)"
+               : selected ? "#c17a2e"
+               : "rgba(90,58,26,0.3)";
+  const shadow = owned   ? "0 0 14px rgba(80,140,60,0.1)"
+               : selected ? "0 0 18px rgba(193,122,46,0.22)"
+               : "none";
+
+  return (
+    <div onClick={onClick} style={{
+      position: "relative", cursor: "pointer", borderRadius: 12,
+      overflow: "hidden", display: "flex", flexDirection: "column",
+      background: bg, border: `1.5px solid ${border}`, boxShadow: shadow,
+      transform: selected && !owned ? "scale(1.02)" : "scale(1)",
+      transition: "all 0.15s ease",
+    }}>
+      {/* Badge */}
+      {owned && (
+        <div style={{
+          position: "absolute", top: 8, right: 8, zIndex: 2,
+          background: "rgba(50,110,30,0.88)", color: "#b8e8a0",
+          fontFamily: "'Trebuchet MS', sans-serif", fontSize: 10,
+          fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.5px",
+          padding: "2px 8px", borderRadius: 9999,
+        }}>✓ Owned</div>
+      )}
+      {selected && !owned && (
+        <div style={{
+          position: "absolute", top: 8, right: 8, zIndex: 2,
+          background: "rgba(193,122,46,0.92)", color: "#fff8ee",
+          fontFamily: "'Trebuchet MS', sans-serif", fontSize: 10,
+          fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.5px",
+          padding: "2px 8px", borderRadius: 9999,
+        }}>Selected</div>
+      )}
+
+      {/* Image */}
+      <div style={{
+        height: 112, background: "#130e08",
+        display: "flex", alignItems: "center", justifyContent: "center",
+        opacity: owned ? 0.6 : 1, overflow: "hidden",
+      }}>
+        {item.image_url
+          ? <img src={item.image_url} alt={item.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+          : <span style={{ fontSize: 30, userSelect: "none" }}>{getCategoryIcon(item.item_type)}</span>
+        }
+      </div>
+
+      {/* Info */}
+      <div style={{ padding: "10px 12px", flex: 1, display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
+        <p style={{
+          fontFamily: "Palatino, Georgia, serif", fontSize: 13, lineHeight: 1.35,
+          color: owned ? "#9dcc85" : selected ? "#c8a97a" : "#c8bfb0",
+          margin: "0 0 8px", fontWeight: owned || selected ? 600 : 400,
+        }}>
+          {item.name}
+        </p>
+        <div style={{ display: "flex", justifyContent: "space-between",
+          fontFamily: "monospace", fontSize: 11, color: "#5a3a1a" }}>
+          <span>{(Number(item.weight) / 1000).toFixed(2)} kg</span>
+          <span style={{ color: "#7a5a30" }}>${Number(item.cost).toFixed(0)}</span>
+        </div>
+      </div>
     </div>
   );
 };

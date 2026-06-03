@@ -1,5 +1,6 @@
 import { createContext, useContext, useState, useEffect } from "react";
 import * as userService from "../api/usersService";
+import axios from "axios";
 
 const UserContext = createContext(null);
 
@@ -20,14 +21,17 @@ export const UserProvider = ({ children }) => {
   // Check for existing session on mount
   useEffect(() => {
     const storedUser = localStorage.getItem("hike_user");
-    if (storedUser) {
+    const storedToken = localStorage.getItem("hike_token");  // add this
+
+    if (storedUser && storedToken) {
       try {
+        userService.setAuthHeader(storedToken);             // add this
         const parsed = JSON.parse(storedUser);
         setUser(parsed);
         setItems(parsed.items || []);
       } catch (err) {
-        console.error("Failed to parse stored user:", err);
         localStorage.removeItem("hike_user");
+        localStorage.removeItem("hike_token");             // add this
         setAuthModalOpen(true);
       }
     } else {
@@ -116,29 +120,40 @@ export const UserProvider = ({ children }) => {
     );
   };
 
+  // UserContext.jsx - update your login function
+
   const login = async (email, password) => {
-    setLoading(true);
-    setError(null);
-    try {
-      const loggedInUser = await userService.loginUser({ email, password });
-      setUser(loggedInUser);
-      setItems(loggedInUser.items || []);
-      localStorage.setItem("hike_user", JSON.stringify(loggedInUser));
-      setAuthModalOpen(false);
-      return loggedInUser;
-    } catch (err) {
-      const errorMsg = err.response?.data?.detail || "Invalid email or password";
-      setError(errorMsg);
-      throw new Error(errorMsg);
-    } finally {
-      setLoading(false);
-    }
-  };
+  setLoading(true);
+  setError(null);
+  try {
+    const tokenResponse = await userService.loginUser({ email, password });
+    localStorage.setItem("hike_token", tokenResponse.access_token);
+    localStorage.setItem("hike_user_id", tokenResponse.user_id);
+    userService.setAuthHeader(tokenResponse.access_token);
+    const fullUser = await userService.getUserById(tokenResponse.user_id);
+    setUser(fullUser);
+    setItems(fullUser.items || []);
+    localStorage.setItem("hike_user", JSON.stringify(fullUser));
+    setAuthModalOpen(false);
+    return fullUser;
+  } catch (err) {
+    const errorMsg = err.response?.status === 401
+      ? "Incorrect email or password, please try again."
+      : "Something went wrong. Please try again.";
+    setError(errorMsg);
+    throw new Error(errorMsg);
+  } finally {
+    setLoading(false);
+  }
+};
 
   const logout = () => {
     setUser(null);
     setItems([]);
     localStorage.removeItem("hike_user");
+    localStorage.removeItem("hike_token");
+    localStorage.removeItem("hike_user_id");
+    userService.clearAuthHeader(); 
     setAuthModalOpen(true);
   };
 
@@ -146,46 +161,61 @@ export const UserProvider = ({ children }) => {
     setLoading(true);
     setError(null);
     try {
-      const created = await userService.createUser(userData);
-      setUser(created);
-      setItems(created.items || []);
-      localStorage.setItem("hike_user", JSON.stringify(created));
+      await userService.createUser(userData);
+      await login(userData.email, userData.password);
       setAuthModalOpen(false);
-      return created;
-    } catch (err) {
-      let errorMsg = "Failed to create user";
-      if (err.response?.status === 422) {
-         const detail = err.response.data.detail;
-         errorMsg = Array.isArray(detail) 
-            ? detail.map(e => `${e.loc[1]}: ${e.msg}`).join(" | ") 
-            : String(detail);
-      } else if (err.response?.data?.detail) {
-         errorMsg = err.response.data.detail;
-      } else if (err.message) {
-         errorMsg = err.message;
-      }
-      setError(errorMsg);
-    } finally {
-      setLoading(false);
-    }
+      } catch (err) {
+          let errorMsg = "Failed to create user";
+          if (err.response?.status === 409) {
+            errorMsg = "An account with that email already exists.";
+          } else if (err.response?.status === 422) {
+            const detail = err.response.data.detail;
+            errorMsg = Array.isArray(detail)
+              ? detail.map(e => `${e.loc[1]}: ${e.msg}`).join(" | ")
+              : String(detail);
+          } else if (err.response?.data?.detail) {
+            errorMsg = err.response.data.detail;
+          } else if (err.message) {
+            errorMsg = err.message;
+          }
+          setError(errorMsg);
+          throw err; // ← this is what was missing
+      } finally {
+        setLoading(false);
+        }
   };
+    const setGlobalUserLocation = async (locationData) => {
+      if (!user) return;
 
-  const addItem = async (userId, itemId) => {
-    setLoading(true);
-    try {
-      const updatedItemsList = await userService.addUserItem(userId, itemId);
-      setItems(updatedItemsList);
-      if (user) {
-        updateLocalUser({ ...user, items: updatedItemsList });
+      try {
+        // Update backend
+        const updatedUser = await userService.updateUser(user.id, {
+          home_location: locationData,
+        });
+
+        // Sync context + localStorage
+        updateLocalUser(updatedUser);
+      } catch (err) {
+        console.error("Failed to set global user location:", err);
+        setError("Failed to update user location.");
       }
-      return updatedItemsList;
-    } catch (err) {
-      setError(err.response?.data?.detail || err.message);
-      throw err;
-    } finally {
-      setLoading(false);
-    }
-  };
+    };
+    const addItem = async (userId, itemId) => {
+      setLoading(true);
+      try {
+        const updatedItemsList = await userService.addUserItem(userId, itemId);
+        setItems(updatedItemsList);
+        if (user) {
+          updateLocalUser({ ...user, items: updatedItemsList });
+        }
+        return updatedItemsList;
+      } catch (err) {
+        setError(err.response?.data?.detail || err.message);
+        throw err;
+      } finally {
+        setLoading(false);
+      }
+    };
 
   const addItemsBatch = async (userId, itemIds) => {
     setLoading(true);
@@ -228,6 +258,7 @@ export const UserProvider = ({ children }) => {
     error,
     authModalOpen,
     setAuthModalOpen,
+    setGlobalUserLocation,
     loadingLocation, // Exported so Profile can use it
     updateLocation,  // Exported so Profile can call it manually
     login,

@@ -1,32 +1,47 @@
+# ingestion/osm_client.py
+import time
 import requests
 
-# CHANGED: We are switching to the Kumi Systems mirror which is often more reliable
-# Old URL: "https://overpass-api.de/api/interpreter"
-OVERPASS_URL = "https://overpass.kumi.systems/api/interpreter"
+OVERPASS_URL = "https://overpass-api.de/api/interpreter"
 
-def fetch_hiking_routes(bbox):
-    # Added [timeout:60] because Kumi sometimes takes a moment to spin up
-    query = f"""
-    [out:json][timeout:60];
-    relation["route"="hiking"]["type"="route"]({bbox});
-    out body;
-    >;
-    out skel qt;
+# Fetches named hiking relations and all their member nodes/ways.
+# "out body; >; out skel qt;" means: give me the relations,
+# then recurse down to get the ways and nodes they reference.
+QUERY = """
+[out:json][timeout:120];
+(
+  relation["route"="hiking"]["name"]({bbox});
+  relation["route"="foot"]["name"]({bbox});
+);
+out body;
+>;
+out skel qt;
+"""
+
+def fetch_hiking_routes(bbox: str, retries: int = 3) -> dict:
     """
-    
-    # Added a specific User-Agent header (Good practice, prevents 403 Forbidden errors)
-    headers = {
-        "User-Agent": "HikingMapIngestor/1.0 (contact@example.com)",
-        "Referer": "http://localhost"
-    }
+    bbox: "lat_min,lon_min,lat_max,lon_max"
+    e.g. "35.4, -84.0, 35.8, -83.2" for a chunk of the Smokies
+    """
+    query = QUERY.format(bbox=bbox)
 
-    try:
-        response = requests.post(OVERPASS_URL, data=query, headers=headers)
-        response.raise_for_status()
-        return response.json()
-        
-    except requests.exceptions.ConnectionError as e:
-        print(f"\nCRITICAL NETWORK ERROR: Could not connect to {OVERPASS_URL}")
-        print("Please check your internet connection or try a different URL.")
-        print(f"Details: {e}\n")
-        raise
+    for attempt in range(retries):
+        try:
+            resp = requests.post(
+                OVERPASS_URL,
+                data={"data": query},
+                timeout=130,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            if "elements" not in data:
+                raise ValueError("Overpass returned no elements")
+            return data
+
+        except Exception as e:
+            if attempt < retries - 1:
+                wait = 5 * (2 ** attempt)   # 5s → 10s → 20s
+                print(f"  Overpass failed ({e}), retrying in {wait}s...")
+                time.sleep(wait)
+            else:
+                raise RuntimeError(f"Overpass API failed after {retries} attempts: {e}") from e

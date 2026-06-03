@@ -99,9 +99,8 @@ class UserRepository(BaseRepository[User]):
                             "item_type": row['item_type'],
                             "image_url": row['image_url']
                         })
-                print(f"DEBUGGING STARTING HERE_________")
-                for item in items_list:
-                    print(f"Item data: {item}")  # Debug: see what data is being passed
+                #for item in items_list:
+                    #print(f"Item data: {item}")  # Debug: see what data is being passed
 
                 user_dict["items"] = items_list
                 return User.from_dict(user_dict)
