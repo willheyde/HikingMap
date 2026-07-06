@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional
 
-from TripPlan import TripPlan
+from AI.TripPlan import TripPlan
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -97,7 +97,11 @@ class TripSession:
         We re-summarize every MESSAGE_WINDOW turns so the summary stays fresh.
         """
         return self.total_turns > 0 and self.total_turns % MESSAGE_WINDOW == 0
-
+    def clear_window(self) -> None:
+        """Wipe conversation history. Called on destination reset so Groq
+        doesn't carry stale phase context into the next turn."""
+        self.messages.clear()
+        self.total_turns = 0    # prevent spurious summarization on near-empty window
     def get_window_messages(self) -> list[dict]:
         """
         Return the sliding window stripped of internal 'ts' field,

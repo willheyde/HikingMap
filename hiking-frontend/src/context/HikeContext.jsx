@@ -1,4 +1,4 @@
-import { createContext, useContext, useState } from "react";
+import { createContext, useContext, useState, useRef, useCallback } from "react";
 import * as hikeService from "../api/hikesService";
 
 const HikeContext = createContext(null);
@@ -42,17 +42,24 @@ export const HikeProvider = ({ children }) => {
     }
   };
 
-  const searchHikes = async (filters) => {
+  const searchAbortRef = useRef(null);
+
+  const searchHikes = useCallback(async (filters) => {
+    if (searchAbortRef.current) searchAbortRef.current.abort();
+    const controller = new AbortController();
+    searchAbortRef.current = controller;
+
     setLoading(true);
     try {
-      const results = await hikeService.searchHikes(filters);
+      const results = await hikeService.searchHikes(filters, controller.signal);
       setHikes(results);
     } catch (err) {
+      if (axios.isCancel(err) || err.code === "ERR_CANCELED" || err.name === "CanceledError") return;
       setError(err.response?.data?.detail || err.message);
     } finally {
-      setLoading(false);
+      if (!controller.signal.aborted) setLoading(false);
     }
-  };
+  }, []);
 
   const selectHike = (hike) => {
     setSelectedHike(hike);

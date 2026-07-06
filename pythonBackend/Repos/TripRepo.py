@@ -3,7 +3,7 @@ from uuid import UUID
 from typing import List, Optional
 
 from DBConnection import get_connection
-from PyObjects.Trip import Trip, TripStop, TripGearItem
+from PyObjects.Trip import Trip, TripStop, TripGearItem, HikeCompletion
 
 
 class TripRepository:
@@ -15,13 +15,131 @@ class TripRepository:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    INSERT INTO trips (id, user_id, title, goal, status, created_at)
-                    VALUES (%s, %s, %s, %s, %s, %s)
+                    INSERT INTO trips (id, user_id, title, goal, status, created_at, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
                     """,
                     (str(trip.id), str(trip.user_id), trip.title,
-                     trip.goal, trip.status, trip.created_at)
+                     trip.goal, trip.status, trip.created_at, trip.updated_at)
                 )
         return trip
+
+    def update_status(self, trip_id: UUID, status: str) -> None:
+        """Bumps updated_at alongside status — every status transition in the
+        lifecycle (saved/completed/reviewed) should go through this so
+        GET /chats's updated_at-desc ordering stays meaningful."""
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE trips SET status = %s, updated_at = now() WHERE id = %s",
+                    (status, str(trip_id))
+                )
+
+    def mark_completed(self, trip_id: UUID) -> None:
+        """'Mark as done' — status=completed and stamps completed_at, which
+        the needs_review background job anchors off of (see
+        flip_needs_review). Separate from update_status since it's the only
+        transition that also sets a timestamp column."""
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE trips
+                    SET status = 'completed', completed_at = now(), updated_at = now()
+                    WHERE id = %s
+                    """,
+                    (str(trip_id),)
+                )
+
+    def mark_reviewed(self, trip_id: UUID) -> None:
+        """status=reviewed once the questionnaire is submitted. needs_review
+        is cleared alongside — harmless either way since the background job
+        only ever matches status='completed', but keeps the flag meaningful
+        if something else ever reads it directly."""
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE trips
+                    SET status = 'reviewed', needs_review = false, updated_at = now()
+                    WHERE id = %s
+                    """,
+                    (str(trip_id),)
+                )
+
+    def flip_needs_review(self, days: int) -> int:
+        """
+        Background-job primitive: flips needs_review for every completed
+        trip whose completed_at is more than `days` old and isn't already
+        flagged. Pure batch UPDATE — no per-row Python loop needed, and
+        idempotent to re-run (WHERE needs_review = false means an
+        already-flagged row is a no-op on the next pass).
+
+        Returns the number of rows flipped, for logging.
+        """
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE trips
+                    SET needs_review = true
+                    WHERE status = 'completed'
+                      AND needs_review = false
+                      AND completed_at <= now() - (%s || ' days')::interval
+                    """,
+                    (days,)
+                )
+                return cur.rowcount
+
+    # ── Hike completions ──────────────────────────────────────────────────────
+
+    def add_completion(self, completion: HikeCompletion) -> HikeCompletion:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO hike_completions (
+                        trip_id, went, difficulty_felt, elevation_felt, rating, notes, reviewed_at
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (trip_id) DO UPDATE SET
+                        went            = EXCLUDED.went,
+                        difficulty_felt = EXCLUDED.difficulty_felt,
+                        elevation_felt  = EXCLUDED.elevation_felt,
+                        rating          = EXCLUDED.rating,
+                        notes           = EXCLUDED.notes,
+                        reviewed_at     = EXCLUDED.reviewed_at
+                    """,
+                    (
+                        str(completion.trip_id), completion.went, completion.difficulty_felt,
+                        completion.elevation_felt, completion.rating, completion.notes,
+                        completion.reviewed_at,
+                    )
+                )
+        return completion
+
+    def get_completion(self, trip_id: UUID) -> Optional[HikeCompletion]:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT * FROM hike_completions WHERE trip_id = %s", (str(trip_id),))
+                row = cur.fetchone()
+                return HikeCompletion.from_dict(dict(row)) if row else None
+
+    def get_ratings(self, trip_ids: List[UUID]) -> dict:
+        """
+        {trip_id_str: rating} for whichever of these ids have a rated
+        hike_completions row. Used by GET /chats so the Past Hikes card grid
+        can show a rating without fetching each trip's full record —
+        keeps Trip/list_by_user() clean rather than baking a
+        hike_completions join into the trips query.
+        """
+        if not trip_ids:
+            return {}
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT trip_id, rating FROM hike_completions WHERE trip_id = ANY(%s) AND rating IS NOT NULL",
+                    ([str(t) for t in trip_ids],)
+                )
+                return {str(row["trip_id"]): row["rating"] for row in cur.fetchall()}
 
     def get_by_id(self, trip_id: UUID) -> Optional[Trip]:
         with get_connection() as conn:
@@ -35,19 +153,38 @@ class TripRepository:
                 trip.gear  = self._get_gear(cur, trip_id)
                 return trip
 
-    def list_by_user(self, user_id: UUID) -> List[Trip]:
+    def list_by_user(
+        self,
+        user_id: UUID,
+        statuses: Optional[List[str]] = None,
+        hydrate: bool = True,
+    ) -> List[Trip]:
+        """
+        statuses filters to just those lifecycle states (e.g. ["saved",
+        "completed", "reviewed"] for GET /chats); None (default) returns
+        everything, preserving the existing GET /trips/ behavior.
+
+        hydrate=False skips the per-trip stops/gear lookups — GET /chats
+        only needs title/status/timestamps for the list view, so there's no
+        reason to pay for N+1 stop/gear queries there.
+        """
         with get_connection() as conn:
             with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT * FROM trips WHERE user_id = %s ORDER BY created_at DESC",
-                    (str(user_id),)
-                )
+                query  = "SELECT * FROM trips WHERE user_id = %s"
+                params: list = [str(user_id)]
+                if statuses:
+                    query += " AND status = ANY(%s)"
+                    params.append(list(statuses))
+                query += " ORDER BY updated_at DESC"
+
+                cur.execute(query, params)
                 rows = cur.fetchall()
                 trips = []
                 for row in rows:
                     trip = Trip.from_dict(dict(row))
-                    trip.stops = self._get_stops(cur, trip.id)
-                    trip.gear  = self._get_gear(cur, trip.id)
+                    if hydrate:
+                        trip.stops = self._get_stops(cur, trip.id)
+                        trip.gear  = self._get_gear(cur, trip.id)
                     trips.append(trip)
                 return trips
 

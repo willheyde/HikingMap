@@ -2,7 +2,7 @@
 PhaseController.py
 
 The state machine. This is the only place phase transitions happen.
-Grok never decides when to advance — this code does, based on hard signals.
+Groq never decides when to advance — this code does, based on hard signals.
 
 Transition logic per phase:
 
@@ -30,11 +30,10 @@ Each check is a combination of:
 import re
 import logging
 from typing import Optional
-from uuid import UUID
 
-from .models.TripSession import TripSession
-from .models.TripPlan import TripPlan
-from .TripInputParser import TripIntent
+from .TripSession import TripSession
+from .TripPlan    import TripPlan
+from .TripInputParser    import TripIntent
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +44,7 @@ logger = logging.getLogger(__name__)
 # Ambiguous messages ("ok", "sure") do NOT advance phase.
 
 GEAR_DONE_SIGNALS = [
+    # existing patterns
     r"\bgear.*(good|ready|fine|set|done|finalized|looks good|sorted)\b",
     r"\b(happy|satisfied) with.*(gear|kit|pack)\b",
     r"\bready (to|for).*(itinerary|plan|next|continue)\b",
@@ -52,6 +52,16 @@ GEAR_DONE_SIGNALS = [
     r"\bfinalize.*(gear|kit)\b",
     r"\bthat'?s everything\b",
     r"\bthat (covers|does) it\b",
+    # new — natural "skip/accept gaps" phrasings
+    r"\bproceed\b",                                              # "proceed as is", "let's proceed"
+    r"\bskip\b",                                                 # "skip", "skip this"
+    r"\bas.is\b",                                                # "as is", "as-is"
+    r"\b(no|don'?t).{0,10}(change|fix|buy|get|address)\b",      # "no need to buy", "don't need to address"
+    r"\b(looks? good|all good|good to go|sounds? good)\b",       # "looks good" — also natural here
+    r"\b(i'?m|we'?re|i am).{0,15}(ready|set|good)\b",           # "i'm ready", "we're good"
+    r"\bignore.{0,30}(gear|gaps?|kit|items?|rest|other|those)\b",  # "ignore the other gear"
+    r"\b(don'?t|not).{0,15}(worry|care|worried|concerned)\b",       # "don't worry about it"
+    r"\b(fine|okay?|ok).{0,15}with.{0,20}(gaps?|gear|missing|that)\b",       # "ok with that", "fine with the gaps"
 ]
 
 ITINERARY_DONE_SIGNALS = [
@@ -62,22 +72,28 @@ ITINERARY_DONE_SIGNALS = [
 ]
 
 DESTINATION_RESET_SIGNALS = [
-    r"\bdestination reset\b",              # explicit signal from Grok (per PromptBuilder rules)
+    r"\bdestination reset\b",
     r"\bchange.*(destination|location|hike|trail|place)\b",
     r"\bactually.*(want|thinking|prefer).*(go to|hike|visit)\b",
     r"\bforget.*(that|it).*(let'?s|i want)\b",
     r"\bstart over\b",
     r"\bdifferent (trail|hike|destination|place)\b",
+    r"\bcan (i|we) (go back to|go to|return to)\b",
+    r"\b(go|get) back to (the )?(destination|destinations|hike selection|hikes)\b",
+    r"\bback to (the )?(destination|destinations|hike selection|hikes)\b",
+    r"\b(try|go|head)(?!\s+with\s+\d).{0,25}\binstead\b",
 ]
 
 # Patterns that indicate the user is selecting one of the numbered hike options.
-# Matched against the lowercased message by extract_hike_selection().
 HIKE_SELECTION_SIGNALS = [
     r"\b(option|trail|hike|choice|number|#)\s*[1-5]\b",
     r"\b(first|second|third|fourth|fifth)\s*(one|option|trail|hike)?\b",
     r"\b(go with|let'?s (do|take)|i'?ll (take|do)|i (want|pick|choose))\b.{0,20}\b[1-5]\b",
     r"\b[1-5]\s*(sounds|looks|seems)\s*(good|great|perfect|nice)\b",
-    r"^[1-5][.!?\s]*$",  # bare digit (entire message is just the number)
+    r"^[1-5][.!?\s]*$",   # bare digit (entire message is just the number)
+    r"\b(?:can (?:i|we)|let'?s) (?:look at|check out|see|try)\b.{0,15}\b[1-5]\b",
+    r"\b(?:what|how) about\b.{0,15}\b[1-5]\b",
+    r"\bshow me\b.{0,15}\b[1-5]\b",
 ]
 
 # Maps English ordinals → their 1-based position.
@@ -120,7 +136,7 @@ class PhaseController:
             session      = session,
             user_message = message,
             intent       = parsed_intent,   # may be None on selection turn
-            ai_response  = grok_response,
+            ai_response  = groq_response,
         )
 
         if reset:
@@ -197,14 +213,14 @@ class PhaseController:
 
         The `intent` parameter from evaluate() is intentionally NOT used here —
         on the selection turn the user says "option 2", not a new destination
-        description, so intent will be None.  plan fields are the source of truth.
+        description, so intent will be None. plan fields are the source of truth.
         """
         plan = session.plan
         if not (
             plan.destination_full
             and plan.duration_days
-            and plan.lat  is not None
-            and plan.lng  is not None
+            and plan.lat is not None
+            and plan.lng is not None
         ):
             return False
 
@@ -218,14 +234,15 @@ class PhaseController:
         Advance from gear_review when user sends a clear finalization signal.
         Requires that gear gap analysis has already run (gaps presented or empty).
         """
-        if not session.phase_data.get("gaps_presented"):
+        if session.plan.hike_id is None:
             return False
         return self._matches_any(user_message, GEAR_DONE_SIGNALS)
 
     def _itinerary_approved(self, user_message: str, session: TripSession) -> bool:
         """
         Advance from itinerary when user approves.
-        Requires at least one day to have been built.
+        Requires at least one day to have been parsed — this ensures the
+        itinerary parser has successfully run before the trip can be saved.
         """
         if not session.plan.days:
             return False
@@ -234,7 +251,10 @@ class PhaseController:
     def _wants_reset(self, user_message: str, ai_response: str) -> bool:
         """
         Check both the user message and the AI's response for reset signals.
-        Grok is prompted to emit 'DESTINATION RESET' explicitly when detected.
+        Groq is prompted to emit 'DESTINATION RESET' explicitly when detected.
+        trip_chat.py also runs a Python phrase-detector before calling evaluate(),
+        but this check remains as a fallback for ambiguous phrasing Groq catches
+        that the phrase detector misses.
         """
         return (
             self._matches_any(user_message, DESTINATION_RESET_SIGNALS)
@@ -253,16 +273,6 @@ class PhaseController:
 
         `count` should be the number of options that were presented
         (len(session.phase_data["hike_options"])).
-
-        Called by trip_chat.py before evaluate() when:
-          session.phase == "destination"
-          and session.phase_data.get("hikes_presented")
-          and session.plan.hike_id is None
-
-        Example:
-            idx = PhaseController.extract_hike_selection("let's do option 2", count=5)
-            # → 1  (0-based)
-            session.plan.hike_id = session.phase_data["hike_options"][idx]
         """
         if count <= 0:
             return None
@@ -287,7 +297,11 @@ class PhaseController:
         # 3. Digit following a selection verb: "go with 2", "let's do 3",
         #    "i'll take 1", "i want 4"
         verb_match = re.search(
-            r"\b(?:go with|let'?s (?:do|take)|i'?ll (?:take|do)|i (?:want|pick|choose))\b"
+            r"\b(?:go with|let'?s (?:do|take)|i'?ll (?:take|do)|i (?:want|pick|choose)"
+            r"|(?:can (?:i|we)|let'?s|i(?:'d| would)(?: like)?)"
+            r" (?:look at|see|check(?: out)?|try|do|go with|pick|choose)"
+            r"|(?:what|how) about"
+            r"|show me)\b"
             r".{0,20}\b([1-5])\b",
             text_lower,
         )
@@ -319,25 +333,18 @@ class PhaseController:
 
     def on_hikes_presented(
         self,
-        session:   TripSession,
-        scored:    list,          # List[Tuple[Hike, int]] from HikeSearchService
+        session: TripSession,
+        scored:  list,          # List[Tuple[Hike, int]] from HikeSearchService
     ) -> None:
         """
         Mark that hike options have been shown to the user.
-        Stores the ordered list of hike UUIDs so extract_hike_selection()
-        can resolve "option 2" → the correct UUID.
-
-        Call this AFTER HikeSearchService.find_hikes_for_intent() returns and
-        BEFORE building the Groq prompt (so the context string is fresh).
-
-        trip_chat.py example:
-            scored = hike_search_service.find_hikes_for_intent(intent)
-            controller.on_hikes_presented(session, scored)
-            context_str = hike_search_service.format_for_context(scored)
-            # pass context_str into build_system_prompt()
+        Stores the ordered list of hike UUIDs and names so that:
+          - extract_hike_selection() can resolve "option 2" → the correct UUID
+          - trip_chat.py can look up hike_names[idx] when promoting the selection
         """
         session.phase_data["hikes_presented"] = True
         session.phase_data["hike_options"]    = [str(hike.id) for hike, _ in scored]
+        session.phase_data["hike_names"]      = [hike.name   for hike, _ in scored]
         logger.info(
             "PhaseController: %d hike options presented for session %s",
             len(scored),
@@ -347,14 +354,16 @@ class PhaseController:
     def on_enter_gear_review(self, session: TripSession, gaps: list) -> None:
         """
         Store gear gaps on the plan and mark that they've been presented.
-        Call this after running GearGapAnalyzer, before building the prompt.
+        Note: plan.gear_gaps is already populated by trip_chat._promote_hike_gaps()
+        at hike-selection time — the first line is a no-op in normal flow, but
+        the gaps_presented flag is essential: _gear_finalized() gates on it.
         """
-        session.plan.gear_gaps = gaps
+        session.plan.gear_gaps               = gaps
         session.phase_data["gaps_presented"] = True
 
     def on_enter_itinerary(self, session: TripSession) -> None:
         """Clear any stale day plans if re-entering itinerary phase."""
-        session.plan.days = []
+        session.plan.days                       = []
         session.phase_data["itinerary_started"] = True
 
     def on_enter_finalize(self, session: TripSession) -> None:

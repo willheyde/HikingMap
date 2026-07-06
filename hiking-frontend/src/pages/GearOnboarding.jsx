@@ -217,17 +217,21 @@ const GearOnboarding = () => {
           background: `linear-gradient(to right, transparent, ${C.divider} 30%, ${C.cardBorder} 50%, ${C.divider} 70%, transparent)`,
         }} />
 
-        <ProgressBar step={stepIndex} total={STEPS.length} />
-
-        {/* Step heading */}
-        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16 }}>
-          <span style={{ fontSize: 24 }}>{step.icon}</span>
-          <div>
-            <div style={{ fontFamily: serif, fontSize: 18, color: C.heading }}>{step.label}</div>
-            <div style={{ fontFamily: sans, fontSize: 11, color: C.muted, marginTop: 2 }}>
-              {step.multi ? "Select all that apply" : "Pick one"}
-            </div>
-          </div>
+        {/* Skip onboarding */}
+        <div style={{ textAlign: "right", marginBottom: "1rem", marginTop: "-0.75rem" }}>
+          <button
+            onClick={() => navigate("/gear")}
+            style={{
+              background: "none", border: "none", padding: 0,
+              fontFamily: sans, fontSize: 11, color: C.muted,
+              letterSpacing: "0.5px", cursor: "pointer",
+              textDecoration: "underline", textUnderlineOffset: "3px",
+            }}
+            onMouseEnter={e => e.currentTarget.style.color = C.label}
+            onMouseLeave={e => e.currentTarget.style.color = C.muted}
+          >
+            Skip onboarding →
+          </button>
         </div>
 
         {/* Item list */}

@@ -25,10 +25,9 @@ class Hike:
     region: str
     season_start_month: int
     season_end_month: int
-    # --- New Fields ---
-    latitude: float = 0.0
-    longitude: float = 0.0
-    # ------------------
+    lat: float = 0.0
+    lng: float = 0.0
+    state: Optional[str] = None          # ← ADD THIS
     required_gear_tags: List[str] = field(default_factory=list)
     permits_required: bool = False
     nearest_airport_code: Optional[str] = None
@@ -45,22 +44,21 @@ class Hike:
         self.length_km = float(self.length_km)
         self.elevation_gain_m = float(self.elevation_gain_m)
 
-        # --- AUTO-CALCULATE LAT/LONG IF MISSING ---
-        # If lat/long are 0, try to extract start point from geometry (GeoJSON)
-        if (self.latitude == 0.0 or self.longitude == 0.0) and self.geometry:
+        # AUTO-CALCULATE LAT/LNG IF MISSING
+        # If lat/lng are 0, try to extract start point from geometry (GeoJSON)
+        if (self.lat == 0.0 or self.lng == 0.0) and self.geometry:
             try:
                 # GeoJSON format: {"type": "LineString", "coordinates": [[lon, lat], [lon, lat]]}
                 coords = self.geometry.get("coordinates")
                 if coords and isinstance(coords, list) and len(coords) > 0:
-                    # Get the first point (Start of hike)
+                    # Get the first point (start of hike)
                     # Handle both Point ([lon, lat]) and LineString ([[lon, lat], ...])
                     first_point = coords[0] if isinstance(coords[0], list) else coords
                     
-                    # GeoJSON is [Longitude, Latitude]
-                    self.longitude = float(first_point[0])
-                    self.latitude = float(first_point[1])
+                    # GeoJSON is [longitude, latitude]
+                    self.lng = float(first_point[0])
+                    self.lat = float(first_point[1])
             except (IndexError, TypeError, ValueError):
-                # Keep as 0.0 if extraction fails
                 pass
 
     def to_dict(self) -> Dict[str, Any]:
@@ -103,10 +101,10 @@ class Hike:
         if isinstance(data_copy.get("last_synced_at"), str):
             data_copy["last_synced_at"] = datetime.fromisoformat(data_copy["last_synced_at"])
 
-        # 5. Handle Lat/Long strings (if DB returns them as strings)
-        if "latitude" in data_copy:
-            data_copy["latitude"] = float(data_copy["latitude"])
-        if "longitude" in data_copy:
-            data_copy["longitude"] = float(data_copy["longitude"])
+        # 5. Handle lat/lng strings (if DB returns them as strings)
+        if "lat" in data_copy:
+            data_copy["lat"] = float(data_copy["lat"])
+        if "lng" in data_copy:
+            data_copy["lng"] = float(data_copy["lng"])
 
         return cls(**data_copy)

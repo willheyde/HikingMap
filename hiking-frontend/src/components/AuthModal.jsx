@@ -122,10 +122,8 @@ const AuthModal = () => {
     try {
       if (isLoginView) {
         await login(email, password);
-        // Returning user: go to onboarding only if they have no gear yet,
-        // otherwise drop them straight into their profile.
-        const hasGear = userItems && userItems.length > 0;
-        navigate(hasGear ? "/profile" : "/onboarding");
+        // No navigation — closing the modal below leaves the user on
+        // whatever page they were already on.
       } else {
         const pwError = validatePassword(password);
         if (pwError) { setFormError(pwError); return; }

@@ -32,8 +32,10 @@ from ingestion.characterizations import (
     calculate_difficulty,
     derive_tags,
     estimate_season,
+    find_data_quality_issues,   # new
     infer_permits_required,
     infer_region,
+    infer_state,
     is_valid_hike,
     is_noise,
 )
@@ -41,7 +43,7 @@ from ingestion.seeder import seed_gear
 
 # ── Config ─────────────────────────────────────────────────────────────────────
 
-PBF_FILE = "rhode-island-260101.osm.pbf"
+PBF_FILE = "north-carolina-260622.osm.pbf"
 
 VALID_HIGHWAY_TAGS = {"path", "track", "footway"}
 
@@ -106,6 +108,10 @@ class HikeHandler(osmium.SimpleHandler):
         # 1. Cheap tag filters first — no variable allocation needed
         if w.tags.get("highway") not in VALID_HIGHWAY_TAGS:
             return
+        if w.tags.get("access") in {"private", "no"}:
+            return
+        if w.tags.get("foot") in {"private", "no"}:
+            return
         name = w.tags.get("name")
         if not name:
             return
@@ -129,21 +135,29 @@ class HikeHandler(osmium.SimpleHandler):
             self.skipped += 1
             return
 
-        # 4. Metadata
-        difficulty               = calculate_difficulty(length_km, gain_m)
+        # 4. Trailhead coordinates — first node is the start of the trail.
+        #    Stored in dedicated lat/lng columns for fast distance queries.
+        #    The full LineString geometry is preserved separately for map rendering.
+        trailhead_lat = nodes[0][0]
+        trailhead_lng = nodes[0][1]
+
+        # 5. Metadata
+        difficulty               = calculate_difficulty(length_km, gain_m, dict(w.tags))
         season_start, season_end = estimate_season(max_ele)
-        region                   = infer_region(nodes[0][0], nodes[0][1])
+        region                   = infer_region(trailhead_lat, trailhead_lng)
+        state                    = infer_state(trailhead_lat, trailhead_lng)
         permits                  = infer_permits_required(dict(w.tags))
         source_id                = f"osm_way_{w.id}"
 
-        # 5. Skip if already in DB
+        # 6. Skip if already in DB
         if service.get_by_source_id(source_id):
             self.skipped += 1
             return
 
-        # 6. Derive searchable tags from computed metrics.
-        #    Feature tags (waterfall, lake, summit, can_camp, etc.) are added
-        #    later by the Overpass enrichment script — not available here.
+        # 7. Derive searchable tags from computed metrics + trail name.
+        #    Feature tags (waterfall, lake, summit, can_camp, etc.) not yet
+        #    in Overpass enrichment are partially covered by name inference
+        #    inside derive_tags().
         tags = derive_tags(
             length_km          = length_km,
             elevation_gain_m   = gain_m,
@@ -151,9 +165,17 @@ class HikeHandler(osmium.SimpleHandler):
             season_start_month = season_start,
             season_end_month   = season_end,
             permits_required   = permits,
+            name               = name,
         )
-
-        # 7. Gear requirements
+        # 7b. Reject records that are physically implausible or internally
+        #     self-contradictory (e.g. a `flat` tag next to Expert difficulty)
+        #     rather than letting them reach the DB silently.
+        quality_issues = find_data_quality_issues(length_km, gain_m, difficulty, tags)
+        if quality_issues:
+            log.warning(f"Rejected '{name}': {'; '.join(quality_issues)}")
+            self.skipped += 1
+            return
+        # 8. Gear requirements
         gear_reqs = GearInferenceEngine.infer_requirements(
             length_km  = length_km,
             gain_m     = gain_m,
@@ -162,7 +184,7 @@ class HikeHandler(osmium.SimpleHandler):
             region     = region,
         )
 
-        # 8. Save hike + gear
+        # 9. Save hike + gear
         try:
             hike = Hike(
                 id                 = uuid.uuid4(),
@@ -175,12 +197,15 @@ class HikeHandler(osmium.SimpleHandler):
                 min_altitude_m     = round(min_ele, 1),
                 max_altitude_m     = round(max_ele, 1),
                 region             = region,
+                state              = state,
                 season_start_month = season_start,
                 season_end_month   = season_end,
                 permits_required   = permits,
                 tags               = tags,
                 can_camp           = False,   # set by Overpass enrichment script
                 last_synced_at     = datetime.utcnow(),
+                lat                = trailhead_lat,
+                lng                = trailhead_lng,
             )
             created = service.create_hike(hike)
             seed_gear(str(created.id), gear_reqs)

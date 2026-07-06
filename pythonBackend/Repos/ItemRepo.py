@@ -128,7 +128,7 @@ def _row_to_item(row) -> Item:
                   material=attrs.get("material", "aluminum"))
 
     # Fallback for MISC or unknown types
-    obj = Item(id=id, name=name, weight=float(weight), cost=float(cost), item_type=item_type)
+    obj = Item(id=id_, name=name, weight=float(weight), cost=float(cost), item_type=item_type)
     obj.image_url = image_url
     return obj
 
@@ -217,3 +217,46 @@ class ItemRepository:
                     )
                 rows = cur.fetchall()
         return [_row_to_item(r) for r in rows]
+    # In ItemRepository
+    def list_by_user(self, user_id: UUID) -> List[Item]:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT i.id, i.name, i.weight, i.cost, i.item_type, i.image_url, i.attributes
+                    FROM items i
+                    JOIN user_items ui ON ui.item_id = i.id
+                    WHERE ui.user_id = %s
+                    ORDER BY i.item_type, i.name
+                    """,
+                    (str(user_id),)
+                )
+                rows = cur.fetchall()
+        return [_row_to_item(r) for r in rows]
+    def create_item_for_user(self, item: Item, user_id: UUID) -> UUID:
+        """
+        Creates the item row and links it to the given user via user_items,
+        in a single transaction. Use this for gear added on behalf of a
+        specific user (e.g. post-trip gear suggestions); create_item() alone
+        creates an orphaned item with no owner.
+        """
+        attrs = _item_to_attributes(item)
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO items (id, name, weight, cost, item_type, image_url, attributes)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb)
+                    """,
+                    (str(item.id), item.name, item.weight, item.cost,
+                    item.item_type, item.image_url, psycopg.types.json.Jsonb(attrs))
+                )
+                cur.execute(
+                    """
+                    INSERT INTO user_items (user_id, item_id)
+                    VALUES (%s, %s)
+                    """,
+                    (str(user_id), str(item.id))
+                )
+                conn.commit()
+        return item.id

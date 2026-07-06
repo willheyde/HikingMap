@@ -1,127 +1,63 @@
 import { useState, useRef, useEffect } from "react";
+import GlobalStyles    from "./GlobalStyles";
+import AmbientHue     from "../components/AmbientHue";
+import { useTrip }    from "../context/TripContext";
+import { useUser } from "../context/UserContext";
 
-/* ─── Design tokens (matches app palette) ─────────────────────────────── */
+/* ─── Design tokens ───────────────────────────────────────────────────── */
 const C = {
-  page:        "#0d0a07",
-  sidebar:     "#110d09",
+  page:         "#0d0a07",
+  sidebar:      "#110d09",
   sidebarBorder:"#2a1c10",
-  card:        "#1c1510",
-  cardBorder:  "#4a3520",
-  fieldBg:     "#241a10",
-  fieldBorder: "#5a3e22",
-  heading:     "#f0e6d0",
-  subtext:     "#a08060",
-  muted:       "#6a4e30",
-  label:       "#b8906a",
-  amber:       "#c17a2e",
-  amberHover:  "#d98c38",
-  amberText:   "#fff8ee",
-  amberDim:    "rgba(193,122,46,0.12)",
-  amberBorder: "rgba(193,122,46,0.35)",
-  userBubble:  "#2a1e10",
-  assistBg:    "transparent",
-  divider:     "#2a1c10",
-  inputBg:     "#1a1208",
-  inputBorder: "#3a2810",
-  scrollbar:   "#3a2510",
+  fieldBg:      "#241a10",
+  fieldBorder:  "#5a3e22",
+  heading:      "#f0e6d0",
+  subtext:      "#a08060",
+  muted:        "#6a4e30",
+  label:        "#b8906a",
+  amber:        "#c17a2e",
+  amberHover:   "#d98c38",
+  amberText:    "#fff8ee",
+  amberDim:     "rgba(193,122,46,0.12)",
+  amberBorder:  "rgba(193,122,46,0.35)",
+  userBubble:   "#2a1e10",
+  assistBg:     "transparent",
+  inputBg:      "#1a1208",
+  inputBorder:  "#3a2810",
+  errorBg:      "rgba(180,40,20,0.12)",
+  errorBorder:  "rgba(200,60,30,0.35)",
+  errorText:    "#e87060",
+  successBg:    "rgba(40,140,60,0.14)",
+  successBorder:"rgba(50,180,80,0.35)",
+  successText:  "#60c878",
 };
 
 const serif = "Georgia, 'Times New Roman', serif";
 const sans  = "'Trebuchet MS', 'Lucida Sans Unicode', sans-serif";
 const mono  = "'Courier New', Courier, monospace";
 
-/* ─── Mountain logo mark ─────────────────────────────────────────────── */
+// Persists which needs_review nudges the user has dismissed — "dismissible,
+// user can ignore it indefinitely" means the dismissal has to survive a
+// reload, not just clear local state.
+const DISMISSED_REVIEW_KEY = "hikebuilder_dismissed_review_nudges";
+
+/* ─── Phase config ───────────────────────────────────────────────────── */
+const PHASES = [
+  { key: "destination", label: "Destination" },
+  { key: "gear_review", label: "Gear Review" },
+  { key: "itinerary",   label: "Itinerary"   },
+  { key: "finalize",    label: "Finalize"     },
+];
+
+const phaseIndex = (key) => PHASES.findIndex(p => p.key === key);
+
+/* ─── Mountain logo ──────────────────────────────────────────────────── */
 const Logo = ({ size = 22 }) => (
   <svg width={size} height={size * 0.85} viewBox="0 0 56 48" xmlns="http://www.w3.org/2000/svg" style={{ display: "block" }}>
-    <polygon points="28,3 53,43 3,43" fill="none" stroke="#7a5030" strokeWidth="1.4" strokeLinejoin="round"/>
-    <polygon points="14,43 28,16 42,43" fill="#2a1810" stroke="#c17a2e" strokeWidth="1" strokeLinejoin="round"/>
-    <polygon points="28,3 33,11 23,11" fill="#c17a2e" opacity="0.8"/>
+    <polygon points="28,3 53,43 3,43"  fill="none"    stroke="#7a5030" strokeWidth="1.4" strokeLinejoin="round"/>
+    <polygon points="14,43 28,16 42,43" fill="#2a1810" stroke="#c17a2e" strokeWidth="1"   strokeLinejoin="round"/>
+    <polygon points="28,3 33,11 23,11"  fill="#c17a2e" opacity="0.8"/>
   </svg>
-);
-
-/* ─── Global styles + keyframes ─────────────────────────────────────── */
-const GlobalStyles = () => (
-  <style>{`
-    @keyframes bounce {
-      0%,60%,100% { transform: translateY(0); opacity:0.4; }
-      30% { transform: translateY(-5px); opacity:1; }
-    }
-    @keyframes fadeIn {
-      from { opacity:0; transform: translateY(6px); }
-      to   { opacity:1; transform: translateY(0); }
-    }
-    @keyframes slideUp {
-      from { opacity:0; transform: translateY(12px); }
-      to   { opacity:1; transform: translateY(0); }
-    }
-    @keyframes huePulse {
-      0%   { opacity: 0.55; transform: scale(1);    }
-      50%  { opacity: 0.80; transform: scale(1.08); }
-      100% { opacity: 0.55; transform: scale(1);    }
-    }
-    @keyframes hueShift {
-      0%   { opacity: 0.30; transform: scale(1)    translateY(0px);  }
-      50%  { opacity: 0.50; transform: scale(1.12) translateY(-12px);}
-      100% { opacity: 0.30; transform: scale(1)    translateY(0px);  }
-    }
-    @keyframes hueOrbit {
-      0%   { transform: translate(-50%,-50%) rotate(0deg)   scale(1);    }
-      100% { transform: translate(-50%,-50%) rotate(360deg) scale(1);    }
-    }
-    ::-webkit-scrollbar { width: 4px; }
-    ::-webkit-scrollbar-track { background: transparent; }
-    ::-webkit-scrollbar-thumb { background: ${C.scrollbar}; border-radius: 2px; }
-  `}</style>
-);
-
-/* ─── Ambient hue background ─────────────────────────────────────────── */
-const AmbientHue = () => (
-  <div style={{
-    position: "absolute", inset: 0,
-    pointerEvents: "none", overflow: "hidden",
-    zIndex: 0,
-  }}>
-    {/* Core amber orb */}
-    <div style={{
-      position: "absolute",
-      left: "50%", top: "48%",
-      transform: "translate(-50%, -50%)",
-      width: 520, height: 380,
-      borderRadius: "50%",
-      background: "radial-gradient(ellipse at center, rgba(193,122,46,0.22) 0%, rgba(193,122,46,0.08) 45%, transparent 72%)",
-      animation: "huePulse 6s ease-in-out infinite",
-    }} />
-    {/* Warm outer bloom */}
-    <div style={{
-      position: "absolute",
-      left: "50%", top: "50%",
-      transform: "translate(-50%, -50%)",
-      width: 820, height: 560,
-      borderRadius: "50%",
-      background: "radial-gradient(ellipse at center, rgba(160,80,20,0.10) 0%, rgba(100,40,10,0.05) 50%, transparent 75%)",
-      animation: "hueShift 9s ease-in-out infinite",
-    }} />
-    {/* Cool deep-red counter-bloom for depth */}
-    <div style={{
-      position: "absolute",
-      left: "50%", top: "60%",
-      transform: "translate(-50%, -50%)",
-      width: 600, height: 300,
-      borderRadius: "50%",
-      background: "radial-gradient(ellipse at center, rgba(80,20,5,0.18) 0%, transparent 70%)",
-      animation: "huePulse 11s ease-in-out 2s infinite",
-    }} />
-    {/* Subtle top highlight */}
-    <div style={{
-      position: "absolute",
-      left: "50%", top: "28%",
-      transform: "translate(-50%, -50%)",
-      width: 260, height: 180,
-      borderRadius: "50%",
-      background: "radial-gradient(ellipse at center, rgba(220,150,60,0.09) 0%, transparent 70%)",
-      animation: "hueShift 7s ease-in-out 1s infinite",
-    }} />
-  </div>
 );
 
 /* ─── Typing indicator ───────────────────────────────────────────────── */
@@ -137,6 +73,256 @@ const TypingDots = () => (
   </div>
 );
 
+/* ─── Phase breadcrumb bar ───────────────────────────────────────────── */
+const PhaseBreadcrumb = ({ currentPhase }) => {
+  const current = phaseIndex(currentPhase);
+  return (
+    <div style={{
+      display: "flex", alignItems: "center", justifyContent: "center",
+      gap: 0, padding: "8px 24px",
+      borderBottom: `1px solid ${C.sidebarBorder}`,
+      position: "relative", zIndex: 1, background: "transparent",
+    }}>
+      {PHASES.map((phase, i) => {
+        const done   = i < current;
+        const active = i === current;
+        const future = i > current;
+        return (
+          <div key={phase.key} style={{ display: "flex", alignItems: "center" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <div style={{
+                width: 7, height: 7, borderRadius: "50%",
+                background: done || active ? C.amber : C.muted,
+                opacity: future ? 0.4 : 1,
+                boxShadow: active ? `0 0 6px ${C.amber}` : "none",
+                transition: "all 0.3s ease",
+              }}/>
+              <span style={{
+                fontFamily: sans, fontSize: 11, letterSpacing: "0.06em",
+                color: active ? C.amber : done ? C.label : C.muted,
+                opacity: future ? 0.5 : 1,
+                fontWeight: active ? 600 : 400, transition: "all 0.3s ease",
+              }}>
+                {phase.label}
+              </span>
+            </div>
+            {i < PHASES.length - 1 && (
+              <div style={{
+                width: 28, height: 1, margin: "0 10px",
+                background: i < current ? C.amber : C.muted,
+                opacity: i < current ? 0.5 : 0.25,
+                transition: "background 0.3s ease",
+              }}/>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+};
+
+/* ─── Toast notification ─────────────────────────────────────────────── */
+const Toast = ({ message, type = "success", visible }) => (
+  <div style={{
+    position: "absolute", top: 20, left: "50%",
+    transform: `translateX(-50%) translateY(${visible ? 0 : -16}px)`,
+    opacity: visible ? 1 : 0, transition: "all 0.3s ease",
+    pointerEvents: "none", zIndex: 100,
+    background: type === "success" ? C.successBg : C.errorBg,
+    border: `1px solid ${type === "success" ? C.successBorder : C.errorBorder}`,
+    borderRadius: 10, padding: "8px 18px",
+    fontFamily: sans, fontSize: 12.5,
+    color: type === "success" ? C.successText : C.errorText,
+    whiteSpace: "nowrap", backdropFilter: "blur(4px)",
+  }}>
+    {message}
+  </div>
+);
+
+/* ─── Gear suggestion modal ──────────────────────────────────────────── */
+//
+// Shown after a trip is saved when SaveResponse.gear_suggestions is non-empty.
+// Each suggestion is a gear gap the user didn't have — they can check off
+// items they actually own and those get added to their gear list via
+// POST /api/trip/gear/suggestions.
+//
+// NOTE: This component calls POST /api/trip/gear/suggestions directly using
+// fetch with credentials: "include".  If your app uses Authorization headers
+// instead of cookies, replace the fetch call in handleGearConfirm() with
+// whatever auth pattern TripContext uses for API calls.
+const GearSuggestionModal = ({ suggestions, onConfirm, onDismiss, adding }) => {
+  const [selected, setSelected] = useState(
+    // Default all to unchecked — user should actively confirm what they own
+    new Set()
+  );
+
+  const toggle = (category) => {
+    setSelected(prev => {
+      const next = new Set(prev);
+      next.has(category) ? next.delete(category) : next.add(category);
+      return next;
+    });
+  };
+
+  const selectAll = () => setSelected(new Set(suggestions.map(s => s.category)));
+  const allSelected = selected.size === suggestions.length;
+
+  return (
+    <div style={{
+      position: "fixed", inset: 0, zIndex: 200,
+      background: "rgba(0,0,0,0.72)",
+      display: "flex", alignItems: "center", justifyContent: "center",
+      backdropFilter: "blur(5px)",
+      animation: "fadeIn 0.2s ease",
+    }}>
+      <div style={{
+        background: C.sidebar,
+        border: `1px solid ${C.sidebarBorder}`,
+        borderRadius: 18, padding: "28px 30px 24px",
+        width: "100%", maxWidth: 500,
+        maxHeight: "82vh", display: "flex", flexDirection: "column",
+        boxShadow: "0 32px 80px rgba(0,0,0,0.55)",
+      }}>
+        {/* Header */}
+        <div style={{ marginBottom: 18 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
+            <div style={{
+              width: 34, height: 34, borderRadius: "50%",
+              background: C.amberDim, border: `1px solid ${C.amberBorder}`,
+              display: "flex", alignItems: "center", justifyContent: "center",
+              fontSize: 16,
+            }}>🎒</div>
+            <h2 style={{
+              fontFamily: serif, fontSize: 19, color: C.heading,
+              margin: 0, fontWeight: 400, letterSpacing: "-0.01em",
+            }}>
+              One more thing before you go
+            </h2>
+          </div>
+          <p style={{
+            fontFamily: sans, fontSize: 12.5, color: C.subtext,
+            margin: 0, lineHeight: 1.65,
+          }}>
+            We flagged some gear gaps for this trip. Check off anything you already own
+            and we'll add it to your kit — so next time the analysis is more accurate.
+          </p>
+        </div>
+
+        {/* Select all toggle */}
+        <div style={{ marginBottom: 10, display: "flex", justifyContent: "flex-end" }}>
+          <button
+            onClick={allSelected ? () => setSelected(new Set()) : selectAll}
+            style={{
+              background: "none", border: "none", cursor: "pointer",
+              fontFamily: sans, fontSize: 11.5, color: C.muted,
+              padding: "2px 4px", transition: "color 0.15s",
+            }}
+            onMouseEnter={e => e.currentTarget.style.color = C.label}
+            onMouseLeave={e => e.currentTarget.style.color = C.muted}
+          >
+            {allSelected ? "Deselect all" : "Select all"}
+          </button>
+        </div>
+
+        {/* Suggestion list */}
+        <div style={{ flex: 1, overflowY: "auto", display: "flex", flexDirection: "column", gap: 8, marginBottom: 22 }}>
+          {suggestions.map(s => {
+            const checked = selected.has(s.category);
+            return (
+              <label key={s.category} style={{
+                display: "flex", alignItems: "flex-start", gap: 13,
+                background: checked ? C.amberDim : C.fieldBg,
+                border: `1px solid ${checked ? C.amberBorder : C.fieldBorder}`,
+                borderRadius: 11, padding: "12px 14px",
+                cursor: "pointer", transition: "all 0.15s",
+                userSelect: "none",
+              }}>
+                <input
+                  type="checkbox"
+                  checked={checked}
+                  onChange={() => toggle(s.category)}
+                  style={{ marginTop: 3, accentColor: C.amber, cursor: "pointer", flexShrink: 0 }}
+                />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{
+                    display: "flex", alignItems: "baseline",
+                    justifyContent: "space-between", gap: 8, marginBottom: 3,
+                  }}>
+                    <span style={{
+                      fontFamily: sans, fontSize: 13.5, color: C.heading, fontWeight: 600,
+                    }}>
+                      {s.display_name}
+                    </span>
+                    <span style={{
+                      fontFamily: mono, fontSize: 10.5, color: C.muted, flexShrink: 0,
+                    }}>
+                      {s.weight_g}g · ${s.cost % 1 === 0 ? s.cost.toFixed(0) : s.cost.toFixed(2)}
+                    </span>
+                  </div>
+                  <div style={{
+                    fontFamily: sans, fontSize: 12, color: C.subtext, lineHeight: 1.5,
+                  }}>
+                    {s.name}
+                  </div>
+                  {s.detail && (
+                    <div style={{
+                      fontFamily: sans, fontSize: 11, color: C.muted,
+                      marginTop: 4, lineHeight: 1.4, fontStyle: "italic",
+                    }}>
+                      {s.detail}
+                    </div>
+                  )}
+                </div>
+              </label>
+            );
+          })}
+        </div>
+
+        {/* Actions */}
+        <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+          <button
+            onClick={onDismiss}
+            disabled={adding}
+            style={{
+              background: "none",
+              border: `1px solid ${C.fieldBorder}`,
+              borderRadius: 10, padding: "9px 20px",
+              fontFamily: sans, fontSize: 12.5, color: C.muted,
+              cursor: adding ? "default" : "pointer",
+              transition: "all 0.15s", opacity: adding ? 0.5 : 1,
+            }}
+            onMouseEnter={e => { if (!adding) e.currentTarget.style.borderColor = C.label; }}
+            onMouseLeave={e => { if (!adding) e.currentTarget.style.borderColor = C.fieldBorder; }}
+          >
+            Skip
+          </button>
+          <button
+            onClick={() => selected.size > 0 && !adding && onConfirm([...selected])}
+            disabled={selected.size === 0 || adding}
+            style={{
+              background: selected.size > 0 && !adding ? C.amber : C.fieldBg,
+              border: "none", borderRadius: 10, padding: "9px 22px",
+              fontFamily: sans, fontSize: 12.5, fontWeight: 600,
+              color: selected.size > 0 && !adding ? C.amberText : C.muted,
+              cursor: selected.size > 0 && !adding ? "pointer" : "default",
+              transition: "all 0.15s",
+            }}
+            onMouseEnter={e => { if (selected.size > 0 && !adding) e.currentTarget.style.background = C.amberHover; }}
+            onMouseLeave={e => { if (selected.size > 0 && !adding) e.currentTarget.style.background = C.amber; }}
+          >
+            {adding
+              ? "Adding…"
+              : selected.size > 0
+                ? `Add to my kit (${selected.size})`
+                : "Add to my kit"
+            }
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 /* ─── Suggestion chips ───────────────────────────────────────────────── */
 const suggestions = [
   { icon: "🏔️", text: "Plan a 3-day Smoky Mountains trip" },
@@ -145,48 +331,31 @@ const suggestions = [
   { icon: "🎒", text: "What's missing from my gear list?" },
 ];
 
-/* ─── Chat history items ─────────────────────────────────────────────── */
-const history = [
-  { id: 1, title: "Appalachian Trail Section Hike", date: "Today" },
-  { id: 2, title: "Grand Teton 4-Day Loop", date: "Yesterday" },
-  { id: 3, title: "Gear Check for Rainier Climb", date: "May 24" },
-  { id: 4, title: "Yosemite JMT Planning", date: "May 20" },
-  { id: 5, title: "Winter Camping Prep", date: "May 18" },
-];
-
 /* ─── Message bubble ─────────────────────────────────────────────────── */
 const Message = ({ msg }) => {
   const isUser = msg.role === "user";
   return (
     <div style={{
-      display: "flex",
-      flexDirection: isUser ? "row-reverse" : "row",
-      gap: 12,
-      marginBottom: 24,
-      animation: "slideUp 0.25s ease",
+      display: "flex", flexDirection: isUser ? "row-reverse" : "row",
+      gap: 12, marginBottom: 24, animation: "slideUp 0.25s ease",
     }}>
-      {/* Avatar */}
       {!isUser && (
         <div style={{
           width: 32, height: 32, borderRadius: "50%",
-          border: `1px solid ${C.amberBorder}`,
-          background: C.fieldBg,
+          border: `1px solid ${C.amberBorder}`, background: C.fieldBg,
           display: "flex", alignItems: "center", justifyContent: "center",
           flexShrink: 0, marginTop: 2,
         }}>
           <Logo size={16} />
         </div>
       )}
-
       <div style={{
         maxWidth: "72%",
         background: isUser ? C.userBubble : C.assistBg,
         border: isUser ? `1px solid ${C.fieldBorder}` : "none",
-        borderRadius: isUser ? 16 : 0,
-        borderTopRightRadius: isUser ? 4 : 0,
+        borderRadius: isUser ? 16 : 0, borderTopRightRadius: isUser ? 4 : 0,
         padding: isUser ? "10px 16px" : "2px 0",
       }}>
-        {/* Sender label for assistant */}
         {!isUser && (
           <div style={{
             fontFamily: sans, fontSize: 11, color: C.amber,
@@ -197,27 +366,19 @@ const Message = ({ msg }) => {
           </div>
         )}
         <div style={{
-          fontFamily: serif,
-          fontSize: 14.5,
-          lineHeight: 1.75,
-          color: isUser ? C.heading : "#d4c5a9",
-          whiteSpace: "pre-wrap",
+          fontFamily: serif, fontSize: 14.5, lineHeight: 1.75,
+          color: isUser ? C.heading : "#d4c5a9", whiteSpace: "pre-wrap",
         }}>
           {msg.content}
         </div>
-
-        {/* Action row for assistant messages */}
         {!isUser && (
           <div style={{ display: "flex", gap: 12, marginTop: 10, alignItems: "center" }}>
             {["copy","thumb-up","thumb-down","refresh"].map(action => (
-              <button key={action}
-                title={action}
+              <button key={action} title={action}
                 style={{
                   background: "none", border: "none", cursor: "pointer",
                   padding: "4px 6px", borderRadius: 6,
-                  color: C.muted, fontSize: 13,
-                  fontFamily: sans,
-                  transition: "color 0.15s",
+                  color: C.muted, fontSize: 13, fontFamily: sans, transition: "color 0.15s",
                 }}
                 onMouseEnter={e => e.currentTarget.style.color = C.label}
                 onMouseLeave={e => e.currentTarget.style.color = C.muted}
@@ -232,129 +393,738 @@ const Message = ({ msg }) => {
   );
 };
 
-/* ─── Initial welcome view ───────────────────────────────────────────── */
-const WelcomeView = ({ onSend }) => (
-  <div style={{
-    flex: 1, display: "flex", flexDirection: "column",
-    alignItems: "center", justifyContent: "center",
-    padding: "40px 24px",
-    animation: "fadeIn 0.4s ease",
-  }}>
-    {/* Hero mark */}
-    <div style={{ marginBottom: 16 }}>
-      <Logo size={48} />
-    </div>
-
-    <h1 style={{
-      fontFamily: serif,
-      fontSize: 32,
-      fontWeight: 400,
-      color: C.heading,
-      textAlign: "center",
-      margin: "0 0 10px",
-      letterSpacing: "-0.02em",
-    }}>
-      Plan your next adventure
-    </h1>
-
-    <p style={{
-      fontFamily: sans,
-      fontSize: 14,
-      color: C.subtext,
-      textAlign: "center",
-      margin: "0 0 40px",
-      maxWidth: 380,
-      lineHeight: 1.6,
-    }}>
-      AI-powered trip planning with your gear, your pace, your terrain.
-    </p>
-
-    {/* Suggestion chips */}
+/* ─── Hike option cards ───────────────────────────────────────────────── */
+// Renders the structured hike options (ChatResponse.hike_options) as
+// clickable cards instead of the old plain-text numbered list. Clicking a
+// card sends the same 1-based index a typed number would — the backend's
+// selection logic (PhaseController.extract_hike_selection) is unchanged.
+const HikeOptionCards = ({ options, onPick }) => {
+  if (!options?.length) return null;
+  return (
     <div style={{
-      display: "grid",
-      gridTemplateColumns: "1fr 1fr",
-      gap: 10,
-      maxWidth: 520,
-      width: "100%",
+      display: "grid", gap: 10, marginBottom: 24,
+      gridTemplateColumns: "repeat(auto-fill, minmax(230px, 1fr))",
+      animation: "slideUp 0.25s ease",
     }}>
-      {suggestions.map((s, i) => (
-        <button key={i}
-          onClick={() => onSend(s.text)}
+      {options.map((opt) => (
+        <button
+          key={opt.index}
+          onClick={() => onPick(opt)}
           style={{
-            background: C.fieldBg,
-            border: `1px solid ${C.fieldBorder}`,
-            borderRadius: 12,
-            padding: "12px 16px",
-            textAlign: "left",
-            cursor: "pointer",
+            textAlign: "left", cursor: "pointer",
+            background: C.fieldBg, border: `1px solid ${C.fieldBorder}`,
+            borderRadius: 12, padding: "14px 16px",
             transition: "all 0.15s",
+            display: "flex", flexDirection: "column", gap: 6,
           }}
-          onMouseEnter={e => {
-            e.currentTarget.style.borderColor = C.amber;
-            e.currentTarget.style.background = C.amberDim;
-          }}
-          onMouseLeave={e => {
-            e.currentTarget.style.borderColor = C.fieldBorder;
-            e.currentTarget.style.background = C.fieldBg;
-          }}
+          onMouseEnter={e => { e.currentTarget.style.borderColor = C.amber; e.currentTarget.style.background = C.amberDim; }}
+          onMouseLeave={e => { e.currentTarget.style.borderColor = C.fieldBorder; e.currentTarget.style.background = C.fieldBg; }}
         >
-          <div style={{ fontSize: 18, marginBottom: 5 }}>{s.icon}</div>
-          <div style={{ fontFamily: sans, fontSize: 12.5, color: C.label, lineHeight: 1.5 }}>
-            {s.text}
+          <div style={{ fontFamily: sans, fontSize: 13.5, fontWeight: 600, color: C.heading }}>
+            {opt.name}
           </div>
+          <div style={{ fontFamily: sans, fontSize: 11.5, color: C.subtext }}>
+            {[
+              opt.length_km != null ? `${opt.length_km} km` : null,
+              opt.difficulty || null,
+              opt.elevation_gain_m != null ? `${Math.round(opt.elevation_gain_m)} m gain` : null,
+            ].filter(Boolean).join(" · ")}
+          </div>
+          {(opt.distance_km != null || opt.state) && (
+            <div style={{ fontFamily: sans, fontSize: 11, color: C.muted }}>
+              {[
+                opt.distance_km != null ? `${opt.distance_km.toFixed(0)} km away` : null,
+                opt.state || null,
+              ].filter(Boolean).join(", ")}
+            </div>
+          )}
+          {opt.tags?.length > 0 && (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginTop: 2 }}>
+              {opt.tags.slice(0, 4).map(tag => (
+                <span key={tag} style={{
+                  fontFamily: sans, fontSize: 10, color: C.label,
+                  background: C.amberDim, border: `1px solid ${C.amberBorder}`,
+                  borderRadius: 999, padding: "2px 8px",
+                }}>
+                  {tag.replace(/_/g, " ")}
+                </span>
+              ))}
+            </div>
+          )}
+          {opt.gear_summary && (
+            <div style={{
+              fontFamily: sans, fontSize: 11, marginTop: 2,
+              color: opt.gear_summary === "kit looks solid" ? C.successText : C.errorText,
+            }}>
+              {opt.gear_summary}
+            </div>
+          )}
         </button>
       ))}
     </div>
+  );
+};
+
+/* ─── Chat status badge ──────────────────────────────────────────────── */
+// Accessibility: every state pairs its color with an icon + text label —
+// never color alone (matters most for "reviewed", which would otherwise
+// just be "the green one").
+const CHAT_STATUS_META = {
+  active:    { label: "In progress",     icon: "●", color: "#c17a2e" },
+  saved:     { label: "Upcoming",        icon: "◐", color: "#7a9bc1" },
+  completed: { label: "Awaiting review", icon: "○", color: "#a08060" },
+  reviewed:  { label: "Reviewed",        icon: "✓", color: "#60c878" },
+};
+
+const StatusBadge = ({ status, size = 11 }) => {
+  const meta = CHAT_STATUS_META[status] || CHAT_STATUS_META.saved;
+  return (
+    <span style={{
+      display: "inline-flex", alignItems: "center", gap: 4,
+      fontFamily: sans, fontSize: size, color: meta.color, fontWeight: 600,
+    }}>
+      <span aria-hidden="true">{meta.icon}</span>
+      <span>{meta.label}</span>
+    </span>
+  );
+};
+
+/* ─── Read-only trip view ────────────────────────────────────────────── */
+// Rendered instead of the live chat thread for saved/completed/reviewed
+// chats. There's no stored message transcript for these (planning already
+// finished and the Redis session is gone) — this recaps the structured
+// trip data GET /chats/:id returns, same information the finalize-phase
+// summary showed at save time.
+const ReadOnlyTripView = ({ trip, onMarkDone, marking, onOpenReview, onGoAgain, duplicating }) => {
+  const stop = trip.stops?.[0];
+  const trail = stop?.trail_data || {};
+  const days = stop?.itinerary?.days || [];
+  const completion = trip.completion;
+
+  return (
+    <div style={{ flex: 1, overflowY: "auto", padding: "32px 24px" }}>
+      <div style={{ maxWidth: 680, width: "100%", margin: "0 auto" }}>
+        <div style={{
+          display: "flex", alignItems: "center", justifyContent: "space-between",
+          marginBottom: 18, gap: 12, flexWrap: "wrap",
+        }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            <h2 style={{ fontFamily: serif, fontSize: 22, fontWeight: "normal", color: C.heading, margin: 0 }}>
+              {trip.title}
+            </h2>
+            <StatusBadge status={trip.status} size={12} />
+          </div>
+
+          {trip.status === "saved" && (
+            <button onClick={onMarkDone} disabled={marking}
+              style={{
+                padding: "8px 16px", borderRadius: 9, cursor: marking ? "default" : "pointer",
+                background: C.amber, border: "none", color: C.amberText,
+                fontFamily: sans, fontSize: 12.5, fontWeight: 600, opacity: marking ? 0.7 : 1,
+              }}
+            >
+              {marking ? "Marking…" : "Mark as done"}
+            </button>
+          )}
+
+          {trip.status === "completed" && (
+            <button onClick={onOpenReview}
+              style={{
+                padding: "8px 16px", borderRadius: 9, cursor: "pointer",
+                background: C.amber, border: "none", color: C.amberText,
+                fontFamily: sans, fontSize: 12.5, fontWeight: 600,
+              }}
+            >
+              Write a review
+            </button>
+          )}
+
+          {(trip.status === "completed" || trip.status === "reviewed") && (
+            <button onClick={onGoAgain} disabled={duplicating}
+              title="Re-run this search against current trail data — not a replay of the original results"
+              style={{
+                padding: "8px 16px", borderRadius: 9, cursor: duplicating ? "default" : "pointer",
+                background: "rgba(90,58,26,0.3)", border: `1px solid ${C.fieldBorder}`,
+                color: C.label, fontFamily: sans, fontSize: 12.5, fontWeight: 600,
+                opacity: duplicating ? 0.7 : 1,
+              }}
+            >
+              {duplicating ? "Searching…" : "Go again"}
+            </button>
+          )}
+        </div>
+
+        {completion && (
+          <div style={{
+            background: C.amberDim, border: `1px solid ${C.amberBorder}`,
+            borderRadius: 14, padding: "16px 22px", marginBottom: 18,
+          }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: completion.notes ? 8 : 0 }}>
+              <div style={{ fontFamily: sans, fontSize: 11, color: C.label, textTransform: "uppercase", letterSpacing: "0.05em", fontWeight: 600 }}>
+                Your review
+              </div>
+              {completion.rating && (
+                <div style={{ color: C.amber, fontSize: 14 }}>
+                  {"★".repeat(completion.rating)}{"☆".repeat(5 - completion.rating)}
+                </div>
+              )}
+            </div>
+            {!completion.went && (
+              <div style={{ fontFamily: sans, fontSize: 12.5, color: C.subtext }}>Marked as not attended.</div>
+            )}
+            {completion.difficulty_felt && (
+              <div style={{ fontFamily: sans, fontSize: 12.5, color: C.subtext, textTransform: "capitalize" }}>
+                Felt: {completion.difficulty_felt.toLowerCase()}
+                {trail.difficulty && trail.difficulty.toLowerCase() !== completion.difficulty_felt.toLowerCase()
+                  ? ` (predicted ${trail.difficulty.toLowerCase()})` : ""}
+              </div>
+            )}
+            {completion.elevation_felt && (
+              <div style={{ fontFamily: sans, fontSize: 12.5, color: C.subtext }}>{completion.elevation_felt}</div>
+            )}
+            {completion.notes && (
+              <div style={{ fontFamily: serif, fontSize: 13, color: C.subtext, fontStyle: "italic", marginTop: 6 }}>
+                “{completion.notes}”
+              </div>
+            )}
+          </div>
+        )}
+
+        <div style={{
+          background: C.fieldBg, border: `1px solid ${C.fieldBorder}`,
+          borderRadius: 14, padding: "18px 22px", marginBottom: 18,
+          display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 14,
+        }}>
+          <div>
+            <div style={{ fontFamily: sans, fontSize: 10.5, color: C.muted, textTransform: "uppercase", letterSpacing: "0.05em" }}>Destination</div>
+            <div style={{ fontFamily: sans, fontSize: 13.5, color: C.heading, marginTop: 3 }}>{stop?.destination || "—"}</div>
+          </div>
+          <div>
+            <div style={{ fontFamily: sans, fontSize: 10.5, color: C.muted, textTransform: "uppercase", letterSpacing: "0.05em" }}>Duration</div>
+            <div style={{ fontFamily: sans, fontSize: 13.5, color: C.heading, marginTop: 3 }}>
+              {stop?.duration_days ? `${stop.duration_days} day${stop.duration_days !== 1 ? "s" : ""}` : "—"}
+            </div>
+          </div>
+          <div>
+            <div style={{ fontFamily: sans, fontSize: 10.5, color: C.muted, textTransform: "uppercase", letterSpacing: "0.05em" }}>Difficulty</div>
+            <div style={{ fontFamily: sans, fontSize: 13.5, color: C.heading, marginTop: 3, textTransform: "capitalize" }}>
+              {trail.difficulty || "—"}
+            </div>
+          </div>
+          <div>
+            <div style={{ fontFamily: sans, fontSize: 10.5, color: C.muted, textTransform: "uppercase", letterSpacing: "0.05em" }}>Gear packed</div>
+            <div style={{ fontFamily: sans, fontSize: 13.5, color: C.heading, marginTop: 3 }}>
+              {trip.gear?.length ? `${trip.gear.length} item${trip.gear.length !== 1 ? "s" : ""}` : "None recorded"}
+            </div>
+          </div>
+        </div>
+
+        {days.length > 0 && (
+          <div style={{
+            background: C.fieldBg, border: `1px solid ${C.fieldBorder}`,
+            borderRadius: 14, padding: "18px 22px", marginBottom: 18,
+          }}>
+            <div style={{ fontFamily: sans, fontSize: 11, color: C.label, textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 12, fontWeight: 600 }}>
+              Itinerary
+            </div>
+            {days.map(day => (
+              <div key={day.day_number} style={{ marginBottom: 10 }}>
+                <div style={{ fontFamily: sans, fontSize: 13, color: C.heading }}>
+                  Day {day.day_number}: {day.title}
+                  {(day.distance_miles || day.elevation_gain_ft) && (
+                    <span style={{ color: C.subtext, fontWeight: 400 }}>
+                      {" — "}
+                      {[
+                        day.distance_miles ? `${day.distance_miles} mi` : null,
+                        day.elevation_gain_ft ? `${day.elevation_gain_ft} ft gain` : null,
+                      ].filter(Boolean).join(", ")}
+                    </span>
+                  )}
+                </div>
+                {day.notes && (
+                  <div style={{ fontFamily: serif, fontSize: 12.5, color: C.subtext, marginTop: 2 }}>{day.notes}</div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+
+        {trip.goal && (
+          <p style={{ fontFamily: serif, fontSize: 13, color: C.subtext, fontStyle: "italic", lineHeight: 1.6 }}>
+            {trip.goal}
+          </p>
+        )}
+      </div>
+    </div>
+  );
+};
+
+/* ─── Review questionnaire modal ─────────────────────────────────────── */
+// Single screen, non-blocking (the dismissible needs_review banner is what
+// invites the user here — this modal itself just has to exist somewhere to
+// go to). went/didn't go, difficulty felt, optional elevation/conditions
+// notes, 1-5 rating, optional free text. POST /chats/:id/review on submit.
+const DIFFICULTY_OPTIONS = ["EASY", "MODERATE", "DIFFICULT", "EXPERT"];
+
+const ReviewModal = ({ trip, onSubmit, onClose, submitting }) => {
+  const [went,           setWent]           = useState(true);
+  const [difficultyFelt, setDifficultyFelt] = useState(null);
+  const [elevationFelt,  setElevationFelt]  = useState("");
+  const [rating,         setRating]         = useState(0);
+  const [notes,          setNotes]          = useState("");
+
+  const handleSubmit = () => {
+    if (submitting) return;
+    onSubmit({
+      went,
+      difficulty_felt: went ? difficultyFelt : null,
+      elevation_felt:  elevationFelt.trim() || null,
+      rating:          rating > 0 ? rating : null,
+      notes:           notes.trim() || null,
+    });
+  };
+
+  const pillStyle = (active) => ({
+    padding: "8px 16px", borderRadius: 9, cursor: "pointer",
+    background: active ? C.amberDim : C.fieldBg,
+    border: `1px solid ${active ? C.amberBorder : C.fieldBorder}`,
+    color: active ? C.amberText : C.label,
+    fontFamily: sans, fontSize: 12.5, fontWeight: active ? 600 : 400,
+    transition: "all 0.15s",
+  });
+
+  return (
+    <div style={{
+      position: "fixed", inset: 0, zIndex: 200,
+      background: "rgba(0,0,0,0.72)",
+      display: "flex", alignItems: "center", justifyContent: "center",
+      backdropFilter: "blur(5px)",
+      animation: "fadeIn 0.2s ease",
+    }}>
+      <div style={{
+        background: C.sidebar,
+        border: `1px solid ${C.sidebarBorder}`,
+        borderRadius: 18, padding: "28px 30px 24px",
+        width: "100%", maxWidth: 460,
+        maxHeight: "85vh", overflowY: "auto",
+        boxShadow: "0 32px 80px rgba(0,0,0,0.55)",
+      }}>
+        <h2 style={{ fontFamily: serif, fontSize: 19, color: C.heading, margin: "0 0 4px", fontWeight: 400 }}>
+          How was {trip.title}?
+        </h2>
+        <p style={{ fontFamily: sans, fontSize: 12.5, color: C.subtext, margin: "0 0 20px" }}>
+          Takes a minute — helps us get gear and difficulty right next time.
+        </p>
+
+        {/* Went? */}
+        <div style={{ marginBottom: 18 }}>
+          <div style={{ fontFamily: sans, fontSize: 11.5, color: C.label, marginBottom: 8, fontWeight: 600 }}>Did you go?</div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button style={pillStyle(went === true)} onClick={() => setWent(true)}>Yes, I went</button>
+            <button style={pillStyle(went === false)} onClick={() => setWent(false)}>Didn't make it</button>
+          </div>
+        </div>
+
+        {went && (
+          <>
+            {/* Difficulty felt */}
+            <div style={{ marginBottom: 18 }}>
+              <div style={{ fontFamily: sans, fontSize: 11.5, color: C.label, marginBottom: 8, fontWeight: 600 }}>
+                Difficulty felt (vs. predicted)
+              </div>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                {DIFFICULTY_OPTIONS.map(d => (
+                  <button key={d} style={pillStyle(difficultyFelt === d)} onClick={() => setDifficultyFelt(d)}>
+                    {d.charAt(0) + d.slice(1).toLowerCase()}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Rating */}
+            <div style={{ marginBottom: 18 }}>
+              <div style={{ fontFamily: sans, fontSize: 11.5, color: C.label, marginBottom: 8, fontWeight: 600 }}>Rating</div>
+              <div style={{ display: "flex", gap: 4 }}>
+                {[1, 2, 3, 4, 5].map(n => (
+                  <button key={n} onClick={() => setRating(n === rating ? 0 : n)}
+                    style={{
+                      background: "none", border: "none", cursor: "pointer",
+                      fontSize: 24, lineHeight: 1, padding: 2,
+                      color: n <= rating ? C.amber : C.muted, transition: "color 0.15s",
+                    }}
+                    aria-label={`${n} star${n !== 1 ? "s" : ""}`}
+                  >★</button>
+                ))}
+              </div>
+            </div>
+
+            {/* Elevation / conditions */}
+            <div style={{ marginBottom: 18 }}>
+              <div style={{ fontFamily: sans, fontSize: 11.5, color: C.label, marginBottom: 8, fontWeight: 600 }}>
+                Elevation / conditions <span style={{ color: C.muted, fontWeight: 400 }}>(optional)</span>
+              </div>
+              <input
+                value={elevationFelt}
+                onChange={e => setElevationFelt(e.target.value)}
+                placeholder="e.g. muddier than expected, gain felt steeper…"
+                style={{
+                  width: "100%", boxSizing: "border-box", padding: "9px 12px",
+                  background: C.inputBg, border: `1px solid ${C.inputBorder}`,
+                  borderRadius: 9, color: C.heading, fontFamily: sans, fontSize: 12.5,
+                }}
+              />
+            </div>
+          </>
+        )}
+
+        {/* Notes */}
+        <div style={{ marginBottom: 22 }}>
+          <div style={{ fontFamily: sans, fontSize: 11.5, color: C.label, marginBottom: 8, fontWeight: 600 }}>
+            Notes <span style={{ color: C.muted, fontWeight: 400 }}>(optional)</span>
+          </div>
+          <textarea
+            value={notes}
+            onChange={e => setNotes(e.target.value)}
+            rows={3}
+            placeholder="Anything else worth remembering for next time?"
+            style={{
+              width: "100%", boxSizing: "border-box", padding: "9px 12px",
+              background: C.inputBg, border: `1px solid ${C.inputBorder}`,
+              borderRadius: 9, color: C.heading, fontFamily: sans, fontSize: 12.5,
+              resize: "vertical",
+            }}
+          />
+        </div>
+
+        <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+          <button onClick={onClose} disabled={submitting}
+            style={{
+              background: "none", border: `1px solid ${C.fieldBorder}`,
+              borderRadius: 10, padding: "9px 20px",
+              fontFamily: sans, fontSize: 12.5, color: C.muted,
+              cursor: submitting ? "default" : "pointer", opacity: submitting ? 0.5 : 1,
+            }}
+          >
+            Cancel
+          </button>
+          <button onClick={handleSubmit} disabled={submitting}
+            style={{
+              background: C.amber, border: "none", borderRadius: 10, padding: "9px 22px",
+              fontFamily: sans, fontSize: 12.5, fontWeight: 600, color: C.amberText,
+              cursor: submitting ? "default" : "pointer", opacity: submitting ? 0.7 : 1,
+            }}
+          >
+            {submitting ? "Saving…" : "Submit review"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+/* ─── Needs-review banner ────────────────────────────────────────────── */
+// Dismissible, never a gate — the background job flips needs_review N days
+// after "Mark as done"; this just surfaces it. Dismissal persists in
+// localStorage per chat id so it doesn't reappear every reload, but the
+// trip itself stays "completed" (not silently marked reviewed) until the
+// user actually submits the questionnaire.
+const NeedsReviewBanner = ({ items, onReview, onDismiss }) => {
+  if (!items.length) return null;
+  const item = items[0];
+  return (
+    <div style={{
+      display: "flex", alignItems: "center", justifyContent: "space-between",
+      gap: 12, padding: "10px 20px",
+      background: C.amberDim, borderBottom: `1px solid ${C.amberBorder}`,
+      fontFamily: sans, fontSize: 12.5, color: C.label,
+      position: "relative", zIndex: 1,
+    }}>
+      <span>
+        How was <strong style={{ color: C.heading }}>{item.title}</strong>? A quick review helps get gear and difficulty right next time.
+        {items.length > 1 && ` (+${items.length - 1} more waiting)`}
+      </span>
+      <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
+        <button onClick={() => onReview(item)}
+          style={{ background: C.amber, border: "none", borderRadius: 8, padding: "5px 12px", color: C.amberText, fontFamily: sans, fontSize: 11.5, fontWeight: 600, cursor: "pointer" }}
+        >
+          Review now
+        </button>
+        <button onClick={() => onDismiss(item.id)} title="Dismiss"
+          style={{ background: "none", border: "none", color: C.muted, cursor: "pointer", fontSize: 14, padding: "2px 6px", lineHeight: 1 }}
+        >
+          ✕
+        </button>
+      </div>
+    </div>
+  );
+};
+
+/* ─── Welcome view ───────────────────────────────────────────────────── */
+const WelcomeView = ({ onSend, serviceReady }) => (
+  <div style={{
+    flex: 1, display: "flex", flexDirection: "column",
+    alignItems: "center", justifyContent: "center",
+    padding: "40px 24px", animation: "fadeIn 0.4s ease",
+  }}>
+    <div style={{ marginBottom: 16 }}><Logo size={48} /></div>
+    <h1 style={{
+      fontFamily: serif, fontSize: 32, fontWeight: 400, color: C.heading,
+      textAlign: "center", margin: "0 0 10px", letterSpacing: "-0.02em",
+    }}>
+      Plan your next adventure
+    </h1>
+    <p style={{
+      fontFamily: sans, fontSize: 14, color: C.subtext, textAlign: "center",
+      margin: "0 0 40px", maxWidth: 380, lineHeight: 1.6,
+    }}>
+      {serviceReady === false
+        ? "AI service is unavailable right now. Please try again later."
+        : "AI-powered trip planning with your gear, your pace, your terrain."
+      }
+    </p>
+    {serviceReady !== false && (
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, maxWidth: 520, width: "100%" }}>
+        {suggestions.map((s, i) => (
+          <button key={i} onClick={() => onSend(s.text)}
+            style={{
+              background: C.fieldBg, border: `1px solid ${C.fieldBorder}`,
+              borderRadius: 12, padding: "12px 16px",
+              textAlign: "left", cursor: "pointer", transition: "all 0.15s",
+            }}
+            onMouseEnter={e => { e.currentTarget.style.borderColor = C.amber; e.currentTarget.style.background = C.amberDim; }}
+            onMouseLeave={e => { e.currentTarget.style.borderColor = C.fieldBorder; e.currentTarget.style.background = C.fieldBg; }}
+          >
+            <div style={{ fontSize: 18, marginBottom: 5 }}>{s.icon}</div>
+            <div style={{ fontFamily: sans, fontSize: 12.5, color: C.label, lineHeight: 1.5 }}>{s.text}</div>
+          </button>
+        ))}
+      </div>
+    )}
   </div>
 );
 
-/* ─── Main TripPlanner component ─────────────────────────────────────── */
+/* ─── Main component ─────────────────────────────────────────────────── */
 export default function TripPlanner() {
-  const [messages, setMessages]     = useState([]);
-  const [input, setInput]           = useState("");
-  const [isTyping, setIsTyping]     = useState(false);
-  const [sidebarOpen, setSidebarOpen] = useState(true);
-  const [activeChat, setActiveChat]   = useState(null);
-  const [model, setModel]           = useState("Thinking");
-  const endRef  = useRef(null);
+
+  const {
+    chat,
+    sendMessage:  sendChatMessage,
+    resetChat,
+    checkServiceHealth,
+    activeTrip,
+    loading,
+    error,
+    chatList,
+    readOnlyChat,
+    loadChatList,
+    openChat,
+    markChatCompleted,
+    submitChatReview,
+    duplicateChat,
+  } = useTrip();
+
+  const { messages, phase, serviceReady, hikeOptions } = chat;
+  const { user } = useUser();
+  // ── Local UI state ────────────────────────────────────────────────────────
+  const [input,          setInput]          = useState("");
+  const [sidebarOpen,    setSidebarOpen]    = useState(true);
+  const [model,          setModel]          = useState("Thinking");
+  const [userLocation,   setUserLocation]   = useState({ lat: null, lng: null });
+  const [locLabel,       setLocLabel]       = useState(null);
+  const [savedToast,     setSavedToast]     = useState(false);
+  // Mark-as-done / review questionnaire state
+  const [marking,          setMarking]          = useState(false);
+  const [reviewModalOpen,  setReviewModalOpen]  = useState(false);
+  const [reviewSubmitting, setReviewSubmitting] = useState(false);
+  const [duplicating,      setDuplicating]      = useState(false);
+  const [dismissedReviewIds, setDismissedReviewIds] = useState(() => {
+    try { return new Set(JSON.parse(localStorage.getItem(DISMISSED_REVIEW_KEY) || "[]")); }
+    catch { return new Set(); }
+  });
+  // Gear suggestion modal state
+  const [gearModal,      setGearModal]      = useState(false);
+  const [gearSuggestions,setGearSuggestions]= useState([]);
+  const [gearAdding,     setGearAdding]     = useState(false);
+  const [gearAddedToast, setGearAddedToast] = useState(false);
+
+  const endRef   = useRef(null);
   const inputRef = useRef(null);
 
+  // ── On mount: health check + chat history ─────────────────────────────────
+  useEffect(() => {
+    checkServiceHealth();
+    loadChatList();
+  }, [checkServiceHealth, loadChatList]);
+
+  // ── Trip saved — show toast and gear modal if suggestions exist ───────────
+  //
+  // TripContext sets activeTrip from the full SaveResponse after a successful
+  // POST /api/trip/save.  If TripContext passes gear_suggestions through (add
+  // it to whichever setActiveTrip call lives in TripContext), this will
+  // auto-open the gear modal when there are items to suggest.
+  //
+  // If activeTrip doesn't yet include gear_suggestions, the modal simply won't
+  // open — no error — until TripContext is updated to forward that field.
+  useEffect(() => {
+    if (!activeTrip) return;
+
+    setSavedToast(true);
+    const toastTimer = setTimeout(() => setSavedToast(false), 3500);
+
+    const suggestions = activeTrip.gear_suggestions ?? [];
+    if (suggestions.length > 0) {
+      // Slight delay so the save toast reads first before the modal appears
+      const modalTimer = setTimeout(() => {
+        setGearSuggestions(suggestions);
+        setGearModal(true);
+      }, 600);
+      return () => { clearTimeout(toastTimer); clearTimeout(modalTimer); };
+    }
+
+    return () => clearTimeout(toastTimer);
+  }, [activeTrip?.trip_id]);
+
+  // ── Auto-scroll ───────────────────────────────────────────────────────────
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, isTyping]);
+  }, [messages, loading]);
 
+  // ── Send a message ────────────────────────────────────────────────────────
   const sendMessage = async (text) => {
     const content = (text || input).trim();
-    if (!content) return;
+    if (!content || loading || serviceReady === false) return;
     setInput("");
+    if (inputRef.current) inputRef.current.style.height = "auto";
 
-    const userMsg = { role: "user", content, id: Date.now() };
-    setMessages(prev => [...prev, userMsg]);
-    setIsTyping(true);
-
-    // Simulate AI response
-    await new Promise(r => setTimeout(r, 1400 + Math.random() * 800));
-
-    const replies = [
-      `Great choice! For that trip I'd recommend starting with checking your current gear loadout. Based on your profile you own the Black Diamond Cirque 45 — that's a solid pack for this route.\n\nHere's a suggested 3-day itinerary outline:\n\n**Day 1** — Trailhead to base camp (~8 miles, moderate)\n**Day 2** — Summit attempt and return (~6 miles, strenuous)\n**Day 3** — Scenic return route (~9 miles, easy)\n\nWant me to build out a full gear list optimized for this trip?`,
-      `I've analyzed your gear locker and the route conditions. You're well-equipped for 3-season hiking, but for this specific trip I'd flag a few gaps:\n\n• You're missing a water filter — Sawyer Squeeze is 85g and fits your pack\n• No emergency beacon on record — highly recommended for remote routes\n• Your shelter is rated down to 20°F but overnight lows may reach 18°F\n\nShall I find gear suggestions that match your budget?`,
-      `Perfect! I'll map that route and cross-reference it with your owned gear. The terrain is rated Class 2 with some Class 3 scrambling near the summit.\n\nEstimated total pack weight with your current gear: **4.2 kg** — within the ideal range for your distance.\n\nWould you like me to save this as a trip plan or keep refining the route?`,
-    ];
-
-    const assistMsg = {
-      role: "assistant",
-      content: replies[Math.floor(Math.random() * replies.length)],
-      id: Date.now() + 1,
-    };
-
-    setMessages(prev => [...prev, assistMsg]);
-    setIsTyping(false);
+    const lat = userLocation.lat ?? user?.home_location?.lat ?? null;
+    const lng = userLocation.lng ?? user?.home_location?.lon ?? null;
+    try {
+      await sendChatMessage(content, lat, lng);
+    } catch {}
   };
 
   const handleKey = (e) => {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      sendMessage();
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+  };
+
+  // ── Location ──────────────────────────────────────────────────────────────
+  const requestLocation = () => {
+    if (!navigator.geolocation) return;
+    navigator.geolocation.getCurrentPosition(
+      ({ coords }) => {
+        setUserLocation({ lat: coords.latitude, lng: coords.longitude });
+        setLocLabel("📍 On");
+      },
+      () => setLocLabel(null),
+    );
+  };
+
+  // ── Gear suggestion handlers ──────────────────────────────────────────────
+
+  const handleGearConfirm = async (selectedCategories) => {
+    if (selectedCategories.length === 0) {
+      setGearModal(false);
+      setGearSuggestions([]);
+      return;
+    }
+
+    setGearAdding(true);
+    try {
+      await Promise.all(
+        selectedCategories.map((category) => {
+          const suggestion = gearSuggestions.find(s => s.category === category);
+          if (!suggestion) return Promise.resolve();
+          return createItem(suggestion.category, {
+            name:     suggestion.name,
+            weight_g: suggestion.weight_g,
+            cost:     suggestion.cost,
+          });
+        })
+      );
+      setGearAddedToast(true);
+      setTimeout(() => setGearAddedToast(false), 3000);
+    } catch (err) {
+      console.warn("Gear suggestion add failed:", err);
+    } finally {
+      setGearAdding(false);
+      setGearModal(false);
+      setGearSuggestions([]);
+    }
+  };
+
+  const handleGearDismiss = () => {
+    if (gearAdding) return;   // prevent dismiss mid-request
+    setGearModal(false);
+    setGearSuggestions([]);
+  };
+
+  // ── Derived ───────────────────────────────────────────────────────────────
+  const hasMessages  = messages.length > 0;
+  const inputBlocked = loading || serviceReady === false;
+  const activeChatId = readOnlyChat?.id ?? (chat.sessionId || null);
+
+  const chatGroups = [
+    { key: "planning",  label: "Planning",   items: chatList.filter(c => c.status === "active") },
+    { key: "upcoming",  label: "Upcoming",   items: chatList.filter(c => c.status === "saved") },
+    { key: "past",      label: "Past hikes", items: chatList.filter(c => c.status === "completed" || c.status === "reviewed") },
+  ];
+
+  const needsReviewItems = chatList.filter(
+    c => c.status === "completed" && c.needs_review && !dismissedReviewIds.has(c.id)
+  );
+
+  const handleOpenChat = (chatId) => {
+    openChat(chatId).catch(() => {});
+  };
+
+  const handleMarkDone = async () => {
+    if (!readOnlyChat) return;
+    setMarking(true);
+    try {
+      await markChatCompleted(readOnlyChat.id);
+    } catch {
+      // error surfaced via context's `error` state already
+    } finally {
+      setMarking(false);
+    }
+  };
+
+  const handleSubmitReview = async (payload) => {
+    if (!readOnlyChat) return;
+    setReviewSubmitting(true);
+    try {
+      await submitChatReview(readOnlyChat.id, payload);
+      setReviewModalOpen(false);
+    } catch {
+      // error surfaced via context's `error` state; keep modal open to retry
+    } finally {
+      setReviewSubmitting(false);
+    }
+  };
+
+  const dismissReviewNudge = (chatId) => {
+    setDismissedReviewIds(prev => {
+      const next = new Set(prev);
+      next.add(chatId);
+      localStorage.setItem(DISMISSED_REVIEW_KEY, JSON.stringify([...next]));
+      return next;
+    });
+  };
+
+  const handleReviewFromBanner = async (item) => {
+    await openChat(item.id).catch(() => {});
+    setReviewModalOpen(true);
+  };
+
+  const handleGoAgain = async () => {
+    if (!readOnlyChat) return;
+    setDuplicating(true);
+    try {
+      await duplicateChat(readOnlyChat.id);
+    } catch {
+      // error surfaced via context's `error` state
+    } finally {
+      setDuplicating(false);
     }
   };
 
@@ -362,368 +1132,403 @@ export default function TripPlanner() {
     <>
       <GlobalStyles />
       <div style={{
-      display: "flex",
-      height: "100vh",
-      width: "100vw",
-      background: C.page,
-      fontFamily: sans,
-      overflow: "hidden",
-    }}>
-
-      {/* ── Sidebar ──────────────────────────────────────────────────── */}
-      <aside style={{
-        width: sidebarOpen ? 260 : 0,
-        minWidth: sidebarOpen ? 260 : 0,
-        background: C.sidebar,
-        borderRight: `1px solid ${C.sidebarBorder}`,
-        display: "flex",
-        flexDirection: "column",
-        overflow: "hidden",
-        transition: "width 0.25s ease, min-width 0.25s ease",
+        display: "flex", height: "100vh", width: "100vw",
+        background: C.page, fontFamily: sans, overflow: "hidden",
       }}>
-        <div style={{ padding: "16px 14px 12px", display: "flex", alignItems: "center", gap: 10 }}>
-          <Logo size={20} />
-          <span style={{ fontFamily: serif, fontSize: 15, color: C.heading, letterSpacing: "0.02em" }}>
-            TripPlanner
-          </span>
-        </div>
 
-        {/* New chat button */}
-        <div style={{ padding: "0 10px 16px" }}>
-          <button
-            onClick={() => { setMessages([]); setActiveChat(null); }}
-            style={{
-              width: "100%",
-              padding: "9px 14px",
-              background: "none",
-              border: `1px solid ${C.sidebarBorder}`,
-              borderRadius: 10,
-              cursor: "pointer",
-              display: "flex", alignItems: "center", gap: 9,
-              color: C.label,
-              fontSize: 13,
-              transition: "all 0.15s",
-            }}
-            onMouseEnter={e => { e.currentTarget.style.background = C.amberDim; e.currentTarget.style.borderColor = C.amberBorder; }}
-            onMouseLeave={e => { e.currentTarget.style.background = "none"; e.currentTarget.style.borderColor = C.sidebarBorder; }}
-          >
-            <span style={{ fontSize: 16, lineHeight: 1 }}>＋</span>
-            <span>New trip</span>
-          </button>
-        </div>
+        {/* ── Gear suggestion modal ──────────────────────────────────────── */}
+        {gearModal && gearSuggestions.length > 0 && (
+          <GearSuggestionModal
+            suggestions={gearSuggestions}
+            onConfirm={handleGearConfirm}
+            onDismiss={handleGearDismiss}
+            adding={gearAdding}
+          />
+        )}
 
-        <div style={{ padding: "0 14px 8px" }}>
-          <span style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", letterSpacing: "1px" }}>
-            Recent
-          </span>
-        </div>
+        {/* ── Review questionnaire modal ────────────────────────────────── */}
+        {reviewModalOpen && readOnlyChat && (
+          <ReviewModal
+            trip={readOnlyChat}
+            onSubmit={handleSubmitReview}
+            onClose={() => setReviewModalOpen(false)}
+            submitting={reviewSubmitting}
+          />
+        )}
 
-        {/* History */}
-        <div style={{ flex: 1, overflowY: "auto", padding: "0 8px" }}>
-          {history.map(h => (
-            <button key={h.id}
-              onClick={() => setActiveChat(h.id)}
-              style={{
-                width: "100%",
-                padding: "9px 10px",
-                background: activeChat === h.id ? C.amberDim : "none",
-                border: `1px solid ${activeChat === h.id ? C.amberBorder : "transparent"}`,
-                borderRadius: 8,
-                cursor: "pointer",
-                textAlign: "left",
-                marginBottom: 3,
-                transition: "all 0.15s",
-              }}
-              onMouseEnter={e => { if (activeChat !== h.id) { e.currentTarget.style.background = C.fieldBg; }}}
-              onMouseLeave={e => { if (activeChat !== h.id) { e.currentTarget.style.background = "none"; }}}
-            >
-              <div style={{ fontSize: 12.5, color: activeChat === h.id ? C.amberText : C.label, marginBottom: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                {h.title}
-              </div>
-              <div style={{ fontSize: 10.5, color: C.muted }}>{h.date}</div>
-            </button>
-          ))}
-        </div>
-
-        {/* User footer */}
-        <div style={{
-          padding: "12px 14px",
-          borderTop: `1px solid ${C.sidebarBorder}`,
-          display: "flex", alignItems: "center", gap: 10,
+        {/* ── Sidebar ────────────────────────────────────────────────────── */}
+        <aside style={{
+          width: sidebarOpen ? 260 : 0, minWidth: sidebarOpen ? 260 : 0,
+          background: C.sidebar, borderRight: `1px solid ${C.sidebarBorder}`,
+          display: "flex", flexDirection: "column", overflow: "hidden",
+          transition: "width 0.25s ease, min-width 0.25s ease",
         }}>
-          <div style={{
-            width: 28, height: 28, borderRadius: "50%",
-            background: C.fieldBg, border: `1px solid ${C.amberBorder}`,
-            display: "flex", alignItems: "center", justifyContent: "center",
-            fontSize: 11, color: C.amber, fontWeight: 700,
-          }}>
-            T
+          <div style={{ padding: "16px 14px 12px", display: "flex", alignItems: "center", gap: 10 }}>
+            <Logo size={20} />
+            <span style={{ fontFamily: serif, fontSize: 15, color: C.heading, letterSpacing: "0.02em" }}>
+              TripPlanner
+            </span>
           </div>
-          <div>
-            <div style={{ fontSize: 12, color: C.heading }}>Tester</div>
-            <div style={{ fontSize: 10.5, color: C.muted }}>3 items · 2.87 kg</div>
-          </div>
-        </div>
-      </aside>
 
-      {/* ── Main column ──────────────────────────────────────────────── */}
-      <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", position: "relative" }}>
-        <AmbientHue />
-
-        {/* Top bar */}
-        <header style={{
-          display: "flex", alignItems: "center", justifyContent: "space-between",
-          padding: "12px 20px",
-          borderBottom: `1px solid ${C.sidebarBorder}`,
-          background: "transparent",
-          gap: 12,
-          position: "relative", zIndex: 1,
-        }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <div style={{ padding: "0 10px 16px" }}>
             <button
-              onClick={() => setSidebarOpen(o => !o)}
+              onClick={() => resetChat()}
               style={{
-                background: "none", border: "none", cursor: "pointer",
-                padding: "6px 8px", borderRadius: 8,
-                color: C.muted, fontSize: 18, lineHeight: 1,
-                transition: "color 0.15s",
+                width: "100%", padding: "9px 14px",
+                background: "none", border: `1px solid ${C.sidebarBorder}`,
+                borderRadius: 10, cursor: "pointer",
+                display: "flex", alignItems: "center", gap: 9,
+                color: C.label, fontSize: 13, transition: "all 0.15s",
               }}
-              onMouseEnter={e => e.currentTarget.style.color = C.label}
-              onMouseLeave={e => e.currentTarget.style.color = C.muted}
-              title="Toggle sidebar"
+              onMouseEnter={e => { e.currentTarget.style.background = C.amberDim; e.currentTarget.style.borderColor = C.amberBorder; }}
+              onMouseLeave={e => { e.currentTarget.style.background = "none"; e.currentTarget.style.borderColor = C.sidebarBorder; }}
             >
-              ☰
+              <span style={{ fontSize: 16, lineHeight: 1 }}>＋</span>
+              <span>New trip</span>
             </button>
+          </div>
 
-            {!sidebarOpen && (
-              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <Logo size={18} />
-                <span style={{ fontFamily: serif, fontSize: 14, color: C.heading }}>TripPlanner</span>
+          <div style={{ flex: 1, overflowY: "auto", padding: "0 8px" }}>
+            {chatList.length === 0 && (
+              <div style={{ padding: "10px 6px", fontFamily: sans, fontSize: 11.5, color: C.muted, fontStyle: "italic" }}>
+                No trips yet — start planning one below.
+              </div>
+            )}
+            {chatGroups.map(group => group.items.length > 0 && (
+              <div key={group.key} style={{ marginBottom: 14 }}>
+                <div style={{ padding: "0 6px 8px" }}>
+                  <span style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", letterSpacing: "1px" }}>
+                    {group.label}
+                  </span>
+                </div>
+                {group.items.map(h => (
+                  <button key={h.id} onClick={() => handleOpenChat(h.id)}
+                    style={{
+                      width: "100%", padding: "9px 10px",
+                      background: activeChatId === h.id ? C.amberDim : "none",
+                      border: `1px solid ${activeChatId === h.id ? C.amberBorder : "transparent"}`,
+                      borderRadius: 8, cursor: "pointer", textAlign: "left",
+                      marginBottom: 3, transition: "all 0.15s",
+                    }}
+                    onMouseEnter={e => { if (activeChatId !== h.id) e.currentTarget.style.background = C.fieldBg; }}
+                    onMouseLeave={e => { if (activeChatId !== h.id) e.currentTarget.style.background = "none"; }}
+                  >
+                    <div style={{ fontSize: 12.5, color: activeChatId === h.id ? C.amberText : C.label, marginBottom: 3, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                      {h.title}
+                    </div>
+                    <StatusBadge status={h.status} />
+                  </button>
+                ))}
+              </div>
+            ))}
+          </div>
+
+          <div style={{
+            padding: "12px 14px", borderTop: `1px solid ${C.sidebarBorder}`,
+            display: "flex", alignItems: "center", gap: 10,
+          }}>
+            <div style={{
+              width: 28, height: 28, borderRadius: "50%",
+              background: C.fieldBg, border: `1px solid ${C.amberBorder}`,
+              display: "flex", alignItems: "center", justifyContent: "center",
+              fontSize: 11, color: C.amber, fontWeight: 700,
+            }}>W</div>
+            <div>
+              <div style={{ fontSize: 12, color: C.heading }}>Will</div>
+              <div style={{ fontSize: 10.5, color: C.muted }}>3 items · 2.87 kg</div>
+            </div>
+          </div>
+        </aside>
+
+        {/* ── Main column ────────────────────────────────────────────────── */}
+        <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", position: "relative" }}>
+          <AmbientHue />
+
+          {/* Trip saved toast */}
+          <Toast
+            message={`✓ Trip saved — "${activeTrip?.title}"`}
+            type="success"
+            visible={savedToast}
+          />
+
+          {/* Gear added toast */}
+          <Toast
+            message="✓ Gear added to your kit"
+            type="success"
+            visible={gearAddedToast}
+          />
+
+          {/* Top bar */}
+          <header style={{
+            display: "flex", alignItems: "center", justifyContent: "space-between",
+            padding: "12px 20px", borderBottom: `1px solid ${C.sidebarBorder}`,
+            background: "transparent", gap: 12, position: "relative", zIndex: 1,
+          }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <button
+                onClick={() => setSidebarOpen(o => !o)}
+                style={{
+                  background: "none", border: "none", cursor: "pointer",
+                  padding: "6px 8px", borderRadius: 8,
+                  color: C.muted, fontSize: 18, lineHeight: 1, transition: "color 0.15s",
+                }}
+                onMouseEnter={e => e.currentTarget.style.color = C.label}
+                onMouseLeave={e => e.currentTarget.style.color = C.muted}
+                title="Toggle sidebar"
+              >☰</button>
+
+              {!sidebarOpen && (
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <Logo size={18} />
+                  <span style={{ fontFamily: serif, fontSize: 14, color: C.heading }}>TripPlanner</span>
+                </div>
+              )}
+            </div>
+
+            <div style={{
+              flex: 1, maxWidth: 320, display: "flex", alignItems: "center",
+              background: C.fieldBg, border: `1px solid ${C.fieldBorder}`,
+              borderRadius: 20, padding: "5px 14px", gap: 7,
+            }}>
+              <span style={{ fontSize: 11, color: C.muted }}>🔒</span>
+              <span style={{ fontFamily: mono, fontSize: 11.5, color: C.subtext, letterSpacing: "0.02em" }}>
+                tripplanner.ai/chat
+              </span>
+            </div>
+
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <div
+                title={serviceReady === null ? "Checking service…" : serviceReady ? "AI service online" : "AI service offline"}
+                style={{
+                  width: 7, height: 7, borderRadius: "50%",
+                  background: serviceReady === null ? C.muted : serviceReady ? "#50c878" : "#e05040",
+                  boxShadow: serviceReady === true ? "0 0 5px #50c878" : "none",
+                  transition: "all 0.4s",
+                }}
+              />
+
+              <select value={model} onChange={e => setModel(e.target.value)}
+                style={{
+                  background: C.fieldBg, border: `1px solid ${C.fieldBorder}`,
+                  borderRadius: 20, padding: "5px 30px 5px 12px",
+                  color: C.label, fontFamily: sans, fontSize: 12.5,
+                  cursor: "pointer", appearance: "none", WebkitAppearance: "none",
+                  backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%236a4e30' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E")`,
+                  backgroundRepeat: "no-repeat", backgroundPosition: "right 10px center",
+                }}
+              >
+                <option>Thinking</option>
+                <option>Standard</option>
+                <option>Lightweight</option>
+              </select>
+
+              <button
+                onClick={() => window.location.href = "/map"}
+                style={{
+                  background: C.amber, border: "none", borderRadius: 20,
+                  padding: "6px 16px", color: C.amberText,
+                  fontFamily: sans, fontSize: 12.5, cursor: "pointer",
+                  fontWeight: 600, letterSpacing: "0.03em", transition: "background 0.15s",
+                }}
+                onMouseEnter={e => e.currentTarget.style.background = C.amberHover}
+                onMouseLeave={e => e.currentTarget.style.background = C.amber}
+              >View Map</button>
+            </div>
+          </header>
+
+          <NeedsReviewBanner
+            items={needsReviewItems}
+            onReview={handleReviewFromBanner}
+            onDismiss={dismissReviewNudge}
+          />
+
+          {hasMessages && !readOnlyChat && <PhaseBreadcrumb currentPhase={phase} />}
+
+          {error && (
+            <div style={{
+              padding: "8px 24px", background: C.errorBg,
+              borderBottom: `1px solid ${C.errorBorder}`,
+              fontFamily: sans, fontSize: 12.5, color: C.errorText,
+              position: "relative", zIndex: 1,
+              display: "flex", alignItems: "center", gap: 8,
+            }}>
+              <span>⚠</span><span>{error}</span>
+            </div>
+          )}
+
+          {readOnlyChat ? (
+            <ReadOnlyTripView
+              trip={readOnlyChat}
+              onMarkDone={handleMarkDone}
+              marking={marking}
+              onOpenReview={() => setReviewModalOpen(true)}
+              onGoAgain={handleGoAgain}
+              duplicating={duplicating}
+            />
+          ) : (
+          <>
+          {/* Messages or welcome */}
+          <div style={{
+            flex: 1, overflowY: "auto",
+            padding: hasMessages ? "32px 0" : 0,
+            display: "flex", flexDirection: "column",
+            position: "relative", zIndex: 1,
+          }}>
+            {!hasMessages ? (
+              <WelcomeView onSend={sendMessage} serviceReady={serviceReady} />
+            ) : (
+              <div style={{ maxWidth: 680, width: "100%", margin: "0 auto", padding: "0 24px" }}>
+                {messages.map((msg, i) => <Message key={i} msg={msg} />)}
+
+                {!loading && phase === "destination" && hikeOptions.length > 0 && (
+                  <HikeOptionCards
+                    options={hikeOptions}
+                    // "option N" must come first: PhaseController.extract_hike_selection
+                    // regex-matches the FIRST "option|trail|hike|choice|number|#"
+                    // + digit it finds left-to-right. If the trail's own name
+                    // happened to contain a number 1-5 (e.g. "Trail 2") and it
+                    // came before "option N" in the string, that embedded digit
+                    // would win instead — leading "option N" guarantees the
+                    // intended index always matches first regardless of name.
+                    onPick={(opt) => sendMessage(`Option ${opt.index}: ${opt.name}`)}
+                  />
+                )}
+
+                {loading && (
+                  <div style={{ display: "flex", gap: 12, marginBottom: 24, animation: "fadeIn 0.2s ease" }}>
+                    <div style={{
+                      width: 32, height: 32, borderRadius: "50%",
+                      border: `1px solid ${C.amberBorder}`, background: C.fieldBg,
+                      display: "flex", alignItems: "center", justifyContent: "center",
+                      flexShrink: 0,
+                    }}>
+                      <Logo size={16} />
+                    </div>
+                    <div style={{ padding: "8px 0" }}>
+                      <div style={{ fontFamily: sans, fontSize: 11, color: C.amber, letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 8, fontWeight: 600 }}>
+                        Trail AI
+                      </div>
+                      <TypingDots />
+                    </div>
+                  </div>
+                )}
+                <div ref={endRef} />
               </div>
             )}
           </div>
 
-          {/* URL bar style indicator */}
+          {/* Input bar */}
           <div style={{
-            flex: 1, maxWidth: 320,
-            display: "flex", alignItems: "center",
-            background: C.fieldBg,
-            border: `1px solid ${C.fieldBorder}`,
-            borderRadius: 20,
-            padding: "5px 14px",
-            gap: 7,
+            padding: "16px 24px 20px", background: "transparent",
+            borderTop: hasMessages ? `1px solid ${C.sidebarBorder}` : "none",
+            position: "relative", zIndex: 1,
           }}>
-            <span style={{ fontSize: 11, color: C.muted }}>🔒</span>
-            <span style={{ fontFamily: mono, fontSize: 11.5, color: C.subtext, letterSpacing: "0.02em" }}>
-              tripplanner.ai/chat
-            </span>
-          </div>
-
-          {/* Model selector */}
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <select
-              value={model}
-              onChange={e => setModel(e.target.value)}
-              style={{
-                background: C.fieldBg,
-                border: `1px solid ${C.fieldBorder}`,
-                borderRadius: 20,
-                padding: "5px 30px 5px 12px",
-                color: C.label,
-                fontFamily: sans,
-                fontSize: 12.5,
-                cursor: "pointer",
-                appearance: "none",
-                WebkitAppearance: "none",
-                backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%236a4e30' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E")`,
-                backgroundRepeat: "no-repeat",
-                backgroundPosition: "right 10px center",
-              }}
-            >
-              <option>Thinking</option>
-              <option>Standard</option>
-              <option>Lightweight</option>
-            </select>
-
-            <button
-              onClick={() => window.location.href = "/map"}
-              style={{
-                background: C.amber,
-                border: "none",
-                borderRadius: 20,
-                padding: "6px 16px",
-                color: C.amberText,
-                fontFamily: sans,
-                fontSize: 12.5,
-                cursor: "pointer",
-                fontWeight: 600,
-                letterSpacing: "0.03em",
-                transition: "background 0.15s",
-              }}
-              onMouseEnter={e => e.currentTarget.style.background = C.amberHover}
-              onMouseLeave={e => e.currentTarget.style.background = C.amber}
-            >
-              View Map
-            </button>
-          </div>
-        </header>
-
-        {/* Messages or welcome */}
-        <div style={{
-          flex: 1,
-          overflowY: "auto",
-          padding: messages.length === 0 ? 0 : "32px 0",
-          display: "flex",
-          flexDirection: "column",
-          position: "relative", zIndex: 1,
-        }}>
-          {messages.length === 0 ? (
-            <WelcomeView onSend={sendMessage} />
-          ) : (
-            <div style={{ maxWidth: 680, width: "100%", margin: "0 auto", padding: "0 24px" }}>
-              {messages.map(msg => (
-                <Message key={msg.id} msg={msg} />
-              ))}
-              {isTyping && (
-                <div style={{ display: "flex", gap: 12, marginBottom: 24, animation: "fadeIn 0.2s ease" }}>
-                  <div style={{
-                    width: 32, height: 32, borderRadius: "50%",
-                    border: `1px solid ${C.amberBorder}`,
-                    background: C.fieldBg,
-                    display: "flex", alignItems: "center", justifyContent: "center",
-                    flexShrink: 0,
-                  }}>
-                    <Logo size={16} />
-                  </div>
-                  <div style={{ padding: "8px 0" }}>
-                    <div style={{ fontFamily: sans, fontSize: 11, color: C.amber, letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 8, fontWeight: 600 }}>
-                      Trail AI
-                    </div>
-                    <TypingDots />
-                  </div>
-                </div>
-              )}
-              <div ref={endRef} />
-            </div>
-          )}
-        </div>
-
-        {/* Input bar */}
-        <div style={{
-          padding: "16px 24px 20px",
-          background: "transparent",
-          borderTop: messages.length > 0 ? `1px solid ${C.sidebarBorder}` : "none",
-          position: "relative", zIndex: 1,
-        }}>
-          <div style={{
-            maxWidth: 680,
-            margin: "0 auto",
-            position: "relative",
-          }}>
-            {/* Attachment / extra actions row */}
-            <div style={{
-              background: C.inputBg,
-              border: `1px solid ${C.inputBorder}`,
-              borderRadius: 18,
-              overflow: "hidden",
-              transition: "border-color 0.15s",
-            }}
-              onFocusCapture={e => e.currentTarget.style.borderColor = C.amberBorder}
-              onBlurCapture={e => e.currentTarget.style.borderColor = C.inputBorder}
-            >
-              <textarea
-                ref={inputRef}
-                value={input}
-                onChange={e => setInput(e.target.value)}
-                onKeyDown={handleKey}
-                placeholder="Ask about trails, gear, or let me plan a trip…"
-                rows={1}
-                style={{
-                  width: "100%",
-                  background: "none",
-                  border: "none",
-                  outline: "none",
-                  resize: "none",
-                  padding: "16px 60px 16px 18px",
-                  fontFamily: serif,
-                  fontSize: 14,
-                  color: C.heading,
-                  lineHeight: 1.6,
-                  boxSizing: "border-box",
-                  caretColor: C.amber,
-                  minHeight: 54,
-                  maxHeight: 160,
-                  overflowY: "auto",
-                }}
-                onInput={e => {
-                  e.target.style.height = "auto";
-                  e.target.style.height = Math.min(e.target.scrollHeight, 160) + "px";
-                }}
-              />
-
-              {/* Bottom action row inside input */}
+            <div style={{ maxWidth: 680, margin: "0 auto", position: "relative" }}>
               <div style={{
-                display: "flex", alignItems: "center", justifyContent: "space-between",
-                padding: "8px 12px",
-                borderTop: `1px solid ${C.inputBorder}`,
-              }}>
-                <div style={{ display: "flex", gap: 4 }}>
-                  {[
-                    { icon: "＋", label: "Attach" },
-                    { icon: "📍", label: "Location" },
-                    { icon: "🎒", label: "My gear" },
-                  ].map(btn => (
-                    <button key={btn.label}
-                      title={btn.label}
-                      style={{
-                        background: "none", border: "none", cursor: "pointer",
-                        padding: "4px 8px", borderRadius: 8,
-                        color: C.muted, fontSize: 13,
-                        fontFamily: sans,
-                        display: "flex", alignItems: "center", gap: 5,
-                        transition: "color 0.15s",
-                      }}
+                background: inputBlocked ? "rgba(26,18,8,0.5)" : C.inputBg,
+                border: `1px solid ${C.inputBorder}`,
+                borderRadius: 18, overflow: "hidden",
+                transition: "border-color 0.15s, background 0.15s",
+                opacity: inputBlocked && serviceReady === false ? 0.6 : 1,
+              }}
+                onFocusCapture={e => { if (!inputBlocked) e.currentTarget.style.borderColor = C.amberBorder; }}
+                onBlurCapture={e => e.currentTarget.style.borderColor = C.inputBorder}
+              >
+                <textarea
+                  ref={inputRef}
+                  value={input}
+                  onChange={e => setInput(e.target.value)}
+                  onKeyDown={handleKey}
+                  disabled={serviceReady === false}
+                  placeholder={
+                    serviceReady === false
+                      ? "AI service unavailable…"
+                      : loading
+                        ? "Waiting for Trail AI…"
+                        : "Ask about trails, gear, or let me plan a trip…"
+                  }
+                  rows={1}
+                  style={{
+                    width: "100%", background: "none", border: "none",
+                    outline: "none", resize: "none",
+                    padding: "16px 60px 16px 18px",
+                    fontFamily: serif, fontSize: 14, color: C.heading,
+                    lineHeight: 1.6, boxSizing: "border-box",
+                    caretColor: C.amber, minHeight: 54, maxHeight: 160,
+                    overflowY: "auto",
+                    cursor: serviceReady === false ? "not-allowed" : "text",
+                  }}
+                  onInput={e => {
+                    e.target.style.height = "auto";
+                    e.target.style.height = Math.min(e.target.scrollHeight, 160) + "px";
+                  }}
+                />
+
+                <div style={{
+                  display: "flex", alignItems: "center", justifyContent: "space-between",
+                  padding: "8px 12px", borderTop: `1px solid ${C.inputBorder}`,
+                }}>
+                  <div style={{ display: "flex", gap: 4 }}>
+                    <button title="Attach"
+                      style={{ background:"none", border:"none", cursor:"pointer", padding:"4px 8px", borderRadius:8, color:C.muted, fontSize:13, fontFamily:sans, display:"flex", alignItems:"center", gap:5, transition:"color 0.15s" }}
                       onMouseEnter={e => e.currentTarget.style.color = C.label}
                       onMouseLeave={e => e.currentTarget.style.color = C.muted}
-                    >
-                      <span>{btn.icon}</span>
-                      <span style={{ fontSize: 11 }}>{btn.label}</span>
-                    </button>
-                  ))}
-                </div>
+                    ><span>＋</span><span style={{ fontSize:11 }}>Attach</span></button>
 
-                {/* Send button */}
-                <button
-                  onClick={() => sendMessage()}
-                  disabled={!input.trim() || isTyping}
-                  style={{
-                    background: input.trim() && !isTyping ? C.amber : C.fieldBg,
-                    border: `1px solid ${input.trim() && !isTyping ? C.amber : C.fieldBorder}`,
-                    borderRadius: 10,
-                    width: 34, height: 34,
-                    cursor: input.trim() && !isTyping ? "pointer" : "default",
-                    display: "flex", alignItems: "center", justifyContent: "center",
-                    transition: "all 0.15s",
-                    flexShrink: 0,
-                  }}
-                >
-                  <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-                    <path d="M7 1L7 13M7 1L2 6M7 1L12 6"
-                      stroke={input.trim() && !isTyping ? C.amberText : C.muted}
-                      strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
-                  </svg>
-                </button>
+                    <button title="Share my location" onClick={requestLocation}
+                      style={{
+                        background: userLocation.lat ? C.amberDim : "none",
+                        border: userLocation.lat ? `1px solid ${C.amberBorder}` : "none",
+                        cursor:"pointer", padding:"4px 8px", borderRadius:8,
+                        color: userLocation.lat ? C.amber : C.muted,
+                        fontSize:13, fontFamily:sans,
+                        display:"flex", alignItems:"center", gap:5, transition:"all 0.15s",
+                      }}
+                      onMouseEnter={e => { if (!userLocation.lat) e.currentTarget.style.color = C.label; }}
+                      onMouseLeave={e => { if (!userLocation.lat) e.currentTarget.style.color = C.muted; }}
+                    >
+                      <span>📍</span>
+                      <span style={{ fontSize:11 }}>{locLabel || "Location"}</span>
+                    </button>
+
+                    <button title="My gear"
+                      style={{ background:"none", border:"none", cursor:"pointer", padding:"4px 8px", borderRadius:8, color:C.muted, fontSize:13, fontFamily:sans, display:"flex", alignItems:"center", gap:5, transition:"color 0.15s" }}
+                      onMouseEnter={e => e.currentTarget.style.color = C.label}
+                      onMouseLeave={e => e.currentTarget.style.color = C.muted}
+                    ><span>🎒</span><span style={{ fontSize:11 }}>My gear</span></button>
+                  </div>
+
+                  <button
+                    onClick={() => sendMessage()}
+                    disabled={!input.trim() || inputBlocked}
+                    style={{
+                      background: input.trim() && !inputBlocked ? C.amber : C.fieldBg,
+                      border: `1px solid ${input.trim() && !inputBlocked ? C.amber : C.fieldBorder}`,
+                      borderRadius: 10, width: 34, height: 34,
+                      cursor: input.trim() && !inputBlocked ? "pointer" : "default",
+                      display: "flex", alignItems: "center", justifyContent: "center",
+                      transition: "all 0.15s", flexShrink: 0,
+                    }}
+                  >
+                    <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                      <path d="M7 1L7 13M7 1L2 6M7 1L12 6"
+                        stroke={input.trim() && !inputBlocked ? C.amberText : C.muted}
+                        strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
+                    </svg>
+                  </button>
+                </div>
+              </div>
+
+              <div style={{ textAlign: "center", marginTop: 8 }}>
+                <span style={{ fontFamily: sans, fontSize: 10.5, color: C.muted, letterSpacing: "0.03em" }}>
+                  Trail AI can make mistakes. Verify conditions before heading out.
+                </span>
               </div>
             </div>
-
-            <div style={{ textAlign: "center", marginTop: 8 }}>
-              <span style={{ fontFamily: sans, fontSize: 10.5, color: C.muted, letterSpacing: "0.03em" }}>
-                Trail AI can make mistakes. Verify conditions before heading out.
-              </span>
-            </div>
           </div>
+          </>
+          )}
         </div>
-      </div>
       </div>
     </>
   );

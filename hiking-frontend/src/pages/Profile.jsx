@@ -2,6 +2,8 @@ import { useMemo, useState, useEffect } from "react";
 import { useUser } from "../context/UserContext";
 import { useNavigate } from "react-router-dom";
 import ScrollBar from "../components/ScrollBar";
+import { useTrip } from "../context/TripContext";
+import { getPastHikesStats } from "../api/tripService";
 
 /* ─── Design tokens ─────────────────────────────────────────────────────── */
 const C = {
@@ -117,17 +119,28 @@ const Divider = () => (
 
 /* ─── Main component ─────────────────────────────────────────────────────── */
 const Profile = () => {
-  const { user, items, updateLocation, loadingLocation } = useUser();
+  const { user, items, updateLocation, loadingLocation, logout } = useUser();
   const navigate = useNavigate();
-  const [trips, setTrips]               = useState([]);
-  const [loadingTrips, setLoadingTrips] = useState(false);
+  const { chatList, loadChatList, openChat, loading: loadingTrips } = useTrip();
+  const [pastStats, setPastStats] = useState({ hike_count: 0, total_miles: 0, favorite_region: null });
 
   useEffect(() => {
     if (!user) return;
-    setLoadingTrips(true);
-    // placeholder until trips endpoint is wired
-    setLoadingTrips(false);
-  }, [user]);
+    loadChatList();
+    getPastHikesStats().then(setPastStats).catch(() => {});
+  }, [user, loadChatList]);
+
+  // "Saved Trips" (below) means status=saved specifically now — truly
+  // upcoming, not-yet-hiked trips — not every trip regardless of lifecycle
+  // stage the way the old unfiltered GET /trips/ list showed. Past Hikes
+  // (completed + reviewed) gets its own section instead of being mixed in.
+  const upcomingTrips = chatList.filter(c => c.status === "saved");
+  const pastHikes     = chatList.filter(c => c.status === "completed" || c.status === "reviewed");
+
+  const openTripChat = (chatId) => {
+    navigate("/trip-planner");
+    openChat(chatId).catch(() => {});
+  };
 
   const itemsByCategory = useMemo(() => {
     if (!items?.length) return {};
@@ -220,6 +233,21 @@ const Profile = () => {
                 </svg>
                 Map
               </button>
+              <button onClick={() => navigate("/trip-planner")}
+                style={{
+                  padding: "9px 18px", borderRadius: 9, cursor: "pointer",
+                  background: "rgba(90,58,26,0.3)", border: `1px solid ${C.fieldBorder}`,
+                  color: C.label, fontFamily: sans, fontSize: 12, fontWeight: 600,
+                  display: "flex", alignItems: "center", gap: 6,
+                }}
+                onMouseEnter={e => e.currentTarget.style.background = "rgba(90,58,26,0.55)"}
+                onMouseLeave={e => e.currentTarget.style.background = "rgba(90,58,26,0.3)"}
+              >
+                <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7"/>
+                </svg>
+                Plan a Trip
+              </button>
               <button onClick={() => navigate("/gear")}
                 style={{
                   padding: "9px 18px", borderRadius: 9, cursor: "pointer",
@@ -236,6 +264,29 @@ const Profile = () => {
                 </svg>
                 Manage Gear
               </button>
+              <button onClick={logout}
+                style={{
+                  padding: "9px 18px", borderRadius: 9, cursor: "pointer",
+                  background: "rgba(122,58,42,0.1)", border: "1px solid rgba(154,80,58,0.4)",
+                  color: "#c99a80", fontFamily: sans, fontSize: 12, fontWeight: 600,
+                  display: "flex", alignItems: "center", gap: 6,
+                }}
+                onMouseEnter={e => {
+                  e.currentTarget.style.background = "rgba(122,58,42,0.22)";
+                  e.currentTarget.style.borderColor = "#9a5a3e";
+                  e.currentTarget.style.color = "#e0ac8e";
+                }}
+                onMouseLeave={e => {
+                  e.currentTarget.style.background = "rgba(122,58,42,0.1)";
+                  e.currentTarget.style.borderColor = "rgba(154,80,58,0.4)";
+                  e.currentTarget.style.color = "#c99a80";
+                }}
+              >
+                <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"/>
+                </svg>
+                Logout
+              </button>
             </div>
           </div>
         </div>
@@ -246,30 +297,30 @@ const Profile = () => {
           <StatCard label="Items Owned"  value={stats.count}              icon="🎒" />
           <StatCard label="Total Weight" value={stats.weight.toFixed(2)}  sub="kg"  icon="⚖️" />
           <StatCard label="Gear Value"   value={`$${stats.cost.toFixed(0)}`}         icon="💰" />
-          <StatCard label="Saved Trips"  value={trips.length}                        icon="🗺️" />
+          <StatCard label="Upcoming Trips" value={upcomingTrips.length}   icon="🗺️" />
         </div>
 
-        {/* ── Saved trips ─────────────────────────────────────────────────── */}
+        {/* ── Upcoming (saved) trips ────────────────────────────────────────── */}
         <div style={{
           background: C.card, border: `1px solid ${C.cardBorder}`,
           borderRadius: 20, padding: "28px 32px", marginBottom: 20,
         }}>
           <h2 style={{ fontFamily: serif, fontSize: 20, fontWeight: "normal",
             color: C.heading, margin: "0 0 20px", display: "flex", alignItems: "center", gap: 10 }}>
-            <span>🗺️</span> Saved Trips
+            <span>🗺️</span> Upcoming Trips
           </h2>
 
           {loadingTrips ? (
             <p style={{ fontFamily: body, color: C.muted, fontStyle: "italic", textAlign: "center", padding: "24px 0" }}>
               Loading trips…
             </p>
-          ) : trips.length === 0 ? (
+          ) : upcomingTrips.length === 0 ? (
             <div style={{ textAlign: "center", padding: "32px 0" }}>
               <p style={{ fontFamily: body, fontSize: 14, color: C.muted,
                 fontStyle: "italic", margin: "0 0 18px" }}>
-                No saved trips yet — plan your first adventure.
+                No upcoming trips yet — plan your first adventure.
               </p>
-              <button onClick={() => navigate("/map")}
+              <button onClick={() => navigate("/trip-planner")}
                 style={{
                   padding: "9px 22px", borderRadius: 9, cursor: "pointer",
                   background: C.amberDim, border: `1px solid ${C.amberBorder}`,
@@ -280,8 +331,8 @@ const Profile = () => {
             </div>
           ) : (
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 12 }}>
-              {trips.map(trip => (
-                <div key={trip.id} onClick={() => navigate(`/trip/${trip.id}`)}
+              {upcomingTrips.map(trip => (
+                <div key={trip.id} onClick={() => openTripChat(trip.id)}
                   style={{
                     background: C.fieldBg, border: `1px solid ${C.fieldBorder}`,
                     borderRadius: 12, padding: "16px 18px", cursor: "pointer", transition: "border-color 0.15s",
@@ -290,11 +341,76 @@ const Profile = () => {
                   onMouseLeave={e => e.currentTarget.style.borderColor = C.fieldBorder}
                 >
                   <p style={{ fontFamily: serif, fontSize: 15, color: C.heading, margin: "0 0 4px" }}>
-                    {trip.hike_name || "Unnamed Trip"}
+                    {trip.title || "Unnamed Trip"}
                   </p>
                   <p style={{ fontFamily: sans, fontSize: 11, color: C.muted, margin: 0 }}>
-                    {new Date(trip.start_date).toLocaleDateString()} – {new Date(trip.end_date).toLocaleDateString()}
+                    {new Date(trip.created_at).toLocaleDateString()}
                   </p>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* ── Past hikes ──────────────────────────────────────────────────── */}
+        <div style={{
+          background: C.card, border: `1px solid ${C.cardBorder}`,
+          borderRadius: 20, padding: "28px 32px", marginBottom: 20,
+        }}>
+          <h2 style={{ fontFamily: serif, fontSize: 20, fontWeight: "normal",
+            color: C.heading, margin: "0 0 20px", display: "flex", alignItems: "center", gap: 10 }}>
+            <span>🥾</span> Past Hikes
+          </h2>
+
+          {pastHikes.length > 0 && (
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))",
+              gap: 12, marginBottom: 22 }}>
+              <StatCard label="Hikes Completed" value={pastStats.hike_count}                          icon="🥾" />
+              <StatCard label="Total Distance"  value={pastStats.total_miles} sub="mi"                icon="📏" />
+              <StatCard label="Favorite Area"   value={pastStats.favorite_region || "—"}               icon="📍" />
+            </div>
+          )}
+
+          {loadingTrips ? (
+            <p style={{ fontFamily: body, color: C.muted, fontStyle: "italic", textAlign: "center", padding: "24px 0" }}>
+              Loading…
+            </p>
+          ) : pastHikes.length === 0 ? (
+            <p style={{ fontFamily: body, fontSize: 14, color: C.muted,
+              fontStyle: "italic", textAlign: "center", padding: "24px 0", margin: 0 }}>
+              Nothing here yet — hikes you mark as done will show up once they're logged.
+            </p>
+          ) : (
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 12 }}>
+              {pastHikes.map(trip => (
+                <div key={trip.id} onClick={() => openTripChat(trip.id)}
+                  style={{
+                    background: C.fieldBg, border: `1px solid ${C.fieldBorder}`,
+                    borderRadius: 12, padding: "16px 18px", cursor: "pointer", transition: "border-color 0.15s",
+                  }}
+                  onMouseEnter={e => e.currentTarget.style.borderColor = C.amber}
+                  onMouseLeave={e => e.currentTarget.style.borderColor = C.fieldBorder}
+                >
+                  <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 8 }}>
+                    <p style={{ fontFamily: serif, fontSize: 15, color: C.heading, margin: "0 0 4px" }}>
+                      {trip.title || "Unnamed Trip"}
+                    </p>
+                    {trip.rating && (
+                      <span style={{ color: C.amber, fontSize: 12, flexShrink: 0 }}>
+                        {"★".repeat(trip.rating)}
+                      </span>
+                    )}
+                  </div>
+                  <p style={{ fontFamily: sans, fontSize: 11, color: C.muted, margin: "0 0 6px" }}>
+                    {new Date(trip.updated_at || trip.created_at).toLocaleDateString()}
+                  </p>
+                  {/* Reviewed pairs its green with an explicit label — not color alone. */}
+                  <span style={{
+                    fontFamily: sans, fontSize: 10.5, fontWeight: 600,
+                    color: trip.status === "reviewed" ? "#60c878" : C.subtext,
+                  }}>
+                    {trip.status === "reviewed" ? "✓ Reviewed" : "○ Awaiting review"}
+                  </span>
                 </div>
               ))}
             </div>

@@ -76,16 +76,16 @@ class UserRepository(BaseRepository[User]):
                 # 1. Initialize User from the first row
                 first_row = rows[0]
                 user_dict = {
-                    "id": first_row['id'],
-                    "email": first_row['email'],
-                    "hashed_password": first_row['hashed_password'],
-                    "name": first_row['name'],
-                    "avatar_url": first_row['avatar_url'],
-                    "home_location": first_row['home_location'],
-                    "timezone": first_row['timezone'],
-                    "created_at": str(first_row['created_at']),
-                    "items": []
-                }
+                "id": first_row['id'],
+                "email": first_row['email'],
+                "hashed_password": first_row['hashed_password'],
+                "name": first_row['name'],
+                "avatar_url": first_row['avatar_url'],
+                "home_location": json.loads(first_row['home_location']) if first_row['home_location'] else None,
+                "timezone": first_row['timezone'],
+                "created_at": str(first_row['created_at']),
+                "items": []
+            }
 
                 # 2. Loop through all rows to collect items
                 items_list = []
@@ -129,18 +129,26 @@ class UserRepository(BaseRepository[User]):
         # NOTE: You should replicate the JOIN logic from get_by_id here if you want items on login
         # For now, sticking to simple fetch to prevent huge code block
         with get_connection() as conn:
-             with conn.cursor() as cur:
-                 cur.execute("SELECT * FROM users WHERE email = %s", (email,))
-                 row = cur.fetchone()
-                 # Warning: This won't load items unless you add the JOIN logic
-                 return User.from_dict(row) if row else None
+            with conn.cursor() as cur:
+                cur.execute("SELECT * FROM users WHERE email = %s", (email,))
+                row = cur.fetchone()
+                if not row:
+                    return None
+                row = dict(row)
+                row['home_location'] = json.loads(row['home_location']) if row['home_location'] else None
+                return User.from_dict(row)
     
     def list_all(self) -> List[User]:
         # Basic list without items for performance
         with get_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute("SELECT * FROM users")
-                return [User.from_dict(r) for r in cur.fetchall()]
+                users = []
+                for r in cur.fetchall():
+                    r = dict(r)
+                    r['home_location'] = json.loads(r['home_location']) if r['home_location'] else None
+                    users.append(User.from_dict(r))
+                return users
 
     def delete(self, user_id: UUID) -> None:
         with get_connection() as conn:

@@ -91,17 +91,25 @@ def _sort_ways_geometrically(ways: list) -> list:
 
     return list(chain)
 
+def to_linestring(points: list[dict]) -> dict:
+    """
+    Converts a list of {lat, lon, ele?} points to a GeoJSON LineString.
+    Elevation is included as the third coordinate when present.
+    """
+    coords = [
+        [p["lon"], p["lat"]] + ([p["ele"]] if p.get("ele") is not None else [])
+        for p in points
+    ]
+    return {"type": "LineString", "coordinates": coords}
 
-def to_linestring(points: list) -> dict:
-    return {
-        "type": "LineString",
-        "coordinates": [[p["lon"], p["lat"]] for p in points],
-    }
 
-
-def altitude_stats(points: list) -> tuple[float | None, float | None]:
-    """Returns (min_ele, max_ele), or (None, None) if no elevation data exists."""
-    elevations = [p["ele"] for p in points if p["ele"] is not None]
+def altitude_stats(points: list[dict]) -> tuple[float | None, float | None]:
+    """
+    Returns (min_altitude_m, max_altitude_m) from a list of points.
+    Returns (None, None) when no elevation data is present rather than
+    (0, 0) — callers must handle None explicitly.
+    """
+    elevations = [p["ele"] for p in points if p.get("ele") is not None]
     if not elevations:
         return None, None
     return min(elevations), max(elevations)

@@ -36,7 +36,7 @@ Previous summary (if any, incorporate it):\n{prev_summary}"""
 
 class Summarizer:
     def __init__(self, api_key: str | None = None):
-        self._groq = Groq(api_key=api_key or os.environ["GROQ_API_KEY"])
+        self._groq = Groq(api_key=api_key or os.environ["HikeKey"])
 
     def summarize(
         self,

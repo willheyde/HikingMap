@@ -1,24 +1,36 @@
-import { useEffect, useState } from "react";
+// components/UserLocation.jsx
+import { useState, useEffect } from "react";
 
 export function useUserLocation() {
   const [location, setLocation] = useState(null);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [loading, setLoading] = useState(false);
 
   useEffect(() => {
     if (!navigator.geolocation) {
-      setError("Geolocation not supported");
+      setError("Geolocation not supported by your browser.");
+      setLoading(false);
       return;
     }
 
-    setLoading(true);
+    const watchId = navigator.geolocation.watchPosition(
+      (position) => {
+        const newLat = position.coords.latitude;
+        const newLng = position.coords.longitude;
 
-    navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        setLocation({
-          lat: pos.coords.latitude,
-          lng: pos.coords.longitude
+        setLocation((prev) => {
+          // If coords haven't moved more than ~100m, return the same
+          // reference so React skips the re-render entirely
+          if (
+            prev &&
+            Math.abs(newLat - prev.lat) < 0.001 &&
+            Math.abs(newLng - prev.lng) < 0.001
+          ) {
+            return prev;
+          }
+          return { lat: newLat, lng: newLng };
         });
+
         setLoading(false);
       },
       (err) => {
@@ -26,10 +38,13 @@ export function useUserLocation() {
         setLoading(false);
       },
       {
-        enableHighAccuracy: false,
-        timeout: 10000
+        enableHighAccuracy: true,
+        timeout: 10000,
+        maximumAge: 30000,
       }
     );
+
+    return () => navigator.geolocation.clearWatch(watchId);
   }, []);
 
   return { location, loading, error };

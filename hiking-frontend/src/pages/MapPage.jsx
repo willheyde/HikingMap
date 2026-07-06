@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState, useRef, useMemo, memo } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import mapboxgl from "mapbox-gl";
 import "mapbox-gl/dist/mapbox-gl.css";
@@ -8,359 +8,702 @@ import HikeSummaryCard from "../components/HikeSummaryCard";
 import MapLegend from "../components/MapLegend";
 import { useUserLocation } from "../components/UserLocation";
 import { useHikes } from "../context/HikeContext";
-import { useUser } from "../context/UserContext";
-import AuthModal from "../components/AuthModal";
-// Mapbox token
-mapboxgl.accessToken = MapAccess;
 
+mapboxgl.accessToken = import.meta.env.VITE_MAPBOX_TOKEN;
+
+/* ── Tuning constants ────────────────────────────────────────────────────── */
+const RESULT_LIMIT  = 200;  // hard cap sent to backend; sidebar warns when hit
+const CARD_HEIGHT   = 128;  // px – adjust if HikeSummaryCard renders taller/shorter
+const MOVEEND_DELAY = 400;  // ms debounce on map pan / zoom end
+
+/* ── Design tokens (matches Profile & GearSetup) ────────────────────────── */
+const C = {
+  page:        "#0d0a07",
+  card:        "#1c1510",
+  cardBorder:  "#4a3520",
+  fieldBg:     "#241a10",
+  fieldBorder: "#5a3e22",
+  heading:     "#f0e6d0",
+  subtext:     "#a08060",
+  muted:       "#6a4e30",
+  label:       "#b8906a",
+  amber:       "#c17a2e",
+  amberDim:    "rgba(193,122,46,0.12)",
+  amberBorder: "rgba(193,122,46,0.35)",
+  amberText:   "#fff8ee",
+  divider:     "#3a2510",
+};
+const serif = "Georgia, 'Times New Roman', serif";
+const sans  = "'Trebuchet MS', 'Lucida Sans Unicode', sans-serif";
+const body  = "'Palatino Linotype', Palatino, Georgia, serif";
+
+/* ── Mountain mark ───────────────────────────────────────────────────────── */
+const MountainMark = () => (
+  <svg width="28" height="22" viewBox="0 0 40 32" fill="none" style={{ flexShrink: 0 }}>
+    <polygon points="20,2 38,30 2,30"  fill="none"    stroke="#c17a2e" strokeWidth="1.5" strokeLinejoin="round"/>
+    <polygon points="10,30 20,12 30,30" fill="#2a1810" stroke="#8b5e3c" strokeWidth="1"   strokeLinejoin="round"/>
+  </svg>
+);
+
+/* ── [5] Dependency-free virtual list ───────────────────────────────────────
+   Drop-in replacement for react-window's FixedSizeList.
+   Only the rows currently visible in the scroll window are in the DOM.       */
+const List = ({ height, itemCount, itemSize, itemData, width, children: Row }) => {
+  const [range, setRange] = useState(() => ({
+    start: 0,
+    end: Math.min(itemCount - 1, Math.ceil(height / itemSize) + 1),
+  }));
+
+  if (!height || itemCount === 0) return null;
+
+  const totalHeight = itemCount * itemSize;
+
+  const handleScroll = (e) => {
+    const scrollTop = e.currentTarget.scrollTop;
+    const start = Math.max(0, Math.floor(scrollTop / itemSize) - 1);
+    const end   = Math.min(itemCount - 1, Math.ceil((scrollTop + height) / itemSize) + 1);
+    // Bail out of the state update if the visible row window hasn't moved —
+    // this is what stops List (and every row) from re-rendering on every scroll pixel
+    setRange(prev => (prev.start === start && prev.end === end) ? prev : { start, end });
+  };
+
+  const rows = [];
+  for (let i = range.start; i <= range.end; i++) {
+    rows.push(<Row key={i} index={i} top={i * itemSize} rowHeight={itemSize} data={itemData} />);
+  }
+
+  return (
+    <div
+      style={{
+        height,
+        width,
+        overflowY:      "auto",
+        position:       "relative",
+        scrollbarWidth: "thin",
+        scrollbarColor: `${C.cardBorder} transparent`,
+      }}
+      onScroll={handleScroll}
+    >
+      {/* Spacer div establishes the full scroll height */}
+      <div style={{ height: totalHeight, position: "relative" }}>
+        {rows}
+      </div>
+    </div>
+  );
+};
+
+/* ── [5] Virtualised card row ────────────────────────────────────────────── */
+const HikeRow = memo(function HikeRow({ index, top, rowHeight, data }) {
+  const { hikes, onSelect } = data;
+  const hike = hikes[index];
+  return (
+    // box-sizing:border-box keeps padding inside the fixed height set by List
+    <div style={{
+      position: "absolute", top, left: 0, right: 0, height: rowHeight,
+      boxSizing: "border-box", padding: "4px 12px",
+    }}>
+      <div
+        onClick={() => onSelect(hike)}
+        style={{
+          cursor:       "pointer",
+          background:   C.card,
+          border:       `1px solid ${C.cardBorder}`,
+          borderRadius: 12,
+          overflow:     "hidden",
+          height:       "100%",
+          transition:   "border-color 0.15s, box-shadow 0.15s",
+        }}
+        onMouseEnter={e => {
+          e.currentTarget.style.borderColor = C.amber;
+          e.currentTarget.style.boxShadow   = "0 4px 20px rgba(193,122,46,0.1)";
+        }}
+        onMouseLeave={e => {
+          e.currentTarget.style.borderColor = C.cardBorder;
+          e.currentTarget.style.boxShadow   = "none";
+        }}
+      >
+        <HikeSummaryCard hike={hike} />
+      </div>
+    </div>
+  );
+});
+
+/* ── [1] Build two FeatureCollections from the hike array ───────────────── */
+// Points drive the cluster layer; trails render the actual line geometry.
+function buildGeoJSON(hikes) {
+  const points = [];
+  const trails = [];
+
+  hikes.forEach((hike) => {
+    if (!hike.geometry?.coordinates) return;
+
+    if (hike.geometry.type === "LineString") {
+      // Pin sits at the trailhead (first coordinate)
+      points.push({
+        type: "Feature",
+        geometry: { type: "Point", coordinates: hike.geometry.coordinates[0] },
+        properties: { id: hike.id, name: hike.name ?? "" },
+      });
+      trails.push({
+        type: "Feature",
+        geometry: hike.geometry,
+        properties: { id: hike.id },
+      });
+    } else if (hike.geometry.type === "Point") {
+      points.push({
+        type: "Feature",
+        geometry: hike.geometry,
+        properties: { id: hike.id, name: hike.name ?? "" },
+      });
+    }
+  });
+
+  return {
+    pointsFC: { type: "FeatureCollection", features: points },
+    trailsFC: { type: "FeatureCollection", features: trails },
+  };
+}
+
+/* ── [1][3] Add all sources + layers once on map 'load' ─────────────────── */
+function setupLayers(m) {
+  // ── Trail polylines ──────────────────────────────────────────────────────
+  m.addSource("trails-source", {
+    type: "geojson",
+    data: { type: "FeatureCollection", features: [] },
+  });
+  m.addLayer({
+    id:     "trails-layer",
+    type:   "line",
+    source: "trails-source",
+    layout: { "line-join": "round", "line-cap": "round" },
+    paint:  { "line-color": "#22c55e", "line-width": 3, "line-opacity": 0.8 },
+  });
+
+  // ── Clustered point source ───────────────────────────────────────────────
+  m.addSource("hikes-source", {
+    type:           "geojson",
+    data:           { type: "FeatureCollection", features: [] },
+    cluster:        true,      // [3] WebGL-native clustering – zero extra deps
+    clusterRadius:  50,
+    clusterMaxZoom: 12,        // pins break apart at zoom 13+
+  });
+
+  // Cluster bubbles
+  m.addLayer({
+    id: "clusters", type: "circle", source: "hikes-source",
+    filter: ["has", "point_count"],
+    paint: {
+      "circle-color": [
+        "step", ["get", "point_count"],
+        "#c17a2e", 10, "#a06020", 50, "#7a4818",
+      ],
+      "circle-radius": [
+        "step", ["get", "point_count"],
+        20, 10, 28, 50, 36,
+      ],
+      "circle-stroke-width": 2,
+      "circle-stroke-color": "rgba(255,255,255,0.15)",
+    },
+  });
+
+  // Cluster count labels
+  m.addLayer({
+    id: "cluster-count", type: "symbol", source: "hikes-source",
+    filter: ["has", "point_count"],
+    layout: {
+      "text-field": "{point_count_abbreviated}",
+      "text-font":  ["DIN Offc Pro Medium", "Arial Unicode MS Bold"],
+      "text-size":  12,
+    },
+    paint: { "text-color": "#ffffff" },
+  });
+
+  // Individual (unclustered) pins
+  m.addLayer({
+    id: "unclustered-point", type: "circle", source: "hikes-source",
+    filter: ["!", ["has", "point_count"]],
+    paint: {
+      "circle-color":        "#22c55e",
+      "circle-radius":       8,
+      "circle-stroke-width": 2,
+      "circle-stroke-color": "rgba(255,255,255,0.6)",
+    },
+  });
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   MapPage
+   ══════════════════════════════════════════════════════════════════════════ */
 export default function MapPage() {
   const navigate = useNavigate();
   const location = useLocation();
-  const mapContainer = useRef(null);
-  const map = useRef(null);
-  const markers = useRef([]);
-  const trailLayers = useRef(new Set());
-  
-  // 1. Destructure 'user' here so we have access to the ID
-  const { user, setGlobalUserLocation } = useUser();
-  
+
+  // ── Map refs ──────────────────────────────────────────────────────────────
+  const mapContainer  = useRef(null);
+  const map           = useRef(null);
+  const popupRef      = useRef(null);       // hover popup, reused not recreated
+  const moveTimerRef  = useRef(null);       // moveend debounce handle
+  const hasAutoFitted = useRef(false);      // fit-to-results only on first load
   const userMarkerRef = useRef(null);
-  const { hikes, loading, searchHikes, selectHike } = useHikes();
-  const { authModalOpen } = AuthModal.authModalOpen ? AuthModal : { authModalOpen: false };
+
+  // ── Stable function / data refs (prevent stale closures in WebGL callbacks)
+  const hikesRef      = useRef([]);
+  const selectHikeRef = useRef(null);
+  const navigateRef   = useRef(navigate);
+  const searchRef     = useRef(null);
+  const filtersRef    = useRef(null);
+  const locRef        = useRef(null);
+  const buildParamsRef = useRef(null);      // always-current param builder
+
+  // ── List-container height (measured by ResizeObserver for virtual List) ──
+  const listContainerRef = useRef(null);
+  const [listHeight, setListHeight] = useState(400);
+
+  // ── Filter state ──────────────────────────────────────────────────────────
   const [filters, setFilters] = useState({
-    maxDistanceMiles: null,
-    difficulty: null,
-    minLengthMiles: null,
-    maxLengthMiles: null,
+    maxDistanceMiles:     null,
+    difficulty:           null,
+    minLengthMiles:       null,
+    maxLengthMiles:       null,
     meetRequirementsOnly: false,
-    state: null,
-    region: null,
-    month: null
+    state:                null,
+    region:               null,
+    month:                null,
   });
 
+  const { hikes, loading, error, searchHikes, selectHike } = useHikes();
   const {
     location: userLocation,
-    loading: locationLoading,
-    error: locationError
+    loading:  locationLoading,
+    error:    locationError,
   } = useUserLocation();
 
-  const searchHikesRef = useRef(searchHikes);
-  useEffect(() => {
-    searchHikesRef.current = searchHikes;
-  }, [searchHikes]);
+  /* ── Keep stable refs current ───────────────────────────────────────────── */
+  useEffect(() => { hikesRef.current       = hikes;       }, [hikes]);
+  useEffect(() => { selectHikeRef.current  = selectHike;  }, [selectHike]);
+  useEffect(() => { navigateRef.current    = navigate;    }, [navigate]);
+  useEffect(() => { searchRef.current      = searchHikes; }, [searchHikes]);
+  useEffect(() => { filtersRef.current     = filters;     }, [filters]);
+  useEffect(() => { locRef.current         = userLocation; }, [userLocation]);
 
-  /* -----------------------------
-      Initialize Map
-  ------------------------------*/
+  /* ── [2][4] Param builder – always reads latest state through refs ──────── */
+  // Assigned each render so it always captures current filter + location state.
+  // Reads map.current.getBounds() for the live viewport bbox.
+  buildParamsRef.current = () => {
+    const f  = filtersRef.current ?? {};
+    const ul = locRef.current;
+    const p  = { limit: RESULT_LIMIT }; // [4] hard cap
+
+    if (f.minLengthMiles  && +f.minLengthMiles  > 0)
+      p.min_length_km = +((f.minLengthMiles  * 1.60934).toFixed(3));
+    if (f.maxLengthMiles  && +f.maxLengthMiles  > 0)
+      p.max_length_km = +((f.maxLengthMiles  * 1.60934).toFixed(3));
+    if (f.difficulty)             p.difficulty            = f.difficulty;
+    if (f.region)                 p.region                = f.region;
+    if (f.state)                  p.state                 = f.state;
+    if (f.month)                  p.month                 = f.month;
+    if (f.meetRequirementsOnly)   p.meet_requirements_only = true;
+    if (f.maxDistanceMiles)
+      p.max_dist = +((f.maxDistanceMiles * 1.60934).toFixed(3));
+    if (ul) { p.user_lat = ul.lat; p.user_lon = ul.lng; }
+
+    // [2] Viewport bbox – only included once the map has valid bounds
+    if (map.current?.loaded()) {
+      const b = map.current.getBounds();
+      p.bbox_min_lng = b.getWest();
+      p.bbox_min_lat = b.getSouth();
+      p.bbox_max_lng = b.getEast();
+      p.bbox_max_lat = b.getNorth();
+    }
+
+    return p;
+  };
+
+  /* ── Effect 1: Map init, sources, layers, and persistent event handlers ── */
   useEffect(() => {
     if (map.current) return;
 
     map.current = new mapboxgl.Map({
       container: mapContainer.current,
-      style: "mapbox://styles/mapbox/outdoors-v12",
-      center: [-98.5795, 39.8283],
-      zoom: 4
+      style:     "mapbox://styles/mapbox/outdoors-v12",
+      center:    [-98.5795, 39.8283],
+      zoom:      4,
+    });
+    map.current.addControl(new mapboxgl.NavigationControl(), "top-right");
+
+    // Reusable hover popup – created once, moved on each mouseenter
+    popupRef.current = new mapboxgl.Popup({
+      closeButton:  false,
+      closeOnClick: false,
+      offset:       14,
     });
 
-    map.current.addControl(
-      new mapboxgl.NavigationControl(),
-      "top-right"
-    );
-  }, []);
+    map.current.on("load", () => {
+      // [1][3] One-time layer setup
+      setupLayers(map.current);
+
+      // ── [3] Cluster click → drill in ─────────────────────────────────────
+      map.current.on("click", "clusters", (e) => {
+        const [feat]    = map.current.queryRenderedFeatures(e.point, { layers: ["clusters"] });
+        const clusterId = feat.properties.cluster_id;
+        map.current.getSource("hikes-source")
+          .getClusterExpansionZoom(clusterId, (err, zoom) => {
+            if (!err) map.current.easeTo({ center: feat.geometry.coordinates, zoom });
+          });
+      });
+
+      // ── [1] Pin click → navigate to hike detail ───────────────────────────
+      // Uses hikesRef so the handler never captures stale hike data
+      map.current.on("click", "unclustered-point", (e) => {
+        const id   = e.features[0].properties.id;
+        const hike = hikesRef.current.find((h) => h.id === id);
+        if (!hike) return;
+        selectHikeRef.current?.(hike);
+        navigateRef.current(`/hike/${hike.id}`);
+      });
+
+      // ── Hover: cursor + tooltip popup ────────────────────────────────────
+      map.current.on("mouseenter", "unclustered-point", (e) => {
+        map.current.getCanvas().style.cursor = "pointer";
+        const coords = [...e.features[0].geometry.coordinates];
+        const name   = e.features[0].properties.name;
+        popupRef.current
+          .setLngLat(coords)
+          .setHTML(
+            `<span style="font-family:Georgia,serif;font-size:13px;color:#1a1209">${name}</span>`
+          )
+          .addTo(map.current);
+      });
+      map.current.on("mouseleave", "unclustered-point", () => {
+        map.current.getCanvas().style.cursor = "";
+        popupRef.current.remove();
+      });
+      map.current.on("mouseenter", "clusters", () => {
+        map.current.getCanvas().style.cursor = "pointer";
+      });
+      map.current.on("mouseleave", "clusters", () => {
+        map.current.getCanvas().style.cursor = "";
+      });
+
+      // ── [2] moveend → re-query with current viewport bbox ────────────────
+      map.current.on("moveend", () => {
+        clearTimeout(moveTimerRef.current);
+        moveTimerRef.current = setTimeout(() => {
+          searchRef.current?.(buildParamsRef.current());
+        }, MOVEEND_DELAY);
+      });
+
+      // Initial search now that map.getBounds() returns valid data
+      searchRef.current?.(buildParamsRef.current());
+    });
+
+    return () => {
+      clearTimeout(moveTimerRef.current);
+      map.current?.remove();
+      map.current = null;
+    };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  /* ── Effect 2: User-location dot ──────────────────────────────────────── */
   useEffect(() => {
-    // Sync local hook data to Global Context
-    if (!authModalOpen && userLocation) {
-      setGlobalUserLocation(userLocation);
-    }
-
-    // If map isn't ready or no location, do nothing
     if (!map.current || !userLocation) return;
-
-    // Create the DOM element for the marker
-    const el = document.createElement('div');
-    el.className = 'user-location-dot';
-
-    // If marker already exists, just update position
+    const el = Object.assign(document.createElement("div"), { className: "user-location-dot" });
     if (userMarkerRef.current) {
       userMarkerRef.current.setLngLat([userLocation.lng, userLocation.lat]);
     } else {
-      // Create new marker
       userMarkerRef.current = new mapboxgl.Marker(el)
         .setLngLat([userLocation.lng, userLocation.lat])
         .setPopup(new mapboxgl.Popup({ offset: 25 }).setHTML("<strong>You are here</strong>"))
         .addTo(map.current);
     }
+  }, [userLocation]);
 
-  }, [userLocation, setGlobalUserLocation]);
-  /* -----------------------------
-      Search Hikes
-  ------------------------------*/
+    /* ── Effect 3: Debounced re-search on filter / location change ─────────── */
   useEffect(() => {
-    let active = true;
-    let timer = null;
+    if (!map.current?.loaded()) return;   // map's 'load' handler covers the first search
+    const t = setTimeout(() => searchRef.current?.(buildParamsRef.current()), 300);
+    return () => clearTimeout(t);
+  }, [filters, userLocation]); // eslint-disable-line react-hooks/exhaustive-deps
 
-    const runSearch = () => {
-      if (!active) return;
-
-      const searchParams = {};
-
-      // 1. Trail Length (Miles -> KM)
-      if (filters.minLengthMiles && Number(filters.minLengthMiles) > 0) {
-        searchParams.min_length_km = Number((filters.minLengthMiles * 1.60934).toFixed(3));
-      }
-      
-      if (filters.maxLengthMiles && Number(filters.maxLengthMiles) > 0) {
-        searchParams.max_length_km = Number((filters.maxLengthMiles * 1.60934).toFixed(3));
-      }
-
-      // 2. Difficulty & Region
-      if (filters.difficulty) searchParams.difficulty = filters.difficulty;
-      if (filters.region) searchParams.region = filters.region;
-      if (filters.state) searchParams.state = filters.state;
-      if (filters.month) searchParams.month = filters.month;
-
-      // 3. Requirements
-      if (filters.meetRequirementsOnly) {
-        searchParams.meet_requirements_only = true;
-      }
-
-      // 4. Max Distance Radius (Miles -> KM)
-      // UPDATED: Changed param name to 'max_dist' to match Python Controller
-      if (filters.maxDistanceMiles) {
-        searchParams.max_dist = Number((filters.maxDistanceMiles * 1.60934).toFixed(3));
-      }
-
-      // 5. User Location
-      // UPDATED: Changed param names to 'user_lat' / 'user_lon' to match Python Controller
-      if (userLocation) {
-        searchParams.user_lat = userLocation.lat; 
-        searchParams.user_lon = userLocation.lng;
-      }
-
-      searchHikesRef.current(searchParams);
-    };
-
-    const DEBOUNCE_MS = 300;
-    timer = setTimeout(runSearch, DEBOUNCE_MS);
-
-    return () => {
-      active = false;
-      if (timer) clearTimeout(timer);
-    };
-  }, [filters, userLocation]);
-
-  /* -----------------------------
-      Re-trigger search on navigation
-      This ensures fresh data when returning to map
-  ------------------------------*/
+  /* ── Effect 4: Immediate re-fetch when navigating back to /map ─────────── */
   useEffect(() => {
-    // Only run when we're on /map route
-    if (location.pathname === "/map") {
-      const searchParams = {};
+    if (location.pathname !== "/map") return;
+    if (!map.current?.loaded()) return;   // same — avoid duplicating the initial search
+    searchRef.current?.(buildParamsRef.current());
+  }, [location.pathname]); // eslint-disable-line react-hooks/exhaustive-deps
 
-      if (filters.minLengthMiles && Number(filters.minLengthMiles) > 0) {
-        searchParams.min_length_km = Number((filters.minLengthMiles * 1.60934).toFixed(3));
-      }
-      
-      if (filters.maxLengthMiles && Number(filters.maxLengthMiles) > 0) {
-        searchParams.max_length_km = Number((filters.maxLengthMiles * 1.60934).toFixed(3));
-      }
-
-      if (filters.difficulty) searchParams.difficulty = filters.difficulty;
-      if (filters.region) searchParams.region = filters.region;
-      if (filters.state) searchParams.state = filters.state;
-      if (filters.month) searchParams.month = filters.month;
-
-      if (filters.meetRequirementsOnly) {
-        searchParams.meet_requirements_only = true;
-      }
-
-      if (filters.maxDistanceMiles) {
-        searchParams.farthest_hike_distance_m = Math.round(filters.maxDistanceMiles * 1609.34);
-      }
-
-      if (userLocation) {
-        searchParams.user_latitude = userLocation.lat; 
-        searchParams.user_longitude = userLocation.lng;
-      }
-
-      searchHikesRef.current(searchParams);
-    }
-  }, [location.pathname, filters, userLocation]);
-
-  /* -----------------------------
-       Update Map Markers
-  -------------------------------*/
+  /* ── Effect 5: Push new hike data into the WebGL sources ──────────────── */
+  // Single setData call per hikes change – no DOM marker creation at all
   useEffect(() => {
-    if (!map.current) return;
+    if (!map.current?.loaded()) return;
+    const { pointsFC, trailsFC } = buildGeoJSON(hikes);
+    map.current.getSource("hikes-source")?.setData(pointsFC);
+    map.current.getSource("trails-source")?.setData(trailsFC);
 
-    // Function to clean up and add markers
-    const updateMarkers = () => {
-      // Clean up existing markers
-      markers.current.forEach((m) => m.remove());
-      markers.current = [];
-
-      // Clean up existing trail layers using our tracked set
-      trailLayers.current.forEach((layerId) => {
-        try {
-          if (map.current.getLayer(layerId)) {
-            map.current.removeLayer(layerId);
-          }
-          if (map.current.getSource(layerId)) {
-            map.current.removeSource(layerId);
-          }
-        } catch (e) {
-          console.warn(`Failed to remove layer ${layerId}:`, e);
-        }
+    // Auto-fit to results once on first load only; panning after that is the
+    // user's choice and shouldn't be interrupted.
+    if (hikes.length > 0 && !hasAutoFitted.current) {
+      hasAutoFitted.current = true;
+      const bounds = new mapboxgl.LngLatBounds();
+      hikes.forEach((h) => {
+        if (h.geometry?.type === "LineString")
+          h.geometry.coordinates.forEach((c) => bounds.extend(c));
+        else if (h.geometry?.type === "Point")
+          bounds.extend(h.geometry.coordinates);
       });
-      trailLayers.current.clear();
-
-      // Add new markers and layers
-      hikes.forEach((hike) => {
-        if (!hike.geometry?.coordinates) return;
-        let markerPosition;
-
-        if (hike.geometry.type === "LineString") {
-          markerPosition = hike.geometry.coordinates[0];
-          const trailId = `trail-${hike.id}`;
-
-          try {
-            map.current.addSource(trailId, {
-              type: "geojson",
-              data: { type: "Feature", geometry: hike.geometry }
-            });
-            map.current.addLayer({
-              id: trailId,
-              type: "line",
-              source: trailId,
-              layout: { "line-join": "round", "line-cap": "round" },
-              paint: {
-                "line-color": "#22c55e",
-                "line-width": 3,
-                "line-opacity": 0.8
-              }
-            });
-            trailLayers.current.add(trailId);
-          } catch (e) {
-            console.warn(`Failed to add trail layer ${trailId}:`, e);
-          }
-        } else if (hike.geometry.type === "Point") {
-          markerPosition = hike.geometry.coordinates;
-        } else {
-          return;
-        }
-
-        const marker = new mapboxgl.Marker({ color: "#22c55e" })
-          .setLngLat(markerPosition)
-          .setPopup(new mapboxgl.Popup().setHTML(`<strong>${hike.name}</strong>`))
-          .addTo(map.current);
-
-        marker.getElement().addEventListener("click", () => {
-          selectHike(hike);
-          navigate(`/hike/${hike.id}`);
-        });
-        markers.current.push(marker);
-      });
-
-      // Fit bounds if we have hikes
-      if (hikes.length > 0) {
-        const bounds = new mapboxgl.LngLatBounds();
-        hikes.forEach((h) => {
-          if (h.geometry?.type === "LineString") {
-            h.geometry.coordinates.forEach((c) => bounds.extend(c));
-          } else if (h.geometry?.type === "Point") {
-            bounds.extend(h.geometry.coordinates);
-          }
-        });
-        map.current.fitBounds(bounds, { padding: 60 });
-      }
-    };
-
-    // Check if map is loaded
-    if (map.current.loaded()) {
-      updateMarkers();
-    } else {
-      map.current.once('load', updateMarkers);
+      map.current.fitBounds(bounds, { padding: 60, maxZoom: 14 });
     }
-  }, [hikes, navigate, selectHike]);
+  }, [hikes]);
 
-  /* -----------------------------
-       Render
-  ------------------------------*/
+  /* ── Effect 6: [5] Measure list container height for virtual List ──────── */
+  useEffect(() => {
+    if (!listContainerRef.current) return;
+    const ro = new ResizeObserver(([entry]) =>
+      setListHeight(entry.contentRect.height)
+    );
+    ro.observe(listContainerRef.current);
+    return () => ro.disconnect();
+  }, []);
+
+  /* ── Derived ─────────────────────────────────────────────────────────────── */
+  // [4] True when the backend hit the hard cap – prompt the user to filter/zoom
+  const atLimit = hikes.length >= RESULT_LIMIT;
+
+  // Stable itemData object for virtual List (avoids re-rendering every row on
+  // unrelated state changes)
+  const listData = useMemo(
+    () => ({
+      hikes,
+      onSelect: (hike) => { selectHike(hike); navigate(`/hike/${hike.id}`); },
+    }),
+    [hikes, selectHike, navigate]
+  );
+
+  /* ── Render ──────────────────────────────────────────────────────────────── */
   return (
-    <div className="flex h-screen">
-      {/* LEFT: Map */}
-      <div className="relative flex-1">
-        <div ref={mapContainer} className="h-full w-full" />
-        
-        {/* --- ADDED: Profile Button --- */}
+    <div style={{ display: "flex", height: "100vh", background: C.page }}>
+
+      {/* ── LEFT: Map ─────────────────────────────────────────────────────── */}
+      <div style={{ position: "relative", flex: 1 }}>
+        <div ref={mapContainer} style={{ height: "100%", width: "100%" }} />
+
+        {/* Trip Planner button */}
         <button
-          onClick={() => navigate("/profile")}
-          className="absolute top-4 right-14 z-10 bg-white p-2 rounded-md shadow-md hover:bg-gray-50 border border-gray-200 transition-colors"
-          title="Go to Profile"
+          onClick={() => navigate("/trip-planner")}
+          title="Plan a Trip"
+          style={{
+            position: "absolute", top: 16, right: 96, zIndex: 10,
+            background: "rgba(13,10,7,0.88)", backdropFilter: "blur(8px)",
+            padding: "8px 10px", borderRadius: 8,
+            border: `1px solid ${C.cardBorder}`, cursor: "pointer",
+            boxShadow: "0 2px 12px rgba(0,0,0,0.45)",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            transition: "border-color 0.15s, background 0.15s",
+          }}
+          onMouseEnter={e => {
+            e.currentTarget.style.borderColor = C.amber;
+            e.currentTarget.style.background  = "rgba(28,21,16,0.95)";
+          }}
+          onMouseLeave={e => {
+            e.currentTarget.style.borderColor = C.cardBorder;
+            e.currentTarget.style.background  = "rgba(13,10,7,0.88)";
+          }}
         >
-          {/* Simple User SVG Icon */}
-          <svg 
-            xmlns="http://www.w3.org/2000/svg" 
-            width="20" 
-            height="20" 
-            viewBox="0 0 24 24" 
-            fill="none" 
-            stroke="currentColor" 
-            strokeWidth="2" 
-            strokeLinecap="round" 
-            strokeLinejoin="round" 
-            className="text-gray-700"
-          >
-            <path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"></path>
-            <circle cx="12" cy="7" r="4"></circle>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none"
+            stroke={C.label} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7"/>
           </svg>
         </button>
-        {/* ----------------------------- */}
+
+        {/* Profile button */}
+        <button
+          onClick={() => navigate("/profile")}
+          title="Go to Profile"
+          style={{
+            position: "absolute", top: 16, right: 56, zIndex: 10,
+            background: "rgba(13,10,7,0.88)", backdropFilter: "blur(8px)",
+            padding: "8px 10px", borderRadius: 8,
+            border: `1px solid ${C.cardBorder}`, cursor: "pointer",
+            boxShadow: "0 2px 12px rgba(0,0,0,0.45)",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            transition: "border-color 0.15s, background 0.15s",
+          }}
+          onMouseEnter={e => {
+            e.currentTarget.style.borderColor = C.amber;
+            e.currentTarget.style.background  = "rgba(28,21,16,0.95)";
+          }}
+          onMouseLeave={e => {
+            e.currentTarget.style.borderColor = C.cardBorder;
+            e.currentTarget.style.background  = "rgba(13,10,7,0.88)";
+          }}
+        >
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none"
+            stroke={C.label} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/>
+            <circle cx="12" cy="7" r="4"/>
+          </svg>
+        </button>
 
         <MapLegend />
       </div>
 
-      {/* RIGHT: Filters + Results */}
-      <div className="w-80 border-l bg-gray-50 flex flex-col shadow-xl z-10">
-        
-        {/* Filters Area */}
-        <div className="p-3 border-b bg-white">
+      {/* ── RIGHT: Sidebar ────────────────────────────────────────────────── */}
+      <div style={{
+        width: 320, display: "flex", flexDirection: "column",
+        background: C.page,
+        borderLeft: `1px solid ${C.divider}`,
+        boxShadow: "-4px 0 32px rgba(0,0,0,0.6)",
+        zIndex: 10,
+      }}>
+
+        {/* Header */}
+        <div style={{
+          flexShrink: 0,
+          background: "rgba(20,13,7,0.96)", backdropFilter: "blur(12px)",
+          borderBottom: "1px solid rgba(90,58,26,0.5)",
+          boxShadow: "0 4px 24px rgba(0,0,0,0.4)",
+          padding: "14px 20px",
+          display: "flex", alignItems: "center", justifyContent: "space-between",
+        }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            <MountainMark />
+            <div>
+              <h1 style={{
+                fontFamily: serif, fontSize: 18, fontWeight: "normal",
+                color: C.heading, margin: 0, letterSpacing: "0.3px",
+              }}>
+                Trail Finder
+              </h1>
+              {/* [4] Limit hint replaces count when the cap is hit */}
+              <p style={{
+                fontFamily: body, fontSize: 12, color: atLimit ? C.label : C.muted,
+                margin: "2px 0 0", fontStyle: "italic",
+              }}>
+                {loading
+                  ? "Searching…"
+                  : atLimit
+                    ? `${RESULT_LIMIT}+ trails — zoom in or filter`
+                    : `${hikes.length} trail${hikes.length !== 1 ? "s" : ""} found`}
+              </p>
+            </div>
+          </div>
+
+          {loading && (
+            <div style={{
+              width: 7, height: 7, borderRadius: "50%",
+              background: C.amber, opacity: 0.8,
+              animation: "pulse 1.2s ease-in-out infinite",
+            }} />
+          )}
+        </div>
+
+        {/* Filters */}
+        <div style={{
+          flexShrink: 0,
+          padding: "14px 16px",
+          background: C.card,
+          borderBottom: `1px solid ${C.cardBorder}`,
+        }}>
           <FilterBar filters={filters} onChange={setFilters} />
 
-          {/* Location Status */}
-          <div className="flex justify-between items-center mt-2">
-            {locationLoading && <p className="text-[10px] text-gray-500">Locating...</p>}
-            {locationError && <p className="text-[10px] text-red-500">{locationError}</p>}
+          <div style={{ marginTop: 8, minHeight: 14 }}>
+            {locationLoading && (
+              <p style={{ fontFamily: sans, fontSize: 10, color: C.muted, margin: 0 }}>
+                Locating…
+              </p>
+            )}
+            {locationError && (
+              <p style={{ fontFamily: sans, fontSize: 10, color: "#c06050", margin: 0 }}>
+                {locationError}
+              </p>
+            )}
+            {userLocation && !locationLoading && (
+              <p style={{
+                fontFamily: sans, fontSize: 10, color: C.muted, margin: 0,
+                display: "flex", alignItems: "center", gap: 4,
+              }}>
+                <span style={{
+                  display: "inline-block", width: 5, height: 5,
+                  borderRadius: "50%", background: "#5aaa40", flexShrink: 0,
+                }} />
+                Location active
+              </p>
+            )}
           </div>
         </div>
-        
-        {/* Results Area */}
-        <div className="flex-1 overflow-y-auto p-3 space-y-3">
+
+        {/* ── Results – virtualised ──────────────────────────────────────── */}
+        <div
+          ref={listContainerRef}
+          style={{ flex: 1, overflow: "hidden", position: "relative" }}
+        >
+          {/* Error state */}
+          {error && !loading && (
+            <p style={{
+              fontFamily: sans, fontSize: 12, color: "#c06050",
+              textAlign: "center", padding: "16px 0", margin: 0,
+            }}>
+              {error}
+            </p>
+          )}
+
+          {/* Loading – no results yet */}
           {loading && hikes.length === 0 && (
-            <p className="text-center text-sm text-gray-500 mt-4">Loading hikes...</p>
-          )}
-          {loading && hikes.length > 0 && (
-             <p className="text-[10px] text-right text-gray-400">Updating...</p>
-          )}
-          {!loading && hikes.length === 0 && (
-            <p className="text-center text-sm text-gray-500 mt-4">No hikes found.</p>
-          )}
-          
-          {hikes.map((hike) => (
-            <div 
-              key={hike.id}
-              onClick={() => {
-                selectHike(hike);
-                navigate(`/hike/${hike.id}`);
-              }}
-              className="cursor-pointer hover:bg-white hover:shadow-md transition-all duration-200 rounded-lg border border-transparent hover:border-gray-200"
-            >
-              <HikeSummaryCard hike={hike} />
+            <div style={{ textAlign: "center", padding: "48px 0" }}>
+              <MountainMark />
+              <p style={{ fontFamily: body, fontSize: 13, color: C.muted,
+                fontStyle: "italic", marginTop: 12 }}>
+                Searching trails…
+              </p>
             </div>
-          ))}
+          )}
+
+          {/* Empty state */}
+          {!loading && hikes.length === 0 && !error && (
+            <div style={{ textAlign: "center", padding: "48px 16px" }}>
+              <p style={{ fontFamily: serif, fontSize: 15, color: C.subtext,
+                fontWeight: "normal", margin: "0 0 8px" }}>
+                No trails found
+              </p>
+              <p style={{ fontFamily: body, fontSize: 12, color: C.muted,
+                fontStyle: "italic", margin: 0 }}>
+                Try broadening your filters or zooming out.
+              </p>
+            </div>
+          )}
+
+          {/* Updating nudge (floats above the list while results refresh) */}
+          {loading && hikes.length > 0 && (
+            <p style={{
+              fontFamily: sans, fontSize: 10, color: C.muted, margin: 0,
+              textAlign: "right",
+              position: "absolute", top: 6, right: 14, zIndex: 1,
+            }}>
+              Updating…
+            </p>
+          )}
+
+          {/* [5] Virtual list – only visible cards are in the DOM */}
+          {hikes.length > 0 && (
+            <List
+              height={listHeight}
+              itemCount={hikes.length}
+              itemSize={CARD_HEIGHT}
+              itemData={listData}
+              width="100%"
+            >
+              {HikeRow}
+            </List>
+          )}
         </div>
       </div>
+
+      <style>{`
+        @keyframes pulse {
+          0%, 100% { opacity: 0.3; transform: scale(0.9); }
+          50%       { opacity: 1;   transform: scale(1.1); }
+        }
+      `}</style>
     </div>
   );
 }

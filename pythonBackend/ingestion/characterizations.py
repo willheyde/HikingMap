@@ -26,11 +26,23 @@ def infer_difficulty(tags: dict) -> DifficultyLevel:
     return SAC_SCALE_MAP.get(sac, DifficultyLevel.MODERATE)
 
 
-def calculate_difficulty(length_km: float, gain_m: float) -> DifficultyLevel:
+# new
+def calculate_difficulty(
+    length_km: float,
+    gain_m: float,
+    tags: dict | None = None,
+) -> DifficultyLevel:
     """
-    Shenandoah formula — used for way-based hikes that lack sac_scale tags.
-    rating = sqrt(2 * miles * feet_gain)
+    Assigns difficulty. Precedence:
+      1. OSM sac_scale tag, when present and recognized — most authoritative,
+         since it captures technical difficulty (exposure, scrambling,
+         rooty/rocky terrain) that gain/distance alone can't see.
+      2. Otherwise, the Shenandoah formula: rating = sqrt(2 * miles * feet_gain)
     """
+    sac = (tags or {}).get("sac_scale")
+    if sac in SAC_SCALE_MAP:
+        return SAC_SCALE_MAP[sac]
+
     miles     = length_km * 0.621371
     feet_gain = gain_m    * 3.28084
     rating    = math.sqrt(2 * miles * feet_gain) if (miles > 0 and feet_gain > 0) else 0.0
@@ -81,11 +93,24 @@ def infer_season(tags: dict) -> tuple[int, int]:
     return 4, 10
 
 
+# ── Season ─────────────────────────────────────────────────────────────────────
+
 def estimate_season(max_alt_m: float) -> tuple[int, int]:
-    """Altitude-based season — used for way-based hikes without seasonal tags."""
-    if max_alt_m > 2000:
-        return 6, 10
-    return 1, 12    # Rhode Island — year-round
+    """
+    NC-tuned altitude-based season estimation.
+
+    > 1,800 m  — High peaks (Mt. Mitchell, Black Mountains):
+                 significant snow Nov–Apr, accessible May–Oct only.
+    900–1,800 m — Blue Ridge mid-elevation (Roan Highlands, Max Patch area):
+                 passable March–November, occasional winter closures.
+    < 900 m    — Piedmont, foothills, Uwharries, coastal plain:
+                 year-round accessible.
+    """
+    if max_alt_m > 1800:
+        return 5, 10    # High peaks
+    if max_alt_m > 900:
+        return 3, 11    # Mid-elevation Blue Ridge
+    return 1, 12        # Piedmont / foothills / coast
 
 
 # ── Permits ────────────────────────────────────────────────────────────────────
@@ -107,6 +132,14 @@ def infer_permits_required(tags: dict) -> bool:
 
 # ── Tags ───────────────────────────────────────────────────────────────────────
 
+# FIX: removed `from distro import name` which shadowed the `name` parameter.
+# FIX: added `name: str = ""` to the signature — ingest.py already passes it.
+
+NAME_TAG_MAP: dict[str, list[str]] = {
+    "ridge": ["ridge", "ledge", "bluff"],
+}
+
+
 def derive_tags(
     length_km:          float,
     elevation_gain_m:   float,
@@ -114,23 +147,29 @@ def derive_tags(
     season_start_month: int,
     season_end_month:   int,
     permits_required:   bool,
+    name:               str = "",   # ← FIX: was missing; `name` usage below was
+                                    #   silently reading the `distro` module import
 ) -> list[str]:
     """
-    Deterministic tags derived entirely from computed hike metrics.
+    Deterministic tags derived from computed hike metrics + trail name.
     Stored in tags[] for fast GIN-indexed filtering by HikeSearchService.
 
-    Not included here (have dedicated columns, query those directly):
-        - difficulty  → hikes.difficulty
-        - region      → hikes.region
+    Not included here (have dedicated columns):
+        difficulty  → hikes.difficulty
+        region      → hikes.region
 
-    Not included here (require Overpass enrichment, added post-ingest):
-        - waterfall, lake, summit, canyon, ridge, etc.
-        - can_camp  → hikes.can_camp (separate boolean column)
+    NNot included here (added by overpass_enrichment.py post-ingest, and
+    superseded there if a later Overpass query disagrees — see
+    VERIFIABLE_TAGS): waterfall, lake, summit, river, viewpoint, meadow,
+    cave, historic.
+        can_camp  → hikes.can_camp (separate boolean column)
+    "ridge" and "canyon" have no Overpass detector yet, so they're not
+    covered by either mechanism — ridge still comes from name inference
+    below; canyon isn't detected at all currently.
     """
     tags: set[str] = set()
 
     # ── Duration bucket ────────────────────────────────────────────────────────
-    # Thresholds tuned for typical day-use hiking, not trail running.
     if length_km < 5:
         tags.add("short")        # < 5 km  — under 2 hrs
     elif length_km < 10:
@@ -155,7 +194,6 @@ def derive_tags(
         tags.add("very_high_gain")
 
     # ── Altitude / terrain tier ────────────────────────────────────────────────
-    # Useful for prompt matching: "alpine hike", "high altitude route", etc.
     if max_altitude_m < 500:
         tags.add("lowland")
     elif max_altitude_m < 1500:
@@ -180,12 +218,18 @@ def derive_tags(
     if permits_required:
         tags.add("permits_required")
 
+    # ── Name inference ─────────────────────────────────────────────────────────
+    # Only "ridge" is inferred from the name — everything else that used to
+    # be here is now Overpass-only (see NAME_TAG_MAP comment above).
+    name_lower = name.lower()
+    for tag, keywords in NAME_TAG_MAP.items():
+        if any(kw in name_lower for kw in keywords):
+            tags.add(tag)
+
     return sorted(tags)
 
 
 # ── Required gear (category level) ────────────────────────────────────────────
-# Returns category keys matching REQUIRED_GEAR in TripInputParser.
-# Used by trip planner gap analysis.
 
 def infer_required_gear(tags: dict, difficulty: DifficultyLevel) -> list[str]:
     gear: set[str] = set()
@@ -220,52 +264,175 @@ def infer_required_gear(tags: dict, difficulty: DifficultyLevel) -> list[str]:
 
 REGIONS = [
     # North America
-    ((35, 43),   (-84, -67),    "Appalachian Mountains"),
-    ((36, 42),   (-107, -103),  "Rocky Mountains (Colorado)"),
-    ((43, 49),   (-117, -113),  "Rocky Mountains (Northern)"),
-    ((36, 42),   (-122, -118),  "Sierra Nevada"),
-    ((44, 49),   (-124, -121),  "Cascade Range"),
-    ((33, 37),   (-118, -115),  "Southern California Mountains"),
-    ((35, 37),   (-113, -111),  "Colorado Plateau"),
-    ((58, 65),   (-152, -148),  "Alaska Range"),
-    ((60, 70),   (-141, -130),  "Yukon / Northern Rockies"),
-    ((45, 49),   (-80, -74),    "Adirondacks / Laurentians"),
+    ((41.0, 42.1), (-72.0, -71.0),  "Southern New England"),
+    ((42.0, 43.5), (-73.5, -69.8),  "New England Coast"),
+    ((43.5, 47.5), (-71.5, -67.0),  "Northern New England"),
+    ((35, 43),     (-84, -67),       "Appalachian Mountains"),
+    ((36, 42),     (-107, -103),     "Rocky Mountains (Colorado)"),
+    ((43, 49),     (-117, -113),     "Rocky Mountains (Northern)"),
+    ((36, 42),     (-122, -118),     "Sierra Nevada"),
+    ((44, 49),     (-124, -121),     "Cascade Range"),
+    ((33, 37),     (-118, -115),     "Southern California Mountains"),
+    ((35, 37),     (-113, -111),     "Colorado Plateau"),
+    ((58, 65),     (-152, -148),     "Alaska Range"),
+    ((60, 70),     (-141, -130),     "Yukon / Northern Rockies"),
+    ((45, 49),     (-80, -74),       "Adirondacks / Laurentians"),
     # Europe
-    ((43, 48),   (6, 16),       "Alps"),
-    ((42, 43.5), (-2, 3),       "Pyrenees"),
-    ((46, 47),   (11, 12.5),    "Dolomites"),
-    ((56, 59),   (-6, -1),      "Scottish Highlands"),
-    ((60, 71),   (5, 30),       "Scandinavian Mountains"),
-    ((37, 41),   (28, 45),      "Anatolian Highlands"),
-    ((42, 44),   (42, 47),      "Caucasus"),
-    ((40, 43),   (20, 28),      "Balkans"),
+    ((43, 48),     (6, 16),          "Alps"),
+    ((42, 43.5),   (-2, 3),          "Pyrenees"),
+    ((46, 47),     (11, 12.5),       "Dolomites"),
+    ((56, 59),     (-6, -1),         "Scottish Highlands"),
+    ((60, 71),     (5, 30),          "Scandinavian Mountains"),
+    ((37, 41),     (28, 45),         "Anatolian Highlands"),
+    ((42, 44),     (42, 47),         "Caucasus"),
+    ((40, 43),     (20, 28),         "Balkans"),
     # South America
-    ((-55, -40), (-76, -68),    "Patagonia"),
-    ((-18, -8),  (-78, -68),    "Andes (Central)"),
-    ((-5, 5),    (-78, -72),    "Andes (Northern)"),
+    ((-55, -40),   (-76, -68),       "Patagonia"),
+    ((-18, -8),    (-78, -68),       "Andes (Central)"),
+    ((-5, 5),      (-78, -72),       "Andes (Northern)"),
     # Asia
-    ((26, 36),   (70, 96),      "Himalayas"),
-    ((25, 35),   (99, 105),     "Yunnan Highlands"),
-    ((37, 42),   (67, 80),      "Tian Shan"),
+    ((26, 36),     (70, 96),         "Himalayas"),
+    ((25, 35),     (99, 105),        "Yunnan Highlands"),
+    ((37, 42),     (67, 80),         "Tian Shan"),
     # Africa
-    ((-4, 5),    (28, 40),      "East African Rift"),
-    ((-35, -30), (18, 26),      "Drakensberg"),
+    ((-4, 5),      (28, 40),         "East African Rift"),
+    ((-35, -30),   (18, 26),         "Drakensberg"),
     # Oceania
-    ((-44, -41), (167, 172),    "New Zealand Southern Alps"),
-    ((-37, -36), (148, 148.5),  "Australian Alps"),
+    ((-44, -41),   (167, 172),       "New Zealand Southern Alps"),
+    ((-37, -36),   (148, 148.5),     "Australian Alps"),
 ]
 
 
 def infer_region(lat: float, lon: float) -> str:
-    for (lat_min, lat_max), (lon_min, lon_max), name in REGIONS:
+    for (lat_min, lat_max), (lon_min, lon_max), region_name in REGIONS:
         if lat_min <= lat <= lat_max and lon_min <= lon <= lon_max:
-            return name
+            return region_name
     return "Unknown Region"
+# ── State (US) ─────────────────────────────────────────────────────────────────
+
+# Approximate bounding boxes for US state assignment.
+# Ordered smallest-area first so tighter boxes win on border ambiguities.
+US_STATE_BOUNDS: list[tuple[float, float, float, float, str]] = [
+    (41.15, 42.02, -71.89, -71.12, "RI"),
+    (38.45, 39.84, -75.79, -75.05, "DE"),
+    (38.93, 41.36, -75.56, -73.89, "NJ"),
+    (40.98, 42.05, -73.73, -71.79, "CT"),
+    (42.70, 45.31, -72.56, -70.60, "NH"),
+    (42.73, 45.02, -73.43, -71.50, "VT"),
+    (37.20, 40.64, -82.64, -77.72, "WV"),
+    (37.91, 39.72, -79.49, -75.05, "MD"),
+    (36.54, 39.46, -83.68, -75.24, "VA"),
+    (39.72, 42.27, -80.52, -74.69, "PA"),
+    (38.40, 41.98, -84.82, -80.52, "OH"),
+    (37.77, 41.76, -88.10, -84.79, "IN"),
+    (33.84, 36.59, -84.32, -75.46, "NC"),
+    (32.05, 35.22, -83.35, -78.54, "SC"),
+    (34.98, 36.68, -90.31, -81.65, "TN"),
+    (36.49, 39.15, -89.57, -81.97, "KY"),
+    (30.36, 35.00, -85.61, -80.84, "GA"),
+    (30.14, 35.00, -88.47, -84.89, "AL"),
+    (24.52, 31.00, -87.63, -80.03, "FL"),
+    (28.93, 33.02, -94.04, -88.82, "LA"),
+    (30.17, 35.01, -91.66, -88.10, "MS"),
+    (36.97, 42.51, -91.51, -87.02, "IL"),
+    (40.38, 43.50, -96.64, -90.14, "IA"),
+    (33.00, 36.50, -94.62, -89.64, "AR"),
+    (35.99, 40.61, -95.77, -89.10, "MO"),
+    (42.49, 47.31, -92.89, -86.25, "WI"),
+    (41.70, 48.30, -90.42, -82.41, "MI"),
+    (43.50, 49.38, -97.24, -89.49, "MN"),
+    (36.97, 40.00, -102.05, -94.59, "KS"),
+    (33.62, 37.00, -103.00, -94.43, "OK"),
+    (25.84, 36.50, -106.65, -93.51, "TX"),
+    (39.99, 43.00, -104.05, -95.31, "NE"),
+    (42.48, 45.94, -104.06, -96.44, "SD"),
+    (45.94, 49.00, -104.05, -96.55, "ND"),
+    (40.99, 45.01, -111.05, -104.05, "WY"),
+    (36.99, 41.00, -109.05, -102.04, "CO"),
+    (44.36, 49.00, -116.05, -104.04, "MT"),
+    (41.99, 49.00, -117.24, -111.04, "ID"),
+    (41.24, 42.89, -73.50, -69.93, "MA"),
+    (40.50, 45.01, -79.76, -71.86, "NY"),
+    (43.06, 47.46, -71.08, -66.97, "ME"),
+    (36.99, 42.00, -120.01, -114.04, "NV"),
+    (36.99, 42.00, -114.05, -109.04, "UT"),
+    (31.33, 37.00, -114.82, -109.04, "AZ"),
+    (31.33, 37.00, -109.05, -103.00, "NM"),
+    (41.99, 49.00, -124.73, -116.92, "WA"),
+    (41.99, 46.24, -124.57, -116.46, "OR"),
+    (32.53, 42.01, -124.41, -114.13, "CA"),
+]
 
 
+def infer_state(lat: float, lon: float) -> str:
+    """
+    Returns the US state name for a trailhead coordinate using bounding boxes.
+    Falls back to 'Unknown' for non-US locations or unmatched coordinates.
+    Border ambiguity is rare in practice — trailheads are almost always
+    well within a single state's bounds.
+    """
+    for lat_min, lat_max, lon_min, lon_max, state in US_STATE_BOUNDS:
+        if lat_min <= lat <= lat_max and lon_min <= lon <= lon_max:
+            return state
+    return "Unknown"
+
+# ── Data-quality sanity checks ──────────────────────────────────────────────
+
+# A generous ceiling for *sustained* average grade — real trails can hit
+# this on short, brutal sections, but not averaged over multiple miles.
+# This catches the "duplicated/summed segments" failure mode on a per-record
+# basis regardless of what caused it.
+MAX_PLAUSIBLE_GRADE_FT_PER_MI = 1500
+
+# Tags describing unambiguously flat/gentle terrain — should never coexist
+# with a Difficult/Expert difficulty or a high-gain tag on the same record.
+FLAT_TAGS = {"flat", "gentle_gain"}
+HIGH_GAIN_TAGS    = {"high_gain", "very_high_gain"}
+HARD_DIFFICULTIES = {DifficultyLevel.DIFFICULT, DifficultyLevel.EXPERT}
+
+
+def find_data_quality_issues(
+    length_km:        float,
+    elevation_gain_m: float,
+    difficulty:       DifficultyLevel,
+    tags:             list[str] | None,
+) -> list[str]:
+    """
+    Same-record consistency / plausibility checks. Run at ingest time and
+    post-merge so bad records get caught before they land in prod instead
+    of waiting on the next manual QA pass.
+
+    Note: the grade check alone won't catch every implausible record (e.g.
+    a trail averaging ~170 ft/mi over 40+ miles isn't extreme in isolation)
+    — that's what the tag-consistency check is for: it catches gain figures
+    that are impossible GIVEN the record's own terrain classification, even
+    when the raw grade looks unremarkable.
+
+    Returns a list of human-readable issues; empty = looks consistent.
+    Callers decide whether to reject, auto-correct, or just log.
+    """
+    issues: list[str] = []
+    tagset = set(tags or [])
+
+    miles = length_km * 0.621371
+    if miles > 0:
+        grade_ft_mi = (elevation_gain_m * 3.28084) / miles
+        if grade_ft_mi > MAX_PLAUSIBLE_GRADE_FT_PER_MI:
+            issues.append(
+                f"implausible grade: {grade_ft_mi:.0f} ft/mi over {miles:.1f} mi "
+                f"(max plausible ~{MAX_PLAUSIBLE_GRADE_FT_PER_MI} ft/mi)"
+            )
+
+    flat_hit = tagset & FLAT_TAGS
+    if flat_hit and difficulty in HARD_DIFFICULTIES:
+        issues.append(f"tag/difficulty contradiction: {sorted(flat_hit)} + {difficulty}")
+    if flat_hit and (tagset & HIGH_GAIN_TAGS):
+        issues.append(f"tag/tag contradiction: {sorted(flat_hit)} + {sorted(tagset & HIGH_GAIN_TAGS)}")
+
+    return issues
 # ── Validation ─────────────────────────────────────────────────────────────────
 
-MIN_DISTANCE_M = 2000   # 1 mile
+MIN_DISTANCE_M = 400   # 1/4 a mile
 MIN_GAIN_M     = 10
 
 

@@ -28,10 +28,12 @@ export const deleteHike = async (hikeId) => {
   await apiClient.delete(`/hikes/delete/${hikeId}`);
 };
 
-export const searchHikes = async (filters = {}) => {
+// Add alongside your other state/refs
+
+export const searchHikes = async (filters = {}, signal) => {
   const res = await apiClient.get("/hikes/search", {
     params: filters,
+    signal,
   });
-  console.log(res.data);
   return res.data;
 };

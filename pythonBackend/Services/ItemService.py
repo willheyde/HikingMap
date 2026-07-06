@@ -26,3 +26,8 @@ class ItemService:
 
     def delete_item(self, item_id: UUID) -> None:
         self.repo.delete_item(item_id)
+    # In ItemService
+    def list_by_user(self, user_id: UUID) -> List[Item]:
+        return self.repo.list_by_user(user_id)
+    def create_item_for_user(self, item: Item, user_id: UUID) -> UUID:
+        return self.repo.create_item_for_user(item, user_id)

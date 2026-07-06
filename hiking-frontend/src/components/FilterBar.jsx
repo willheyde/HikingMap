@@ -1,42 +1,85 @@
 import React from "react";
 
-export default function FilterBar({ filters, onChange }) {
-  const update = (key, value) => {
-    onChange({
-      ...filters,
-      [key]: value
-    });
-  };
+/* ─── Design tokens (matches Profile & GearSetup) ──────────────────────── */
+const C = {
+  fieldBg:     "#241a10",
+  fieldBorder: "#5a3e22",
+  heading:     "#f0e6d0",
+  muted:       "#6a4e30",
+  label:       "#b8906a",
+  amber:       "#c17a2e",
+  amberText:   "#fff8ee",
+};
+const serif = "Georgia, 'Times New Roman', serif";
+const sans  = "'Trebuchet MS', 'Lucida Sans Unicode', sans-serif";
 
-  const inputClass = "w-full px-2 py-1 text-sm border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-green-500";
-  const labelClass = "block text-xs font-semibold text-gray-600 mb-0.5";
+const fieldBase = {
+  width: "100%",
+  padding: "5px 8px",
+  fontSize: 12,
+  fontFamily: sans,
+  color: C.heading,
+  background: C.fieldBg,
+  border: `1px solid ${C.fieldBorder}`,
+  borderRadius: 6,
+  outline: "none",
+  transition: "border-color 0.15s",
+  boxSizing: "border-box",
+  /* Note: add this to your global CSS for placeholder color:
+     .hike-filter input::placeholder { color: #6a4e30; }  */
+};
+
+const labelStyle = {
+  display: "block",
+  fontFamily: sans,
+  fontSize: 10,
+  fontWeight: 600,
+  color: C.label,
+  textTransform: "uppercase",
+  letterSpacing: "1px",
+  marginBottom: 4,
+};
+
+const onFocus = (e) => (e.target.style.borderColor = C.amber);
+const onBlur  = (e) => (e.target.style.borderColor = C.fieldBorder);
+
+export default function FilterBar({ filters, onChange }) {
+  const update = (key, value) => onChange({ ...filters, [key]: value });
 
   return (
-    <div className="space-y-2">
-      <div className="flex justify-between items-center mb-2">
-        <h2 className="text-sm font-bold text-gray-800">Filters</h2>
+    <div className="hike-filter" style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+
+      {/* ── Header ──────────────────────────────────────────────────────── */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <h2 style={{ fontFamily: serif, fontSize: 14, fontWeight: "normal",
+          color: C.heading, margin: 0 }}>
+          Filters
+        </h2>
         <button
           onClick={() => onChange({
             maxDistanceMiles: null, difficulty: null, minLengthMiles: null,
-            maxLengthMiles: null, meetRequirementsOnly: false, state: null,
-            region: null, month: null
+            maxLengthMiles: null, meetRequirementsOnly: false,
+            state: null, region: null, month: null,
           })}
-          className="text-xs text-green-600 hover:text-green-800 underline"
+          style={{
+            background: "none", border: "none", padding: 0, cursor: "pointer",
+            fontFamily: sans, fontSize: 11, color: C.amber, textDecoration: "underline",
+          }}
         >
           Reset
         </button>
       </div>
 
-      {/* Row 1: State & Difficulty */}
-      <div className="grid grid-cols-2 gap-2">
+      {/* ── Row 1: State & Difficulty ────────────────────────────────────── */}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
         <div>
-          <label className={labelClass}>State</label>
+          <label style={labelStyle}>State</label>
           <select
             value={filters.state ?? ""}
             onChange={(e) => update("state", e.target.value || null)}
-            className={inputClass}
+            style={fieldBase}
+            onFocus={onFocus} onBlur={onBlur}
           >
-            {/* FIXED: Changed values to abbreviations to match standard API expectations */}
             <option value="">All</option>
             <option value="CA">CA</option>
             <option value="CO">CO</option>
@@ -46,14 +89,28 @@ export default function FilterBar({ filters, onChange }) {
             <option value="WY">WY</option>
             <option value="UT">UT</option>
             <option value="AZ">AZ</option>
+            <option value="NM">NM</option>
+            <option value="ID">ID</option>
+            <option value="NV">NV</option>
+            <option value="TX">TX</option>
+            <option value="NC">NC</option>
+            <option value="TN">TN</option>
+            <option value="VA">VA</option>
+            <option value="PA">PA</option>
+            <option value="NY">NY</option>
+            <option value="VT">VT</option>
+            <option value="NH">NH</option>
+            <option value="ME">ME</option>
+            <option value="RI">RI</option>
           </select>
         </div>
         <div>
-          <label className={labelClass}>Difficulty</label>
+          <label style={labelStyle}>Difficulty</label>
           <select
             value={filters.difficulty ?? ""}
             onChange={(e) => update("difficulty", e.target.value || null)}
-            className={inputClass}
+            style={fieldBase}
+            onFocus={onFocus} onBlur={onBlur}
           >
             <option value="">Any</option>
             <option value="EASY">Easy</option>
@@ -63,81 +120,99 @@ export default function FilterBar({ filters, onChange }) {
         </div>
       </div>
 
-      {/* Row 2: Trail Length */}
+      {/* ── Row 2: Trail Length ──────────────────────────────────────────── */}
       <div>
-        <label className={labelClass}>Trail Length (mi)</label>
-        <div className="flex gap-2">
+        <label style={labelStyle}>Trail Length (mi)</label>
+        <div style={{ display: "flex", gap: 8 }}>
           <input
-            type="number"
-            min="0"
-            step="0.1"
-            placeholder="Min"
+            type="number" min="0" step="0.1" placeholder="Min"
             value={filters.minLengthMiles ?? ""}
             onChange={(e) => update("minLengthMiles", e.target.value === "" ? null : Number(e.target.value))}
-            className={inputClass}
+            style={{ ...fieldBase, flex: 1 }}
+            onFocus={onFocus} onBlur={onBlur}
           />
           <input
-            type="number"
-            min="0"
-            step="0.1"
-            placeholder="Max"
+            type="number" min="0" step="0.1" placeholder="Max"
             value={filters.maxLengthMiles ?? ""}
             onChange={(e) => update("maxLengthMiles", e.target.value === "" ? null : Number(e.target.value))}
-            className={inputClass}
+            style={{ ...fieldBase, flex: 1 }}
+            onFocus={onFocus} onBlur={onBlur}
           />
         </div>
       </div>
 
-      {/* Row 3: Max Dist & Month */}
-      <div className="grid grid-cols-2 gap-2">
+      {/* ── Row 3: Max Radius & Month ────────────────────────────────────── */}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
         <div>
-          <label className={labelClass}>Max Radius (mi)</label>
+          <label style={labelStyle}>Max Radius (mi)</label>
           <input
-            type="number"
-            min="0"
-            step="1"
-            placeholder="From center"
+            type="number" min="0" step="1" placeholder="Any"
             value={filters.maxDistanceMiles ?? ""}
             onChange={(e) => update("maxDistanceMiles", e.target.value === "" ? null : Number(e.target.value))}
-            className={inputClass}
+            style={fieldBase}
+            onFocus={onFocus} onBlur={onBlur}
           />
         </div>
         <div>
-          <label className={labelClass}>Best Month</label>
+          <label style={labelStyle}>Best Month</label>
           <select
             value={filters.month ?? ""}
             onChange={(e) => update("month", e.target.value === "" ? null : Number(e.target.value))}
-            className={inputClass}
+            style={fieldBase}
+            onFocus={onFocus} onBlur={onBlur}
           >
             <option value="">Any</option>
-            <option value="1">Jan</option>
-            <option value="2">Feb</option>
-            <option value="3">Mar</option>
-            <option value="4">Apr</option>
-            <option value="5">May</option>
-            <option value="6">Jun</option>
-            <option value="7">Jul</option>
-            <option value="8">Aug</option>
-            <option value="9">Sep</option>
-            <option value="10">Oct</option>
-            <option value="11">Nov</option>
-            <option value="12">Dec</option>
+            {["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
+              .map((m, i) => <option key={i + 1} value={i + 1}>{m}</option>)}
           </select>
         </div>
       </div>
 
-      {/* Row 4: Gear Requirement */}
-      <div className="flex items-center pt-1">
-        <input
-          id="meet-requirements"
-          type="checkbox"
-          checked={!!filters.meetRequirementsOnly}
-          onChange={(e) => update("meetRequirementsOnly", e.target.checked)}
-          className="h-3.5 w-3.5 text-green-600 rounded border-gray-300 focus:ring-green-500"
-        />
-        <label htmlFor="meet-requirements" className="ml-2 text-xs text-gray-700 select-none">
+      {/* ── Row 4: Gear requirement toggle ───────────────────────────────── */}
+      <div
+        onClick={() => update("meetRequirementsOnly", !filters.meetRequirementsOnly)}
+        style={{
+          display: "flex", alignItems: "center", gap: 10,
+          padding: "8px 10px", borderRadius: 7, cursor: "pointer",
+          background: filters.meetRequirementsOnly
+            ? "rgba(193,122,46,0.1)"
+            : "transparent",
+          border: `1px solid ${filters.meetRequirementsOnly
+            ? "rgba(193,122,46,0.35)"
+            : C.fieldBorder}`,
+          transition: "all 0.15s",
+        }}
+        onMouseEnter={e => {
+          if (!filters.meetRequirementsOnly)
+            e.currentTarget.style.borderColor = C.fieldBorder.replace("22", "40");
+        }}
+        onMouseLeave={e => {
+          if (!filters.meetRequirementsOnly)
+            e.currentTarget.style.borderColor = C.fieldBorder;
+        }}
+      >
+        {/* Custom checkbox */}
+        <div style={{
+          width: 14, height: 14, flexShrink: 0, borderRadius: 3,
+          border: `1.5px solid ${filters.meetRequirementsOnly ? C.amber : C.fieldBorder}`,
+          background: filters.meetRequirementsOnly ? C.amber : "transparent",
+          display: "flex", alignItems: "center", justifyContent: "center",
+          transition: "all 0.15s",
+        }}>
+          {filters.meetRequirementsOnly && (
+            <svg width="8" height="6" viewBox="0 0 10 8" fill="none">
+              <path d="M1.5 4L3.5 6.5L8.5 1.5"
+                stroke={C.amberText} strokeWidth="1.8"
+                strokeLinecap="round" strokeLinejoin="round"/>
+            </svg>
+          )}
+        </div>
+        <span style={{
+          fontFamily: sans, fontSize: 12, userSelect: "none",
+          color: filters.meetRequirementsOnly ? C.label : C.muted,
+        }}>
           My gear only
-        </label>
+        </span>
       </div>
     </div>
   );

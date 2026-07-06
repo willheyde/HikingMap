@@ -1,5 +1,6 @@
-import { createContext, useContext, useState, useEffect } from "react";
+import { createContext, useContext, useState, useEffect, useRef } from "react";
 import * as userService from "../api/usersService";
+
 import axios from "axios";
 
 const UserContext = createContext(null);
@@ -17,7 +18,14 @@ export const UserProvider = ({ children }) => {
   // New state for location handling
   const [loadingLocation, setLoadingLocation] = useState(false);
   const [authModalOpen, setAuthModalOpen] = useState(false);
+  const locationAttemptedRef = useRef(false);
 
+  useEffect(() => {
+    if (user && !locationAttemptedRef.current && !user.home_location) {
+      locationAttemptedRef.current = true; // mark attempted regardless of outcome
+      updateLocation();
+    }
+  }, [user]);
   // Check for existing session on mount
   useEffect(() => {
     const storedUser = localStorage.getItem("hike_user");
@@ -38,16 +46,6 @@ export const UserProvider = ({ children }) => {
       setAuthModalOpen(true);
     }
   }, []);
-
-  // --- NEW: Auto-fetch location if null ---
-  useEffect(() => {
-    // Only run if user is logged in, not loading, and location is strictly null/undefined
-    if (user && !loadingLocation && !user.home_location) {
-      console.log("Home location missing, attempting auto-update...");
-      updateLocation();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user]); // We intentionally depend on user to check the home_location property
 
   // Helper to sync state changes to LocalStorage
   const updateLocalUser = (updatedUser) => {

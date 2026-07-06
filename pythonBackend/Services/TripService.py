@@ -2,13 +2,17 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 from uuid import UUID, uuid4
 
-from PyObjects.Trip import Trip, TripGearItem, TripStop
+from fastapi import logger
+
+from PyObjects.Trip import Trip, TripGearItem, TripStop, HikeCompletion
 from Repos.TripRepo import TripRepository
+
+_VALID_DIFFICULTY_FELT: frozenset = frozenset({"EASY", "MODERATE", "DIFFICULT", "EXPERT"})
 
 # Only imported for type hints — no runtime coupling to AI layer
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
-    from ..AI.models.TripSession import TripSession
+    from ..AI.TripSession import TripSession
 
 
 class TripService:
@@ -17,8 +21,10 @@ class TripService:
 
     # ── Trips ──────────────────────────────────────────────────────────────────
 
-    def create_trip(self, user_id: UUID, title: str, goal: Optional[str] = None) -> Trip:
-        trip = Trip(id=uuid4(), user_id=user_id, title=title, goal=goal)
+    def create_trip(
+        self, user_id: UUID, title: str, goal: Optional[str] = None, status: str = "draft"
+    ) -> Trip:
+        trip = Trip(id=uuid4(), user_id=user_id, title=title, goal=goal, status=status)
         return self.repo.create(trip)
 
     def get_trip(self, trip_id: UUID) -> Trip:
@@ -27,11 +33,97 @@ class TripService:
             raise ValueError("Trip not found")
         return trip
 
-    def list_user_trips(self, user_id: UUID) -> List[Trip]:
-        return self.repo.list_by_user(user_id)
+    def list_user_trips(
+        self, user_id: UUID, statuses: Optional[List[str]] = None, hydrate: bool = True
+    ) -> List[Trip]:
+        return self.repo.list_by_user(user_id, statuses=statuses, hydrate=hydrate)
 
     def delete_trip(self, trip_id: UUID) -> None:
         self.repo.delete(trip_id)
+
+    # ── Lifecycle: completed / reviewed ─────────────────────────────────────────
+
+    def mark_completed(self, trip: Trip) -> Trip:
+        """'Mark as done' — only valid from 'saved'. Takes the already-fetched
+        Trip (caller already did the ownership-checked lookup) rather than
+        re-fetching, matching the _owned_trip-then-act pattern used elsewhere."""
+        if trip.status != "saved":
+            raise ValueError(f"Cannot mark as done — trip status is '{trip.status}', expected 'saved'.")
+        self.repo.mark_completed(trip.id)
+        trip.status = "completed"
+        return trip
+
+    def submit_review(
+        self,
+        trip:            Trip,
+        went:             bool,
+        difficulty_felt:  Optional[str] = None,
+        elevation_felt:   Optional[str] = None,
+        rating:           Optional[int] = None,
+        notes:            Optional[str] = None,
+    ) -> HikeCompletion:
+        """
+        Writes the questionnaire to hike_completions and advances
+        completed -> reviewed. Only valid from 'completed' — the spec is
+        explicit that this shouldn't be reachable straight from 'saved'
+        (there's nothing to review until the user has said they went/hiked it,
+        via "Mark as done").
+        """
+        if trip.status != "completed":
+            raise ValueError(f"Cannot review — trip status is '{trip.status}', expected 'completed'.")
+        if rating is not None and not (1 <= rating <= 5):
+            raise ValueError("rating must be between 1 and 5.")
+        if difficulty_felt is not None and difficulty_felt.upper() not in _VALID_DIFFICULTY_FELT:
+            raise ValueError(f"difficulty_felt must be one of {sorted(_VALID_DIFFICULTY_FELT)}.")
+
+        completion = HikeCompletion(
+            trip_id         = trip.id,
+            went            = went,
+            difficulty_felt = difficulty_felt.upper() if difficulty_felt else None,
+            elevation_felt  = elevation_felt,
+            rating          = rating,
+            notes           = notes,
+        )
+        self.repo.add_completion(completion)
+        self.repo.mark_reviewed(trip.id)
+        return completion
+
+    def get_completion(self, trip_id: UUID) -> Optional[HikeCompletion]:
+        return self.repo.get_completion(trip_id)
+
+    def get_ratings(self, trip_ids: List[UUID]) -> Dict[str, int]:
+        return self.repo.get_ratings(trip_ids)
+
+    def get_past_hikes_stats(self, user_id: UUID) -> Dict[str, Any]:
+        """
+        Aggregate header for the Past Hikes page: hike count, total miles,
+        favorite region. Computed from data already captured elsewhere —
+        trip_stops.itinerary (per-day distance_miles) and trip_stops.trail_data
+        (the 'state' field Phase 1 added) — rather than a new tracking
+        pipeline or a join back to `hikes` (trail_data.state is already a
+        direct, always-available proxy for "region" without one).
+        """
+        trips = self.repo.list_by_user(user_id, statuses=["completed", "reviewed"], hydrate=True)
+
+        total_miles = 0.0
+        region_counts: Dict[str, int] = {}
+        for trip in trips:
+            for stop in trip.stops:
+                for day in (stop.itinerary or {}).get("days", []):
+                    distance = day.get("distance_miles")
+                    if distance:
+                        total_miles += distance
+                state = (stop.trail_data or {}).get("state")
+                if state:
+                    region_counts[state] = region_counts.get(state, 0) + 1
+
+        favorite_region = max(region_counts, key=region_counts.get) if region_counts else None
+
+        return {
+            "hike_count":      len(trips),
+            "total_miles":     round(total_miles, 1),
+            "favorite_region": favorite_region,
+        }
 
     # ── Save from AI session ───────────────────────────────────────────────────
 
@@ -56,11 +148,16 @@ class TripService:
             raise ValueError("Cannot save — trip destination is not confirmed.")
 
         # ── 1. Create the Trip shell ───────────────────────────────────────
+        # status="saved" directly — this IS the promotion out of Redis into
+        # the durable lifecycle (active [Redis] -> saved -> completed ->
+        # reviewed). create_trip()'s "draft" default stays for the separate,
+        # currently-unused POST /trips/ manual-creation path.
         title = plan.hike_name or plan.destination_full or "My Trip"
         trip  = self.create_trip(
             user_id = user_id,
             title   = title,
             goal    = session.summary or None,   # use the rolling summary as goal
+            status  = "saved",
         )
 
         # ── 2. Build the single stop from the plan ─────────────────────────
@@ -96,9 +193,8 @@ class TripService:
                     status  = "owned",
                 ))
                 gear_rows.append(gear)
-            except Exception:
-                # item_id invalid or item deleted — skip silently
-                pass
+            except Exception as e:
+                logger.warning("Skipping gear item %s: %s", item_id_str, e)
 
         # Items flagged as missing by GearGapAnalyzer
         for gap in plan.gear_gaps:
@@ -110,12 +206,6 @@ class TripService:
                 pass
 
         trip.gear = gear_rows
-
-        # ── 4. Mark trip as saved ──────────────────────────────────────────
-        # The Trip dataclass doesn't have an update method yet — add a status
-        # update via a direct repo call when you add update_trip() to the repo.
-        # For now the trip is created with status="draft"; flip it here if your
-        # repo supports it, otherwise it's a one-liner to add.
 
         return trip
 
@@ -196,16 +286,35 @@ class TripService:
 
     def _build_trail_data(self, plan) -> Optional[Dict[str, Any]]:
         """
-        Basic trail metadata from the plan — expand as your hike DB grows.
+        Trail + search metadata from the plan. Widened beyond the original
+        destination/difficulty/duration/hike_id set to also capture the
+        search criteria (state, length constraints, tag lists) — Phase 3's
+        "Go Again" needs enough here to reconstruct a TripIntent-shaped
+        object and replay the original search, not just re-show the same
+        destination at a different difficulty.
+
+        Known gap: this reflects the criteria at the last full destination
+        search (initial parse, or after a destination reset) — a SEARCH_REFINE
+        mid-conversation (e.g. "actually make it harder") isn't re-applied to
+        plan.required_tags/etc, since that flow re-derives its intent from
+        session.phase_data on the fly rather than writing back through
+        _apply_intent_to_plan. Good enough for v1; revisit if Go Again turns
+        out to replay stale criteria often.
         """
         if not plan.destination_full:
             return None
         return {
-            "destination":  plan.destination_full,
-            "activity_type": plan.activity_type,
-            "difficulty":   plan.difficulty,
-            "duration_days": plan.duration_days,
-            "hike_id":      plan.hike_id,
+            "destination":       plan.destination_full,
+            "activity_type":     plan.activity_type,
+            "difficulty":        plan.difficulty,
+            "duration_days":     plan.duration_days,
+            "hike_id":           plan.hike_id,
+            "state":             plan.state,
+            "max_length_km":     plan.max_length_km,
+            "target_length_km":  plan.target_length_km,
+            "required_tags":     plan.required_tags,
+            "preferred_tags":    plan.preferred_tags,
+            "priority_tags":     plan.priority_tags,
         }
 
     def _build_camping(self, plan) -> Optional[Dict[str, Any]]:
