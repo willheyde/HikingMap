@@ -584,7 +584,10 @@ async def trip_chat(
     groq_params = _resolve_groq_params(session)
 
     try:
-        ai_response, _ = _groq.chat(
+        # to_thread: _groq.chat() is a blocking network call (1-5s). Off the
+        # event loop so concurrent chats overlap instead of serializing.
+        ai_response, _ = await asyncio.to_thread(
+            _groq.chat,
             system_prompt   = system_prompt,
             summary         = session.summary,
             window_messages = session.get_window_messages(),
@@ -601,7 +604,8 @@ async def trip_chat(
     # call, so clarifying-question turns are cheap.  An empty return leaves
     # plan.days unchanged — last successful parse is preserved.
     if session.phase == "itinerary":
-        days = _itinerary_parser.parse_from_response(
+        days = await asyncio.to_thread(   # _groq.extract() — off the event loop
+            _itinerary_parser.parse_from_response,
             ai_response   = ai_response,
             duration_days = session.plan.duration_days,
         )
@@ -928,7 +932,8 @@ async def trip_chat(
             session, user_gear, hike_context=hike_context, refine_note=refine_note
         )
         try:
-            ai_response, _ = _groq.chat(
+            ai_response, _ = await asyncio.to_thread(   # off the event loop (see above)
+                _groq.chat,
                 system_prompt   = _refine_prompt,
                 summary         = session.summary,
                 window_messages = session.get_window_messages(),
@@ -2199,7 +2204,8 @@ def _dict_to_gap(d: dict) -> GearGap:
 
 async def _async_summarize(session: TripSession) -> None:
     try:
-        new_summary = _summarizer.summarize(
+        new_summary = await asyncio.to_thread(   # blocking Groq call off the loop
+            _summarizer.summarize,
             messages     = session.get_window_messages(),
             prev_summary = session.summary,
         )
