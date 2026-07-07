@@ -121,6 +121,12 @@ PASSWORD=your_db_password
 HikeKey=your_groq_api_key
 REDIS_URL=redis://localhost:6379/0
 JWT_SECRET_KEY=your_hs256_signing_key
+
+# Optional — rate limiting / AI usage quota (defaults shown; all env-tunable)
+# AI_QUOTA_LIMIT=40          # AI chat messages per account per window (~2 hikes)
+# AI_QUOTA_WINDOW_SEC=86400  # quota window (86400 = 24h; 18000 = 5h)
+# AI_BURST_LIMIT=10          # per-account burst cap (messages per minute)
+# AUTH_RATE_LIMIT=10         # login/registration attempts per IP per 5 min
 ```
 
 Create `hiking-frontend/.env`:
@@ -164,9 +170,9 @@ The current focus is getting HikeBuilder onto **AWS** as a public soft launch. T
 - [ ] A migration runner (migrations are applied by hand today)
 
 **Before public**
-- [ ] Rate limiting (auth + AI endpoints)
-- [ ] AI usage controls — per-account quota to cap cost/abuse (keep the capable model, cap volume)
-- [ ] Offload blocking LLM / geocoding calls off the async request path
+- [x] Rate limiting (per-IP on auth, per-account burst on AI)
+- [x] AI usage controls — per-account message quota to cap cost/abuse (keeps the capable model, caps volume)
+- [ ] Offload the blocking LLM call off the async request path (geocoding already offloaded)
 
 **Known data-quality issues (ingestion)**
 - [ ] Lake tag applied as a default, producing false "lake" tags on trails without one

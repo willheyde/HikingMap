@@ -63,6 +63,7 @@ from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 
 from Auth.authentication        import get_current_user_id
+from rate_limit                 import ai_quota_guard
 from Repos.TripRepo             import TripRepository
 from Services.TripService       import TripService
 from AI.TripInputParser import (
@@ -347,7 +348,9 @@ def _load_user_gear(user_id: str, item_service: ItemService) -> list[dict]:
 @router.post("/chat", response_model=ChatResponse)
 async def trip_chat(
     req:             ChatRequest,
-    current_user_id: str            = Depends(get_current_user_id),
+    # ai_quota_guard enforces the per-account AI usage quota + burst cap, then
+    # returns the authenticated user_id (so it stands in for get_current_user_id).
+    current_user_id: str            = Depends(ai_quota_guard),
     item_service:    ItemService    = Depends(get_item_service),
     user_service:    UserService    = Depends(get_user_service),
 ):

@@ -13,6 +13,7 @@ from PyObjects.Items import Item
 from Auth.authentication import hash_password, verify_password, create_access_token, get_current_user_id
 from Schemas.UserSchemas import TokenResponse
 from gear_levels import GEAR_CATEGORIES, is_valid_level, valid_levels
+from rate_limit import auth_rate_limit
 
 # ---------------------------------------------------------
 # Pydantic Schemas
@@ -73,7 +74,7 @@ item_service = ItemService(ItemRepository())
 # Auth
 # ---------------------------------------------------------
 
-@router.post("/login", response_model=TokenResponse)
+@router.post("/login", response_model=TokenResponse, dependencies=[Depends(auth_rate_limit)])
 def login(credentials: LoginRequest):
     user = user_service.get_user_by_email(credentials.email)
     if not user or not verify_password(credentials.password, user.hashed_password):
@@ -86,7 +87,7 @@ def login(credentials: LoginRequest):
 # ---------------------------------------------------------
 
 # FIX 2: Removed the duplicate @router.post("/") decorator.
-@router.post("/", response_model=dict)
+@router.post("/", response_model=dict, dependencies=[Depends(auth_rate_limit)])
 def create_user(payload: UserCreate):
     try:
         hashed_pw = hash_password(payload.password)
