@@ -394,7 +394,9 @@ async def trip_chat(
                 if hike is not None:
                     # One confident match → select it outright. intent stays None,
                     # steps 4/5 skip, and step 6 auto-advances to gear_review.
-                    _select_named_hike(session, user_gear, hike)
+                    # Off the event loop: this does a DB get_hike + a (possibly
+                    # 5s) reverse-geocode inside _capture_selected_hike_facts.
+                    await asyncio.to_thread(_select_named_hike, session, user_gear, hike)
                     logger.info(
                         "Session %s: named-hike direct select — %r → %s",
                         session.session_id, named_query, hike.name,
@@ -500,7 +502,9 @@ async def trip_chat(
             session.plan.hike_id   = session.phase_data["hike_options"][idx]
             session.plan.hike_name = session.phase_data["hike_names"][idx]
             _promote_hike_gaps(session, str(session.plan.hike_id))
-            _capture_selected_hike_facts(session)
+            # to_thread: captures DB stats + a reverse-geocode (blocking httpx,
+            # up to 5s) — keep it off the event loop.
+            await asyncio.to_thread(_capture_selected_hike_facts, session)
             just_selected_hike = True
             logger.info(
                 "Session %s: hike selected — %s (%d gap(s)).",
@@ -643,7 +647,8 @@ async def trip_chat(
                 session.plan.hike_id   = session.phase_data["hike_options"][idx]
                 session.plan.hike_name = session.phase_data["hike_names"][idx]
                 _promote_hike_gaps(session, str(session.plan.hike_id))
-                _capture_selected_hike_facts(session)
+                # to_thread: same blocking DB + reverse-geocode as above.
+                await asyncio.to_thread(_capture_selected_hike_facts, session)
                 # Replace Groq's wrong-phase response with a clean trail-switch message.
                 ai_response = (
                     f"Switching to {session.plan.hike_name} — "
@@ -1679,12 +1684,34 @@ _NAME_QUERY_REJECT_START = re.compile(
 
 # Generic descriptors ("a moderate loop", "a nice hike") — a filtered search in
 # disguise, not a named trail. Rejected so we don't hijack them into a name
-# lookup (and a spurious "couldn't find that trail" reply).
+# lookup (and a spurious "couldn't find that trail" reply). Anchored to the whole
+# string, so it only catches a *bare* descriptor — the checks below handle
+# descriptors that carry a trailing qualifier ("a scenic trail by the coast").
 _GENERIC_DESC_RE = re.compile(
     r"^(?:a|an|some|the)?\s*"
     r"(?:easy|moderate|hard|difficult|challenging|tough|strenuous|short|long|"
     r"quick|nice|good|great|scenic|beautiful|fun|pretty)?\s*"
     r"(?:day\s+)?(?:hike|trail|loop|walk|trip|path|route|adventure|trek)s?$",
+    re.I,
+)
+
+# A proper trail name never opens with an indefinite article/quantifier — those
+# introduce a *description* ("a scenic trail…", "an easy hike…", "some loop…"),
+# which _GENERIC_DESC_RE misses once a trailing qualifier defeats its end anchor.
+# ("the" is already stripped from the candidate before this runs.)
+_INDEFINITE_START_RE = re.compile(r"^(?:a|an|some)\b", re.I)
+
+# A spatial / criteria preposition anywhere in the candidate marks a filtered-
+# search phrase ("… by the coast", "trail near boston", "hike with a waterfall"),
+# not a proper name — proper trail names almost never contain these words.
+_CRITERIA_PREP_RE = re.compile(r"\b(?:near|around|by|with|without|along)\b", re.I)
+
+# A bare geographic-feature / region word ("the mountains" → "mountains") is a
+# region, not a named trail. Whole-string match only, so a name that merely
+# contains one of these ("Blue Hills") is untouched.
+_BARE_REGION_RE = re.compile(
+    r"^(?:mountains?|coast|woods|forest|wilderness|desert|beach|hills|"
+    r"outdoors|nature|wilds?|countryside)$",
     re.I,
 )
 
@@ -1713,6 +1740,12 @@ def _extract_hike_name_query(message: str) -> Optional[str]:
         if _NAME_QUERY_REJECT_START.match(candidate):
             return None
         if _GENERIC_DESC_RE.match(candidate):
+            return None
+        if _INDEFINITE_START_RE.match(candidate):                  # "a scenic trail …"
+            return None
+        if _CRITERIA_PREP_RE.search(candidate):                    # "… near/by/with …"
+            return None
+        if _BARE_REGION_RE.match(candidate):                       # "the mountains" → region
             return None
         if not re.search(r"[a-zA-Z]{3,}", candidate):              # needs a real word
             return None
