@@ -53,6 +53,7 @@ Key design notes
 """
 
 import asyncio
+import difflib
 import logging
 import re
 from typing import Optional
@@ -77,6 +78,8 @@ from AI.PhaseController         import PhaseController
 from AI.GroqClient              import GroqClient
 from AI.TripSession         import TripSession
 from AI.TripPlan            import GearGap
+from trip_metrics           import estimate_hike_duration, reverse_geocode
+from gear_levels            import resolve_gear_category, resolve_level
 from PyObjects.Trip         import Trip
 from AI.SessionStore import SessionStore, SessionStoreUnavailable
 from Repos.ItemRepo             import ItemRepository
@@ -99,7 +102,8 @@ _summarizer        = Summarizer()
 _controller        = PhaseController()
 _groq              = GroqClient()
 _itinerary_parser  = ItineraryParser(_groq)   # shares the same Groq connection
-_hike_search       = HikeSearchService(HikeService(HikeRepository()))
+_hike_service      = HikeService(HikeRepository())
+_hike_search       = HikeSearchService(_hike_service)
 
 
 def get_service() -> TripService:
@@ -318,18 +322,24 @@ class DuplicateResponse(BaseModel):
 
 def _load_user_gear(user_id: str, item_service: ItemService) -> list[dict]:
     items = item_service.list_by_user(UUID(user_id))
-    return [
-        {
+    gear: list[dict] = []
+    for item in items:
+        attrs = getattr(item, "attributes", None) or {}
+        gear_category = resolve_gear_category(item.item_type, attrs)
+        gear.append({
             "id":            str(item.id),
             "name":          item.name,
-            "category":      item.item_type,   # item_type is your category field
+            "category":      item.item_type,          # raw item_type (legacy consumers)
+            "gear_category": gear_category,           # functional category (A+ model)
+            "level":         resolve_level(gear_category, attrs),
             "weight":        item.weight,
             "cost":          item.cost,
-            "temp_rating_f": getattr(item, "temp_rating_f", None),
-            "waterproof":    getattr(item, "waterproof", None),
-        }
-        for item in items
-    ]
+            # Prefer the raw jsonb (covers free-text gear built as a base Item,
+            # whose typed attribute fields aren't populated) then the typed field.
+            "temp_rating_f": attrs.get("temp_rating_f", getattr(item, "temp_rating_f", None)),
+            "waterproof":    attrs.get("waterproof",    getattr(item, "waterproof", None)),
+        })
+    return gear
 
 
 # ── Chat endpoint ─────────────────────────────────────────────────────────────
@@ -377,7 +387,52 @@ async def trip_chat(
         # "still gathering destination info" — once options are shown, there
         # is nothing left here for this branch to do.
         if not session.phase_data.get("hikes_presented"):
-            if _has_no_destination(req.message):
+            named_query = _extract_hike_name_query(req.message)
+            if named_query:
+                # ── Named-trail request: direct DB lookup, not a filtered search ──
+                hike, candidates = _resolve_named_hike(named_query)
+                if hike is not None:
+                    # One confident match → select it outright. intent stays None,
+                    # steps 4/5 skip, and step 6 auto-advances to gear_review.
+                    _select_named_hike(session, user_gear, hike)
+                    logger.info(
+                        "Session %s: named-hike direct select — %r → %s",
+                        session.session_id, named_query, hike.name,
+                    )
+                elif candidates:
+                    # Several plausible matches → present as cards to disambiguate.
+                    hike_context = _present_named_candidates(session, user_gear, candidates)
+                    logger.info(
+                        "Session %s: named-hike disambiguation — %r → %d candidates",
+                        session.session_id, named_query, len(candidates),
+                    )
+                else:
+                    # No match → deterministic "describe it" reply; short-circuit
+                    # before Groq so the wording is exactly as intended.
+                    not_found = (
+                        f"I couldn't find a trail called “{named_query}” in my "
+                        "database — I may just not have that one yet. Can you tell me a "
+                        "bit about it so I can find the closest match? Roughly how hard is "
+                        "it (easy, moderate, or hard), and where is it (a nearby town, "
+                        "park, or state)?"
+                    )
+                    logger.info(
+                        "Session %s: named-hike not found — %r",
+                        session.session_id, named_query,
+                    )
+                    session.add_turn(req.message, not_found)
+                    if not _store.save(session):
+                        logger.error("Redis save failed for session %s", session.session_id)
+                    return ChatResponse(
+                        session_id     = session.session_id,
+                        response       = not_found,
+                        phase          = session.phase,
+                        plan           = session.plan.to_dict(),
+                        advanced       = False,
+                        created        = created,
+                        hike_options   = [],
+                    )
+            elif _has_no_destination(req.message):
                 logger.info(
                     "Session %s: no-location short-circuit — skipping parse "
                     "for message: %r",
@@ -426,6 +481,12 @@ async def trip_chat(
             hike_context = session.phase_data.get("hike_context", "")
 
     # ── 5. Resolve hike selection; promote gaps to plan ────────────────────
+    # just_selected_hike: this turn's user message resolved to a numbered pick
+    # (a card click / "option N"). It gates the SEARCH_REFINE handler below —
+    # a selection is NOT a refine request, and honoring a misfired SEARCH_REFINE
+    # on the selection turn soft-resets the just-made choice and desyncs the
+    # phase machine from Groq's context permanently (see step 9e guard).
+    just_selected_hike = False
     if (
         session.phase == "destination"
         and session.phase_data.get("hikes_presented")
@@ -439,6 +500,8 @@ async def trip_chat(
             session.plan.hike_id   = session.phase_data["hike_options"][idx]
             session.plan.hike_name = session.phase_data["hike_names"][idx]
             _promote_hike_gaps(session, str(session.plan.hike_id))
+            _capture_selected_hike_facts(session)
+            just_selected_hike = True
             logger.info(
                 "Session %s: hike selected — %s (%d gap(s)).",
                 session.session_id,
@@ -580,6 +643,7 @@ async def trip_chat(
                 session.plan.hike_id   = session.phase_data["hike_options"][idx]
                 session.plan.hike_name = session.phase_data["hike_names"][idx]
                 _promote_hike_gaps(session, str(session.plan.hike_id))
+                _capture_selected_hike_facts(session)
                 # Replace Groq's wrong-phase response with a clean trail-switch message.
                 ai_response = (
                     f"Switching to {session.plan.hike_name} — "
@@ -671,7 +735,28 @@ async def trip_chat(
 # The second Groq call reuses Groq's own framing from the first response
 # (stripped of the signal token) as a natural language intro before the
 # new option list lands.
-    if not reset and "SEARCH_REFINE" in ai_response:
+    # Guard: a card click / numbered pick this turn is a SELECTION, not a
+    # refine request. On the selection turn the phase has just advanced to
+    # gear_review, so Groq now sees the gear_review prompt — whose opening
+    # instruction invites SEARCH_REFINE — and occasionally misfires it on the
+    # bare "Option N" message. Honoring it would _soft_reset the just-made
+    # selection back to the destination phase and desync session.phase from
+    # Groq's conversational context for the rest of the chat. Strip the leaked
+    # token and confirm the selection deterministically instead.
+    if just_selected_hike and "SEARCH_REFINE" in ai_response:
+        logger.info(
+            "Session %s: ignoring SEARCH_REFINE on hike-selection turn "
+            "(would have wiped the just-made selection).",
+            session.session_id,
+        )
+        ai_response = ai_response.replace("SEARCH_REFINE", "").strip()
+        hike_label = session.plan.hike_name or "that trail"
+        ai_response = (
+            f"Great choice — {hike_label} it is. "
+            "Let me check your gear against this trail before we plan the days."
+        )
+
+    if not reset and not just_selected_hike and "SEARCH_REFINE" in ai_response:
         logger.info(
             "Session %s: SEARCH_REFINE signal — soft-resetting and re-searching.",
             session.session_id,
@@ -950,6 +1035,7 @@ def save_trip(
     session_id:      str,
     current_user_id: str         = Depends(get_current_user_id),
     service:         TripService = Depends(get_service),
+    item_service:    ItemService = Depends(get_item_service),
 ):
     """
     Converts the completed AI session into persisted DB rows and cleans
@@ -979,10 +1065,19 @@ def save_trip(
     if not session.plan.is_destination_set():
         raise HTTPException(400, "Trip destination is incomplete.")
 
+    # The user's current kit becomes the trip's "packed" gear list. Best-effort:
+    # if this lookup fails, save_from_session falls back to plan.gear_selected.
+    try:
+        owned_item_ids = [str(item.id) for item in item_service.list_by_user(UUID(current_user_id))]
+    except Exception as e:
+        logger.warning("save_trip: could not load owned gear for user %s: %s", current_user_id, e)
+        owned_item_ids = None
+
     try:
         trip = service.save_from_session(
-            user_id = UUID(current_user_id),
-            session = session,
+            user_id        = UUID(current_user_id),
+            session        = session,
+            owned_item_ids = owned_item_ids,
         )
         _store.delete(session_id)
     except ValueError as e:
@@ -1070,11 +1165,38 @@ def list_chats(
     return summaries
 
 
+def _trip_readiness(trip, current_user_id: str, item_service: ItemService) -> list[dict]:
+    """
+    Live gear readiness for a saved trip: the trail's required gear vs the user's
+    CURRENT kit, so it reflects gear added since the trip was saved. Best-effort —
+    returns [] (no checklist) rather than erroring if the hike or gear can't load.
+    """
+    stop  = trip.stops[0] if getattr(trip, "stops", None) else None
+    trail = (stop.trail_data or {}) if stop else {}
+    hike_id = trail.get("hike_id")
+    if not hike_id:
+        return []
+    try:
+        hike = _hike_service.get_hike(UUID(str(hike_id)))
+    except Exception as e:
+        logger.warning("readiness: could not load hike %s: %s", hike_id, e)
+        return []
+    if not hike or not getattr(hike, "gear_requirements", None):
+        return []
+    try:
+        user_gear = _load_user_gear(current_user_id, item_service)
+    except Exception as e:
+        logger.warning("readiness: could not load gear for %s: %s", current_user_id, e)
+        return []
+    return _analyzer.readiness_for_hike(user_gear, hike)
+
+
 @router.get("/chats/{chat_id}", response_model=dict)
 def get_chat(
     chat_id:         str,
     current_user_id: str         = Depends(get_current_user_id),
     service:         TripService = Depends(get_service),
+    item_service:    ItemService = Depends(get_item_service),
 ):
     """
     Fetches one chat. Redis is checked first since an active session's
@@ -1114,6 +1236,8 @@ def get_chat(
     if trip.status in ("completed", "reviewed"):
         completion = service.get_completion(trip.id)
         result["completion"] = completion.to_dict() if completion else None
+    # Live per-trail gear readiness for the "double-check before you go" checklist.
+    result["readiness"] = _trip_readiness(trip, current_user_id, item_service)
     return result
 
 
@@ -1531,6 +1655,170 @@ def _search_and_analyse(
     session.phase_data["unmatched_concept_tags"] = result.unmatched_concept_tags
     return context
 
+# ── Named-trail request lookup ────────────────────────────────────────────────
+#
+# The default destination flow geocodes the user's text and runs a *filtered*
+# search — it never looks a trail up by its own name. When the user names a
+# specific trail ("I want to hike Mount Sterling Trail", or the "Plan a trip to
+# <name>" button, which sends "I want to plan a trip to <name>."), we short-
+# circuit to a direct DB name lookup instead. Capture group 1 = the trail-name
+# candidate that follows the lead-in.
+_HIKE_NAME_REQUEST_PATTERNS = [
+    re.compile(r"\bplan(?:ning)?\s+(?:a\s+|the\s+)?(?:trip|hike|visit)\s+(?:to|for|on|around)\s+(.+)", re.I),
+    re.compile(r"\bi(?:'d| would)?\s*(?:really\s+)?(?:want|wanna|like|love)\s+to\s+(?:hike|do|climb|tackle|visit)\s+(.+)", re.I),
+    re.compile(r"\blet'?s\s+(?:hike|do|tackle|climb)\s+(.+)", re.I),
+    re.compile(r"\btake\s+me\s+(?:to|up)\s+(.+)", re.I),
+]
+
+# Candidate tails starting with these tokens are region / relative-location
+# phrases ("in the mountains", "near boston"), not a proper trail name — reject
+# so the normal geocode/filter flow handles them.
+_NAME_QUERY_REJECT_START = re.compile(
+    r"^(?:in|near|around|by|close|somewhere|anywhere|something|anything|a\s+place)\b", re.I
+)
+
+# Generic descriptors ("a moderate loop", "a nice hike") — a filtered search in
+# disguise, not a named trail. Rejected so we don't hijack them into a name
+# lookup (and a spurious "couldn't find that trail" reply).
+_GENERIC_DESC_RE = re.compile(
+    r"^(?:a|an|some|the)?\s*"
+    r"(?:easy|moderate|hard|difficult|challenging|tough|strenuous|short|long|"
+    r"quick|nice|good|great|scenic|beautiful|fun|pretty)?\s*"
+    r"(?:day\s+)?(?:hike|trail|loop|walk|trip|path|route|adventure|trek)s?$",
+    re.I,
+)
+
+
+def _extract_hike_name_query(message: str) -> Optional[str]:
+    """
+    If `message` reads as a request to hike a *specific, named* trail, return the
+    cleaned trail-name candidate; otherwise None. Deliberately strict: only fires
+    on explicit "hike/do/plan a trip to <X>" lead-ins, and rejects candidates
+    that are really region phrases ("in the mountains") or generic descriptors
+    ("a moderate loop") so a normal filtered search isn't hijacked.
+    """
+    text = (message or "").strip()
+    if not text:
+        return None
+    for pat in _HIKE_NAME_REQUEST_PATTERNS:
+        m = pat.search(text)
+        if not m:
+            continue
+        candidate = m.group(1).strip()
+        candidate = re.sub(r"[.!?,;:\s]+$", "", candidate)          # trailing punctuation
+        candidate = re.sub(r"[,\s]+please$", "", candidate, flags=re.I).strip()
+        candidate = re.sub(r"^the\s+", "", candidate, flags=re.I).strip()   # "the X Trail" → "X Trail"
+        if len(candidate) < 3:
+            return None
+        if _NAME_QUERY_REJECT_START.match(candidate):
+            return None
+        if _GENERIC_DESC_RE.match(candidate):
+            return None
+        if not re.search(r"[a-zA-Z]{3,}", candidate):              # needs a real word
+            return None
+        return candidate
+    return None
+
+
+def _normalize_name(s: str) -> str:
+    """Lowercase, drop punctuation, collapse whitespace — for name comparison."""
+    return re.sub(r"[^a-z0-9]+", " ", (s or "").lower()).strip()
+
+
+def _resolve_named_hike(query: str):
+    """
+    Look a trail up by name and decide how confident the match is.
+
+    Returns:
+        (hike, None)        — one confident match (auto-select it)
+        (None, candidates)  — several plausible matches (disambiguate; len >= 2)
+        (None, [])          — nothing found (ask the user to describe it)
+    """
+    try:
+        candidates = _hike_service.search_hikes_by_name(query, limit=5)
+    except Exception as e:
+        logger.warning("Name lookup failed for %r: %s", query, e)
+        return None, []
+    if not candidates:
+        return None, []
+
+    qn = _normalize_name(query)
+
+    # Exact (normalized) name match wins outright.
+    exact = [h for h in candidates if _normalize_name(h.name) == qn]
+    if len(exact) == 1:
+        return exact[0], None
+
+    if len(candidates) == 1:
+        return candidates[0], None
+
+    # Rank by fuzzy similarity; a clear leader is treated as confident.
+    scored = sorted(
+        candidates,
+        key=lambda h: difflib.SequenceMatcher(None, qn, _normalize_name(h.name)).ratio(),
+        reverse=True,
+    )
+    best   = difflib.SequenceMatcher(None, qn, _normalize_name(scored[0].name)).ratio()
+    second = difflib.SequenceMatcher(None, qn, _normalize_name(scored[1].name)).ratio()
+    if best >= 0.72 and (best - second) >= 0.15:
+        return scored[0], None
+    return None, scored
+
+
+def _analyse_and_store_gaps(session: TripSession, user_gear: list[dict], hikes: list) -> dict:
+    """Run per-hike gear analysis for `hikes`, cache dict-form gaps in phase_data
+    (as _search_and_analyse does), and return {hike_id: [GearGap]}."""
+    gear_analyses: dict[str, list] = {}
+    for hike in hikes:
+        try:
+            gear_analyses[str(hike.id)] = _analyzer.analyze_for_hike(user_gear, hike)
+        except Exception as e:
+            logger.warning("GearGapAnalyzer failed for hike %s: %s", hike.id, e)
+            gear_analyses[str(hike.id)] = []
+    session.phase_data["gear_analyses"] = {
+        hid: [_gap_to_dict(g) for g in gaps] for hid, gaps in gear_analyses.items()
+    }
+    return gear_analyses
+
+
+def _select_named_hike(session: TripSession, user_gear: list[dict], hike) -> None:
+    """
+    Direct one-shot select of a named trail: present-then-pick in a single turn.
+    Mirrors the card-click path (step 5) so the phase machine — which gates on
+    hikes_presented + hike_id — auto-advances destination → gear_review on the
+    following evaluate() call. Populates plan.gear_gaps + authoritative hike facts.
+    """
+    _controller.on_hikes_presented(session, [(hike, 1)])
+    _analyse_and_store_gaps(session, user_gear, [hike])
+
+    session.plan.hike_id   = str(hike.id)
+    session.plan.hike_name = hike.name
+    session.plan.lat       = hike.lat
+    session.plan.lng       = hike.lng
+    if not session.plan.duration_days:
+        session.plan.duration_days = 1
+
+    _promote_hike_gaps(session, str(hike.id))
+    _capture_selected_hike_facts(session)
+
+
+def _present_named_candidates(session: TripSession, user_gear: list[dict], candidates: list) -> str:
+    """
+    Present several name matches as selectable option cards for disambiguation —
+    same shape as a normal search result, so clicking a card ("2") flows through
+    the existing selection path. Returns the Groq context string.
+    """
+    scored = [(h, 1) for h in candidates]
+    gear_analyses = _analyse_and_store_gaps(session, user_gear, candidates)
+
+    _controller.on_hikes_presented(session, scored)
+    context = _hike_search.format_for_context(scored, gear_analyses=gear_analyses)
+    session.phase_data["hike_list_display"] = _hike_search.format_hike_list(scored, gear_analyses)
+    session.phase_data["hike_cards"]        = _hike_search.to_option_cards(scored, gear_analyses)
+    session.phase_data["hike_context"]      = context
+    return context
+
+
 def _is_trail_reselection(message: str, session: TripSession) -> bool:
     """
     Returns True if the message looks like the user is picking a different
@@ -1552,6 +1840,62 @@ def _promote_hike_gaps(session: TripSession, hike_id: str) -> None:
     """
     raw_gaps = session.phase_data.get("gear_analyses", {}).get(hike_id, [])
     session.plan.gear_gaps = [_dict_to_gap(g) for g in raw_gaps]
+
+
+# Matches the crude "Near your current location" / "near me" destination label
+# TripInputParser emits when no place was named — the trigger to upgrade it to
+# the trailhead's real place via reverse geocoding.
+_CRUDE_DESTINATION_RE = re.compile(r"^\s*near\b", re.IGNORECASE)
+
+
+def _capture_selected_hike_facts(session: TripSession) -> None:
+    """
+    At hike selection, pull the chosen trail's authoritative stats from the DB
+    onto the plan so the finalize summary and the saved trip reflect the REAL
+    hike — not the user's original search filters or the LLM's guesses.
+
+    Sets plan.difficulty (real DB difficulty — authoritative for a single-hike
+    trip), plan.hike_length_km, plan.hike_elevation_gain_m, and a Naismith
+    on-trail-time estimate (plan.estimated_duration). Also upgrades a crude
+    "Near your current location" destination to the trailhead's real place label
+    via a single reverse-geocode call (falls back to the hike's region on
+    failure). Best-effort: any lookup failure leaves the plan untouched.
+    """
+    plan = session.plan
+    if not plan.hike_id:
+        return
+    try:
+        hike = _hike_service.get_hike(UUID(str(plan.hike_id)))
+    except Exception as e:
+        logger.warning("Could not load selected hike %s for facts: %s", plan.hike_id, e)
+        return
+    if hike is None:
+        return
+
+    plan.hike_length_km        = hike.length_km
+    plan.hike_elevation_gain_m = hike.elevation_gain_m
+
+    # Real trail difficulty is authoritative for a single-hike trip — the user's
+    # difficulty filter was only ever a search hint.
+    try:
+        plan.difficulty = hike.difficulty.name.lower()
+    except AttributeError:
+        plan.difficulty = str(hike.difficulty).lower()
+
+    _hours, label = estimate_hike_duration(hike.length_km, hike.elevation_gain_m)
+    plan.estimated_duration = label
+
+    # Upgrade a crude / "near me" destination to the trailhead's real place.
+    if not plan.destination_full or _CRUDE_DESTINATION_RE.match(plan.destination_full):
+        place = reverse_geocode(getattr(hike, "lat", None), getattr(hike, "lng", None))
+        plan.destination_full = place or hike.region or plan.destination_full or hike.name
+
+    logger.info(
+        "Session %s: captured hike facts — %.1f km, %.0f m gain, difficulty=%s, "
+        "est=%s, destination=%r",
+        session.session_id, hike.length_km, hike.elevation_gain_m,
+        plan.difficulty, plan.estimated_duration, plan.destination_full,
+    )
 
 
 # ── Private: general helpers ──────────────────────────────────────────────────

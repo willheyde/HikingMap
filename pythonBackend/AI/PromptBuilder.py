@@ -48,9 +48,10 @@ Finalize phase
 
 DESTINATION RESET signal
     "DESTINATION RESET" must appear as the very first token of Groq's
-    response when the user changes destination.  _rules() contains three
-    concrete examples so Groq learns pattern, not just rule.  trip_chat.py
-    also runs a Python-level phrase detector as a pre-response fallback.
+    response when the user changes destination.  Its rule fragment (and the
+    other signal fragments) is phase-scoped by _rules(phase) — see the comment
+    above _RULES_BY_PHASE.  trip_chat.py also runs a Python-level phrase
+    detector as a pre-response fallback.
 Groq parameters
     chat() accepts max_tokens / temperature overrides.  trip_chat.py passes
     per-phase values from PHASE_GROQ_PARAMS so callers don't need to know
@@ -59,6 +60,7 @@ Groq parameters
 
 from .TripSession import TripSession
 from .TripPlan    import GearGap
+from trip_metrics import km_to_miles, m_to_feet
 
 
 # ── Per-phase Groq call parameters ────────────────────────────────────────────
@@ -139,7 +141,11 @@ def build_system_prompt(
 
     sections.append(_gear_block(user_gear))
 
-    if hike_context and session.phase == "destination":
+    # Drop the HIKE OPTIONS block once a hike is chosen (destination sub-state 3
+    # and beyond). The 5-trail block with per-hike stats + gear notes is the
+    # single largest dynamic section (~400-600 tokens); once plan.hike_id is set
+    # the choice is made, so it's dead weight on the selection-confirmation turn.
+    if hike_context and session.phase == "destination" and not plan.hike_id:
         sections.append(_hike_context_block(hike_context))
 
     if plan.is_destination_set():
@@ -154,7 +160,7 @@ def build_system_prompt(
     if session.summary:
         sections.append(_summary_block(session.summary))
 
-    sections.append(_rules())
+    sections.append(_rules(session.phase))
 
     # ── Injected AFTER _rules() so it takes precedence ────────────────────
     # The SEARCH_REFINE rule in _rules() is unconditional and emphatic; if
@@ -297,9 +303,24 @@ def _itinerary_phase_block(plan) -> str:
         # ── Sub-state 1: build the itinerary ──────────────────────────────
         duration = plan.duration_days or 1
         day_word = "day" if duration == 1 else "days"
+        # Ground-truth constraint: the per-day distances/gains MUST sum to the
+        # real trail totals from the DB, not the LLM's guess. Without this Groq
+        # invents figures (the "5 mi / 500 ft for a 2 mi / 118 ft trail" bug).
+        totals_line = ""
+        if plan.hike_length_km:
+            miles = km_to_miles(plan.hike_length_km)
+            feet  = m_to_feet(plan.hike_elevation_gain_m)
+            gain_txt = f" and about {feet} ft of total elevation gain" if feet is not None else ""
+            totals_line = (
+                f"GROUND TRUTH: this trail is about {miles} miles long{gain_txt}. "
+                f"The Distance and Gain figures across ALL days MUST sum to roughly these "
+                f"totals — do NOT exceed them or invent larger numbers. For a short trail "
+                f"this may be a single half-day; do not pad it into multiple days. "
+            )
         goal = (
             f"Build a complete {duration}-{day_word} itinerary for the confirmed hike. "
             "Use the details in CONFIRMED TRIP (hike name, destination, duration, difficulty). "
+            + totals_line +
             "For EVERY day, follow this exact format — each element on its own line:\n\n"
             "  Day N: <short descriptive title>\n"
             "  Distance: X miles  |  Gain: Y ft\n"
@@ -380,7 +401,8 @@ def _finalize_phase_block(session: TripSession) -> str:
             "Present a complete trip summary using CONFIRMED TRIP and ITINERARY SO FAR. "
             "Use this exact format:\n\n"
             "  Trip: <hike name>, <destination>\n"
-            "  Duration: N days  |  Difficulty: <level>\n"
+            "  Trail: <X mi, Y ft gain — copy from CONFIRMED TRIP 'Trail stats'; omit if absent>\n"
+            "  Duration: N days (<est. time on trail — copy from 'Est. time'>)  |  Difficulty: <level>\n"
             "  Gear notes: <one sentence — mention key missing items or say 'kit looks solid'>\n"
             "  Day 1: <title> — X mi, Y ft gain[, Camp: <campsite name>]\n"
             "  Day 2: <title> — X mi, Y ft gain[, Camp: <campsite name>]\n"
@@ -483,6 +505,18 @@ def _trip_block(plan) -> str:
     ]
     if plan.hike_name:
         lines.insert(1, f"  Hike        : {plan.hike_name}")
+
+    # Real trail stats (from the DB at selection) — the authoritative figures the
+    # summary must use. Groq must NOT invent different distance/gain numbers.
+    if plan.hike_length_km:
+        miles = km_to_miles(plan.hike_length_km)
+        feet  = m_to_feet(plan.hike_elevation_gain_m)
+        stat = f"  Trail stats : {miles} mi"
+        if feet is not None:
+            stat += f", {feet} ft gain"
+        lines.append(stat)
+    if plan.estimated_duration:
+        lines.append(f"  Est. time   : {plan.estimated_duration} on trail")
     if plan.state:                                                           # ← NEW
         # "NC".title() → "Nc" — 2-letter state codes need to stay upper.
         state_label = (
@@ -546,160 +580,132 @@ def _summary_block(summary: str) -> str:
     return f"CONVERSATION SUMMARY (decisions made in earlier turns):\n{summary}"
 
 
-def _rules() -> str:
-    return (
-        "RULES:\n"
-        "\n"
-        "General\n"
-        "- Stay focused on the current phase goal. Do not jump ahead.\n"
-        "- Keep responses under 220 words unless building or revising an itinerary.\n"
-        "- Never fabricate gear specs, trail distances, or elevation figures — "
-        "  write 'approx.' before any estimate.\n"
-        "- Do not repeat the full gear list back to the user unprompted.\n"
-        "- Be direct. Avoid filler phrases like 'Great question!' or 'Certainly!'.\n"
-        "- Never add, remove, or modify tags in a hike's Tags field — copy them verbatim\n"
-        "  from the HIKE OPTIONS block. If a requested feature is missing from the tags,\n"
-        "  acknowledge that in prose, not by inventing a tag.\n"
-        "\n"
-        "Itinerary format\n"
-        "- Each day MUST start on its own line with 'Day N:' followed by a short title.\n"
-        "- Use miles and feet throughout — never km or meters.\n"
-        "- When the user approves the itinerary, say EXACTLY:\n"
-        "    Itinerary confirmed — ready to save.\n"
-        "  Do not paraphrase that line.\n"
-        "\n"
-        "Save confirmation\n"
-        "- When the user confirms they want to save the trip, begin your response with\n"
-        "  exactly 'SAVE CONFIRMED' (two words, no punctuation before them).\n"
-        "- Do not say 'SAVE CONFIRMED' speculatively — only when the user clearly says yes.\n"
-        "- 'SAVE CONFIRMED' is ONLY valid in finalize sub-state 2 (after the trip summary\n"
-        "  has been shown and the user has replied to 'Shall I save this trip?').\n"
-        "  If the current goal says to present the summary, you are in sub-state 1 —\n"
-        "  do NOT emit 'SAVE CONFIRMED' regardless of what the user said.\n"
-        "\n"
-        "DESTINATION RESET — read this carefully:\n"
-        "- If the user indicates they want a different destination at ANY point after the\n"
-        "  destination phase, you MUST say 'DESTINATION RESET' as the very first words of\n"
-        "  your response, before anything else.\n"
-        "- Triggers include (but are not limited to):\n"
-        "    • Naming a new place  ('let's do Zion', 'what about Colorado?', 'try Sedona')\n"
-        "    • Expressing regret   ('I don't love these', 'actually never mind')\n"
-        "    • Asking to restart   ('start over', 'different hike', 'somewhere else')\n"
-        "    • Any phrasing with 'instead' about a *location or destination*\n"
-        "- Do NOT trigger on trail re-selection from the numbered list:\n"
-        "    ('actually let's do 2 instead', 'go with option 3 instead') — these are\n"
-        "    picking from the options already shown, not changing destination.\n"
-        "\n"
-        "Examples:\n"
-        "  User: 'Actually, let's try Zion instead.'\n"
-        "  You:  'DESTINATION RESET — great choice. What kind of hike are you looking for in Zion?'\n"
-        "\n"
-        "  User: 'Actually, let's do 2 instead.'  ← trail re-selection, NOT a reset\n"
-        "  You:  [confirm selection of option 2, no DESTINATION RESET]\n"
-        "\n"
-        "  User: 'Hmm, what about trails in Colorado?'\n"
-        "  You:  'DESTINATION RESET — let's look at Colorado. How many days are you thinking?'\n"
-        "\n"
-        "  User: 'I don't love these options, can we try somewhere else?'\n"
-        "  You:  'DESTINATION RESET — of course. Where would you like to explore?'"
-        "\n"
-        "SEARCH_REFINE — read this carefully:\n"
-        "- Use this when the user wants different hike options WITHIN the same destination\n"
-        "  (different difficulty, wants a water feature, shorter route, etc.).\n"
-        "- THIS APPLIES IN ALL PHASES including gear_review and itinerary — if the user\n"
-        "  says they want a different kind of hike at any point, emit SEARCH_REFINE.\n"
-        "- Emit 'SEARCH_REFINE' as the very first word of your response.\n"
-        "- Do NOT emit DESTINATION RESET for these cases.\n"
-        "- After 'SEARCH_REFINE', briefly acknowledge the criteria change in one sentence.\n"
-        "  Do NOT ask where they want to hike — the destination is already confirmed.\n"
-        "\n"
-        "SEARCH_REFINE vs DESTINATION RESET — the key distinction:\n"
-        "  • User names a NEW geographic place   → DESTINATION RESET\n"
-        "  • User wants different TRAIL CRITERIA → SEARCH_REFINE (same location)\n"
-        "\n"
-        "Examples:\n"
-        "  User: 'Instead, can I see a medium hike with a water feature?'\n"
-        "  You:  'SEARCH_REFINE — great idea. Let me pull up medium-difficulty RI trails with water features.'\n"
-        "\n"
-        "  User: 'These are too long — can I see shorter options?'\n"
-        "  You:  'SEARCH_REFINE — sure, looking for shorter trails in the same area.'\n"
-        "\n"
-        "  User (in gear_review): 'Actually I want the hike to have a water feature and be harder.'\n"
-        "  You:  'SEARCH_REFINE — got it, looking for harder RI trails with water features.'\n"
-        "\n"
-        "  User: 'Actually let's try Zion instead.'\n"
-        "  You:  'DESTINATION RESET — great choice. What kind of hike are you looking for in Zion?'\n"
-        "\n"
-        "ADVANCE_PHASE — read this carefully:\n"
-        "- When the user clearly signals they are done with the current phase, "
-        "append the single token ADVANCE_PHASE on its own line at the very end "
-        "of your response — after all other content.\n"
-        "- Use it in these phases only:\n"
-        "    • gear_review : user says they're happy with their kit, ready to move on,\n"
-        "                    or explicitly asks to skip ('proceed', 'looks good', 'skip this').\n"
-        "    • Itinerary Rule:"
-        "        The user must approve the itinerary in their message AFTER the itinerary has already been presented."
-        "        Do NOT emit ADVANCE_PHASE in the same response where you first present the itinerary — even if the user's message that triggered the presentation sounds like approval."
-        "         The user must send a separate, explicit approval message before you confirm and advance."
-        "- Do NOT emit ADVANCE_PHASE speculatively or mid-sentence.\n"
-        "- Do NOT emit ADVANCE_PHASE in the destination or finalize phases.\n"
-        "- The token is stripped before the user sees it — they will never see it.\n"
-        "\n"
-        "Examples:\n"
-        "  User: 'Looks good, let's move on.'\n"
-        "  You (gear_review):  'Great — moving on to build your itinerary.\n"
-        "                       ADVANCE_PHASE'\n"
-        "\n"
-        "  User: 'proceed as is'\n"
-        "  You (gear_review):  'Got it — your kit is set. On to the itinerary.\n"
-        "                       ADVANCE_PHASE'\n"
-        "\n"
-        "  User: 'that looks right'\n"
-        "  You (itinerary):    'Itinerary confirmed — ready to save.\n"
-        "                       ADVANCE_PHASE'\n"
-        "\n"
-        "GEAR ADD — read this carefully:\n"
-        "- When the user confirms a specific item for one of the GEAR GAPS categories, "
-        "append GEAR ADD: <category> on its own line at the very end of your response, "
-        "using the category name shown in brackets in the GEAR GAPS block "
-        "(e.g. the gap shown as '[hydration]' → GEAR ADD: hydration).\n"
-        "- Only use category names that appear in the GEAR GAPS block — never invent "
-        "one, and never reuse one that's no longer listed (it's already resolved).\n"
-        "- Emit one GEAR ADD line per gap the user confirms; if they confirm two gaps "
-        "in the same message, use two separate GEAR ADD lines.\n"
-        "- Do not emit GEAR ADD speculatively, for gaps the user hasn't directly "
-        "confirmed this turn, or while still discussing options for a gap.\n"
-        "- The token is stripped before the user sees it — describe the addition "
-        "naturally in your prose (e.g. 'I've added a water filter to your kit').\n"
-        "- GEAR ADD is only used in the gear_review phase.\n"
-        "\n"
-        "Examples:\n"
-        "  User: 'Soft flasks sound good, let's go with that.'\n"
-        "  You (gear_review): 'Good call — soft flasks are light and pack down small. "
-        "I've added them to your kit. You've still got navigation, illumination, and "
-        "first aid to think about — want to tackle those too, or proceed as-is?\n"
-        "                       GEAR ADD: hydration'\n"
-        "\n"
-        "  User: 'I'll grab a headlamp and a first aid kit too, then I'm good to go.'\n"
-        "  You (gear_review): 'Done — I've added a headlamp and a first-aid kit to "
-        "your kit. Your gear looks solid for this trail now.\n"
-        "                       GEAR ADD: illumination\n"
-        "                       GEAR ADD: first_aid\n"
-        "                       ADVANCE_PHASE'\n"
-        "DATA NOTE rule:\n"
-        "- If the current HIKE OPTIONS block does NOT begin with a [DATA NOTE:] header,\n"
-        "  do NOT include any data coverage disclaimers in your response — not even\n"
-        "  if a previous assistant turn mentioned one. Each search is fresh; past gaps\n"
-        "  do not carry forward.\n"
-        "\n"
-        "Untracked feature requests\n"
-        "- The Tags field on each hike in HIKE OPTIONS reflects every feature this\n"
-        "  system can currently search or filter on. If the user asks about something\n"
-        "  with no equivalent in that tag vocabulary at all — a specific landmark name,\n"
-        "  a wildlife sighting, cell service, trail surface, anything outside what Tags\n"
-        "  can express — say plainly that you don't have data tracked for that specific\n"
-        "  thing, rather than guessing from the trail name or staying silent on it.\n"
-        "- This is different from a [DATA NOTE:] header (a tracked feature with zero\n"
-        "  matches in this area) — this rule covers requests for things that aren't\n"
-        "  tracked at all, anywhere.\n"
-    )
+# ── Rules — modular + phase-scoped ────────────────────────────────────────────
+#
+# The rules block was previously one ~1,200-token monolith sent verbatim every
+# turn, regardless of phase. It's now split into a small always-on core plus
+# per-signal fragments, and _rules(phase) assembles only the fragments that
+# phase can actually act on. Each fragment carries a single worked example
+# instead of the 3-4 it used to — the pattern is learned from one; the extras
+# were pure token cost.
+#
+# Fragment → phase mapping (see _RULES_BY_PHASE):
+#   destination : SEARCH_REFINE, DESTINATION RESET, trail-data honesty
+#   gear_review : GEAR ADD, ADVANCE_PHASE, SEARCH_REFINE, DESTINATION RESET
+#   itinerary   : itinerary format, ADVANCE_PHASE, SEARCH_REFINE, DESTINATION RESET
+#   finalize    : save confirmation, DESTINATION RESET
+#
+# DESTINATION RESET rides along in every phase (a global escape hatch — the user
+# can bail to a new location at any point). Everything else is scoped to where
+# it's reachable, so e.g. the finalize prompt no longer ships the GEAR ADD or
+# itinerary-format instructions it can never use.
+
+_RULES_GENERAL = (
+    "General\n"
+    "- Stay focused on the current phase goal. Do not jump ahead.\n"
+    "- Keep responses under 220 words unless building or revising an itinerary.\n"
+    "- Never fabricate gear specs, trail distances, or elevation figures — write "
+    "'approx.' before any estimate.\n"
+    "- Do not repeat the full gear list back to the user unprompted.\n"
+    "- Be direct. Avoid filler like 'Great question!' or 'Certainly!'."
+)
+
+_RULES_DESTINATION_RESET = (
+    "DESTINATION RESET:\n"
+    "- If the user wants a DIFFERENT geographic destination, begin your response with "
+    "the exact words 'DESTINATION RESET' before anything else.\n"
+    "- Triggers: naming a new place ('let's do Zion'), regret ('I don't love these, "
+    "somewhere else?'), or 'instead' about a location.\n"
+    "- Do NOT trigger on picking from the numbered options ('go with option 2 instead') "
+    "— that's a trail selection, not a destination change.\n"
+    "Example:\n"
+    "  User: 'Actually, let's try Zion instead.'\n"
+    "  You:  'DESTINATION RESET — great choice. What kind of hike are you after in Zion?'"
+)
+
+_RULES_SEARCH_REFINE = (
+    "SEARCH_REFINE:\n"
+    "- Use when the user wants different hike options WITHIN the same destination "
+    "(different difficulty, a water feature, shorter/longer route).\n"
+    "- Emit 'SEARCH_REFINE' as the very first word, then acknowledge the new criteria "
+    "in one sentence. Do NOT ask where they want to hike — the destination is set.\n"
+    "- Distinction: a NEW geographic place → DESTINATION RESET; different TRAIL CRITERIA "
+    "at the same place → SEARCH_REFINE.\n"
+    "Example:\n"
+    "  User: 'These are too long — can I see shorter options?'\n"
+    "  You:  'SEARCH_REFINE — sure, looking for shorter trails in the same area.'"
+)
+
+_RULES_ADVANCE_PHASE = (
+    "ADVANCE_PHASE:\n"
+    "- When the user clearly signals they are done with THIS phase, append the single "
+    "token ADVANCE_PHASE on its own line at the very end of your response.\n"
+    "- gear_review: user is happy with their kit / says 'proceed', 'looks good', 'skip'.\n"
+    "- itinerary: user approves AFTER the itinerary has already been presented — never "
+    "in the same response that first presents it; they must send a separate approval "
+    "message.\n"
+    "- Never emit it speculatively or mid-sentence. The token is stripped before the "
+    "user sees it.\n"
+    "Example:\n"
+    "  User: 'proceed as is'\n"
+    "  You (gear_review): 'Got it — your kit is set. On to the itinerary.\n"
+    "                      ADVANCE_PHASE'"
+)
+
+_RULES_GEAR_ADD = (
+    "GEAR ADD:\n"
+    "- When the user confirms a specific item for one of the GEAR GAPS categories, "
+    "append 'GEAR ADD: <category>' on its own line at the end, using the exact bracketed "
+    "category from the GEAR GAPS block (e.g. '[hydration]' → GEAR ADD: hydration).\n"
+    "- One line per confirmed gap. Never invent a category, reuse a resolved one, or emit "
+    "speculatively. The token is stripped — describe the addition naturally in prose.\n"
+    "Example:\n"
+    "  User: 'Soft flasks sound good.'\n"
+    "  You: 'Good call — I've added them to your kit. Still got navigation and first aid "
+    "to consider — tackle those, or proceed as-is?\n"
+    "        GEAR ADD: hydration'"
+)
+
+_RULES_ITINERARY_FORMAT = (
+    "Itinerary format\n"
+    "- Each day MUST start on its own line with 'Day N:' followed by a short title.\n"
+    "- Use miles and feet throughout — never km or meters.\n"
+    "- When the user approves the itinerary, say EXACTLY: 'Itinerary confirmed — ready "
+    "to save.' Do not paraphrase that line."
+)
+
+_RULES_SAVE_CONFIRMATION = (
+    "Save confirmation\n"
+    "- When the user confirms they want to save, begin your response with exactly "
+    "'SAVE CONFIRMED' (two words, no punctuation before them).\n"
+    "- Only valid after the trip summary has been shown and the user has replied to "
+    "'Shall I save this trip?'. If your current goal is to PRESENT the summary, you are "
+    "in sub-state 1 — do NOT emit 'SAVE CONFIRMED' regardless of what the user said."
+)
+
+_RULES_TRAIL_DATA_HONESTY = (
+    "Trail data honesty:\n"
+    "- Never add, remove, or modify tags in a hike's Tags field — copy them verbatim from "
+    "HIKE OPTIONS. If a requested feature is missing from the tags, say so in prose rather "
+    "than inventing a tag.\n"
+    "- If the HIKE OPTIONS block does NOT begin with a [DATA NOTE:] header, do not include "
+    "any data-coverage disclaimers — each search is fresh; past gaps do not carry forward.\n"
+    "- If the user asks about something outside the Tags vocabulary entirely (a landmark "
+    "name, wildlife, cell service, trail surface), say plainly you don't have data tracked "
+    "for that, rather than guessing from the trail name."
+)
+
+_RULES_BY_PHASE: dict[str, list[str]] = {
+    "destination": [_RULES_SEARCH_REFINE, _RULES_DESTINATION_RESET, _RULES_TRAIL_DATA_HONESTY],
+    "gear_review": [_RULES_GEAR_ADD, _RULES_ADVANCE_PHASE, _RULES_SEARCH_REFINE, _RULES_DESTINATION_RESET],
+    "itinerary":   [_RULES_ITINERARY_FORMAT, _RULES_ADVANCE_PHASE, _RULES_SEARCH_REFINE, _RULES_DESTINATION_RESET],
+    "finalize":    [_RULES_SAVE_CONFIRMATION, _RULES_DESTINATION_RESET],
+}
+
+
+def _rules(phase: str) -> str:
+    """Assemble the always-on core + only the signal fragments the given phase
+    can act on. See _RULES_BY_PHASE for the mapping and the module comment above
+    for why it's split this way."""
+    sections = [_RULES_GENERAL, *_RULES_BY_PHASE.get(phase, [])]
+    return "RULES:\n\n" + "\n\n".join(sections)

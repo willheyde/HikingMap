@@ -2,391 +2,336 @@ import { useEffect, useMemo, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 
 import { useHikes } from "../context/HikeContext";
-import { useUser } from "../context/UserContext"; 
-import * as itemsService from "../api/itemsService";
-
+import { useUser } from "../context/UserContext";
 import ScrollBar from "../components/ScrollBar";
-import CostBreakdownPanel from "../components/CostBreakdownPanel"; 
+import { readinessForHike } from "../data/gearCategories";
 
-/* -----------------------------
-   Helper Functions
-------------------------------*/
-const kmToMiles = (km) => (km * 0.621371).toFixed(1);
-const metersToFeet = (m) => Math.round(m * 3.28084);
+/* ─── Design tokens (shared with Profile / GearManager) ──────────────────── */
+const C = {
+  page:        "#0d0a07",
+  card:        "#1c1510",
+  cardBorder:  "#4a3520",
+  fieldBg:     "#241a10",
+  fieldBorder: "#5a3e22",
+  heading:     "#f0e6d0",
+  subtext:     "#a08060",
+  muted:       "#6a4e30",
+  label:       "#b8906a",
+  amber:       "#c17a2e",
+  amberHover:  "#d98c38",
+  amberDim:    "rgba(193,122,46,0.12)",
+  amberBorder: "rgba(193,122,46,0.35)",
+  amberText:   "#fff8ee",
+  divider:     "#3a2510",
+  green:       "#60c878",
+  greenDim:    "rgba(96,200,120,0.10)",
+  red:         "#e0705a",
+  redDim:      "rgba(224,112,90,0.10)",
+};
+const serif = "Georgia, 'Times New Roman', serif";
+const sans  = "'Trebuchet MS', 'Lucida Sans Unicode', sans-serif";
+const body  = "'Palatino Linotype', Palatino, Georgia, serif";
 
-function StatCard({ label, value, icon }) {
+/* ─── Helpers ────────────────────────────────────────────────────────────── */
+const kmToMiles    = (km) => (km * 0.621371).toFixed(1);
+const metersToFeet = (m)  => Math.round(m * 3.28084);
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+const formatDifficulty = (d) => (d ? d.charAt(0) + d.slice(1).toLowerCase() : "Unknown");
+
+/* Status → color + glyph for a readiness row. */
+const STATUS = {
+  ok:      { color: C.green, bg: C.greenDim,  border: "rgba(96,200,120,0.35)", glyph: "✓" },
+  missing: { color: C.red,   bg: C.redDim,    border: "rgba(224,112,90,0.35)", glyph: "✗" },
+  flag:    { color: C.amber, bg: C.amberDim,  border: C.amberBorder,           glyph: "!" },
+};
+
+/* ─── Stat card ──────────────────────────────────────────────────────────── */
+const StatCard = ({ label, value, icon }) => (
+  <div style={{
+    background: C.card, border: `1px solid ${C.cardBorder}`,
+    borderRadius: 14, padding: "18px 16px",
+    display: "flex", flexDirection: "column", alignItems: "center", textAlign: "center", gap: 8,
+  }}>
+    <span style={{ color: C.amber, opacity: 0.8 }}>{icon}</span>
+    <span style={{ fontFamily: sans, fontSize: 10.5, color: C.muted,
+      textTransform: "uppercase", letterSpacing: "1.2px" }}>{label}</span>
+    <span style={{ fontFamily: serif, fontSize: 20, color: C.heading }}>{value}</span>
+  </div>
+);
+
+/* ─── Readiness row ──────────────────────────────────────────────────────── */
+const ReadinessRow = ({ row }) => {
+  const s = STATUS[row.status] || STATUS.flag;
   return (
-    <div className="bg-slate-800 border border-slate-700 rounded-xl p-4 flex flex-col items-center justify-center text-center shadow-sm hover:border-slate-600 transition-colors">
-      <div className="text-slate-400 mb-2">{icon}</div>
-      <div className="text-xs uppercase tracking-wider text-slate-500 font-semibold mb-1">{label}</div>
-      <div className="text-lg font-bold text-white">{value}</div>
+    <div style={{
+      display: "flex", alignItems: "flex-start", gap: 12,
+      padding: "12px 14px", borderRadius: 10,
+      background: s.bg, border: `1px solid ${s.border}`,
+    }}>
+      <span style={{
+        flexShrink: 0, width: 20, height: 20, borderRadius: "50%",
+        background: s.color, color: C.page, fontFamily: sans, fontSize: 12, fontWeight: 700,
+        display: "flex", alignItems: "center", justifyContent: "center", marginTop: 1,
+      }}>{s.glyph}</span>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
+          <span style={{ fontFamily: sans, fontSize: 13.5, fontWeight: 600, color: C.heading }}>
+            {row.icon} {row.label}
+          </span>
+          {row.required && (
+            <span style={{ fontFamily: sans, fontSize: 11, color: C.muted }}>
+              needs {row.required}
+            </span>
+          )}
+          {row.importance !== "required" && (
+            <span style={{ fontFamily: sans, fontSize: 10, color: C.muted,
+              textTransform: "uppercase", letterSpacing: "0.5px" }}>· recommended</span>
+          )}
+        </div>
+        {row.note && (
+          <p style={{ fontFamily: body, fontSize: 12.5, color: C.subtext, margin: "4px 0 0" }}>
+            {row.note}
+          </p>
+        )}
+      </div>
     </div>
   );
-}
+};
 
+/* ─── Main ───────────────────────────────────────────────────────────────── */
 export default function HikeDetailPage() {
   const { hikeId } = useParams();
   const navigate = useNavigate();
 
-  // Contexts
   const { selectedHike, loadHikeById, loading, error } = useHikes();
-  const { items } = useUser(); 
+  const { user, items } = useUser();
 
-  // State
-  const [gearDetails, setGearDetails] = useState([]); // Stores the fully resolved gear items
-  const [loadingGear, setLoadingGear] = useState(false);
-  const [calculatedCosts, setCalculatedCosts] = useState({ travel: 0, gear: 0, fees: 0 });
-
-  /* -----------------------------
-      1. Load Hike Data
-   ------------------------------*/
   useEffect(() => {
-    // Only load if we don't have it or if the ID doesn't match
     if (!selectedHike || String(selectedHike.id) !== String(hikeId)) {
       loadHikeById(hikeId);
     }
   }, [hikeId, selectedHike, loadHikeById]);
 
-  /* -----------------------------
-      2. Fetch Gear Details (Dynamic via ID)
-   ------------------------------*/
+  // Resolve the trailhead's lat/lng to a real place label (town, state) — the
+  // same reverse-geocode the trip planner uses — instead of the coarse DB
+  // region. Stored with its hike id so a stale label from the previous hike is
+  // ignored; the render falls back to region until (or unless) this resolves.
+  const [place, setPlace] = useState(null);   // { id, label }
+  const detailId = selectedHike?.id;
+  const geoLat = selectedHike?.lat;
+  const geoLng = selectedHike?.lng;
   useEffect(() => {
-    const fetchDynamicGear = async () => {
-      // Wait for hike to load and verify it has tags
-      if (!selectedHike || !selectedHike.required_gear_tags) return;
-      
-      setLoadingGear(true);
-      
+    if (geoLat == null || geoLng == null) return;
+    let cancelled = false;
+    (async () => {
       try {
-        // Iterate over the IDs provided by the DB
-        const promises = selectedHike.required_gear_tags.map(async (itemId) => {
-          try {
-            // 1. Fetch full details using ID
-            const itemDetails = await itemsService.getItemById(itemId);
-            
-            // 2. Determine ownership
-            // Check if user has an item with matching category, type, or specific name
-            // This allows generic matching (e.g., if Hike needs "Generic Boots", but you own "Pro Boots", it counts)
-            const isOwned = items?.some(
-              (userItem) => 
-                userItem.id === itemDetails.id || // Exact Match
-                (userItem.category && userItem.category === itemDetails.category) || // Category Match
-                (userItem.item_type && userItem.item_type === itemDetails.item_type) // Type Match
-            );
-
-            return {
-              id: itemDetails.id, 
-              name: itemDetails.name,
-              category: itemDetails.category,
-              reason: "Required for this route", 
-              fullDetails: itemDetails,
-              owned: isOwned,
-              est_cost: itemDetails.cost || 40 // Fallback cost
-            };
-          } catch (err) {
-            console.warn(`Could not find item detail for ID: ${itemId}`);
-            // Return a placeholder if lookup fails so the UI doesn't crash
-            return {
-              id: itemId,
-              name: "Unknown Item", // Since we only have UUID, we can't guess the name on fail
-              owned: false,
-              reason: "Required",
-              est_cost: 0,
-              fullDetails: null
-            };
-          }
-        });
-
-        const resolvedGear = await Promise.all(promises);
-        setGearDetails(resolvedGear);
-
-      } catch (err) {
-        console.error("Error processing gear tags:", err);
-      } finally {
-        setLoadingGear(false);
+        const res = await fetch(
+          `https://nominatim.openstreetmap.org/reverse?format=json&lat=${geoLat}&lon=${geoLng}&zoom=12&addressdetails=1`,
+          { headers: { "User-Agent": "HikePlannerApp/1.0" } }
+        );
+        const data = await res.json();
+        const a = data.address || {};
+        const p = a.town || a.city || a.village || a.hamlet || a.county || a.suburb;
+        const label = [p, a.state].filter(Boolean).join(", ");
+        if (!cancelled && label) setPlace({ id: detailId, label });
+      } catch {
+        /* leave place unset → render falls back to region */
       }
-    };
-    console.log("Specific hike", selectedHike);
+    })();
+    return () => { cancelled = true; };
+  }, [detailId, geoLat, geoLng]);
+  const placeLabel = place?.id != null && String(place.id) === String(detailId)
+    ? place.label
+    : null;
 
-    fetchDynamicGear();
-  }, [selectedHike, items]);
-
-  /* -----------------------------
-      3. Calculate Costs
-   ------------------------------*/
-  useEffect(() => {
-    if (!selectedHike) return;
-
-    // Travel Cost
-    const travelCost = selectedHike.distance_from_user_miles
-      ? Math.round(selectedHike.distance_from_user_miles * 0.6)
-      : 0;
-
-    // Gear Cost (Sum of unowned items)
-    const missingGearCost = gearDetails
-      .filter(g => !g.owned)
-      .reduce((acc, curr) => acc + (curr.est_cost || 0), 0);
-
-    setCalculatedCosts({
-      travel: travelCost,
-      gear: missingGearCost,
-      fees: selectedHike.park_fee ?? 0
-    });
-
-  }, [selectedHike, gearDetails]);
-
-
-  /* -----------------------------
-      Render Helpers
-   ------------------------------*/
-  const formatDifficulty = (diff) => {
-    if (!diff) return "Unknown";
-    return diff.charAt(0) + diff.slice(1).toLowerCase();
-  };
+  const readiness = useMemo(
+    () => readinessForHike(selectedHike?.gear_requirements, items),
+    [selectedHike, items]
+  );
+  const unmetCount = readiness.filter(r => r.status !== "ok").length;
+  const essentialsMissing = readiness.filter(r => r.status === "missing").length;
 
   const formatSeason = () => {
     if (!selectedHike?.season_start_month || !selectedHike?.season_end_month) return "Year-round";
-    const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-    return `${months[selectedHike.season_start_month - 1]} - ${months[selectedHike.season_end_month - 1]}`;
+    return `${MONTHS[selectedHike.season_start_month - 1]} – ${MONTHS[selectedHike.season_end_month - 1]}`;
   };
 
-  /* -----------------------------
-      Loading / Error States
-   ------------------------------*/
+  const startTrip = () => {
+    // Pre-fill the planner's composer with wording that lands on the name-lookup
+    // path (exact trail name → confident match) — the user reviews it and hits
+    // send, rather than it firing automatically.
+    navigate("/trip-planner", {
+      state: { draftMessage: `I want to plan a trip to ${selectedHike.name}.` },
+    });
+  };
+
+  /* ── Loading / error ─────────────────────────────────────────────────── */
   if (loading || (!selectedHike && !error)) {
     return (
-      <ScrollBar className="bg-slate-900 flex items-center justify-center">
-         <div className="text-slate-500 animate-pulse">Loading hike details...</div>
-      </ScrollBar>
+      <div style={{ height: "100%", background: C.page, display: "flex",
+        alignItems: "center", justifyContent: "center" }}>
+        <p style={{ fontFamily: body, color: C.muted, fontStyle: "italic" }}>Loading hike details…</p>
+      </div>
     );
   }
-
   if (error) {
     return (
-      <ScrollBar className="bg-slate-900">
-        <div className="max-w-5xl mx-auto p-6">
-          <button onClick={() => navigate("/map")} className="text-slate-400 hover:text-white mb-4 transition-colors">
-            &larr; Back to Map
-          </button>
-          <div className="p-8 text-center text-red-400 border border-red-900/50 rounded-lg bg-red-900/20">
-            {error}
-          </div>
+      <ScrollBar style={{ background: C.page }}>
+        <div style={{ maxWidth: 900, margin: "0 auto", padding: "40px 20px" }}>
+          <BackButton navigate={navigate} />
+          <div style={{ marginTop: 20, padding: 24, borderRadius: 12, textAlign: "center",
+            background: C.redDim, border: "1px solid rgba(224,112,90,0.4)",
+            fontFamily: body, color: C.red }}>{error}</div>
         </div>
       </ScrollBar>
     );
   }
-
   if (!selectedHike) return null;
 
-  /* -----------------------------
-      MAIN RENDER
-   ------------------------------*/
+  /* ── Render ──────────────────────────────────────────────────────────── */
   return (
-    <ScrollBar className="bg-slate-900 text-white">
-      <div className="max-w-6xl mx-auto p-6 md:p-8 pb-24">
+    <div style={{ minHeight: "100%", background: C.page }}>
+      <ScrollBar style={{ background: C.page }}>
+        <div style={{ maxWidth: 900, margin: "0 auto", padding: "36px 20px 100px" }}>
 
-        {/* Navigation */}
-        <button 
-          onClick={() => navigate("/map")} 
-          className="flex items-center gap-2 text-slate-400 hover:text-white transition-colors mb-6 group"
-        >
-          <svg className="w-5 h-5 group-hover:-translate-x-1 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"/>
-          </svg>
-          Back to Map
-        </button>
+          <BackButton navigate={navigate} />
 
-        {/* Hike Image - Full Width */}
-        {selectedHike.image_url && (
-          <div className="w-full h-64 md:h-96 rounded-2xl overflow-hidden mb-8 shadow-2xl">
-            <img 
-              src={selectedHike.image_url} 
-              alt={selectedHike.name}
-              className="w-full h-full object-cover"
-            />
+          {/* Header */}
+          <div style={{ marginTop: 20, marginBottom: 24 }}>
+            <h1 style={{ fontFamily: serif, fontSize: 34, fontWeight: "normal",
+              color: C.heading, margin: "0 0 8px" }}>{selectedHike.name}</h1>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <svg width="16" height="16" fill="none" stroke={C.subtext} viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2"
+                  d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/>
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"/>
+              </svg>
+              <span style={{ fontFamily: body, fontSize: 15, color: C.subtext }}>
+                {placeLabel
+                  || `${selectedHike.region}${selectedHike.state ? `, ${selectedHike.state}` : ""}`}
+              </span>
+            </div>
           </div>
-        )}
 
-        {/* Hero Section */}
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 mb-10">
-          
-          {/* Left: Info */}
-          <div className="lg:col-span-2 space-y-6">
-            <div>
-              <h1 className="text-4xl font-bold text-white mb-2">{selectedHike.name}</h1>
-              <div className="flex items-center gap-2 text-slate-400">
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/>
-                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"/>
-                </svg>
-                <span className="text-lg">{selectedHike.region}</span>
+          {/* Stats */}
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))",
+            gap: 12, marginBottom: 22 }}>
+            <StatCard label="Length" value={`${kmToMiles(selectedHike.length_km)} mi`}
+              icon={<Icon d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />} />
+            <StatCard label="Elevation" value={`${metersToFeet(selectedHike.elevation_gain_m)} ft`}
+              icon={<Icon d="M13 10V3L4 14h7v7l9-11h-7z" />} />
+            <StatCard label="Difficulty" value={formatDifficulty(selectedHike.difficulty)}
+              icon={<Icon d="M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z" />} />
+            <StatCard label="Season" value={formatSeason()}
+              icon={<Icon d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />} />
+          </div>
+
+          {/* Permits */}
+          {selectedHike.permits_required && (
+            <div style={{ display: "flex", gap: 12, alignItems: "flex-start",
+              padding: "14px 16px", borderRadius: 12, marginBottom: 22,
+              background: C.amberDim, border: `1px solid ${C.amberBorder}` }}>
+              <span style={{ fontSize: 20 }}>⚠️</span>
+              <div>
+                <div style={{ fontFamily: sans, fontSize: 13, fontWeight: 700, color: C.amber }}>
+                  Permits required
+                </div>
+                <p style={{ fontFamily: body, fontSize: 12.5, color: C.subtext, margin: "3px 0 0" }}>
+                  Check local regulations and obtain the necessary passes before heading out.
+                </p>
               </div>
             </div>
+          )}
 
-            {/* Stats Grid */}
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-              <StatCard 
-                label="Length" 
-                value={`${kmToMiles(selectedHike.length_km)} mi`} 
-                icon={<svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"/></svg>}
-              />
-              <StatCard 
-                label="Elevation" 
-                value={`${metersToFeet(selectedHike.elevation_gain_m)} ft`} 
-                icon={<svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>}
-              />
-              <StatCard 
-                label="Difficulty" 
-                value={formatDifficulty(selectedHike.difficulty)} 
-                icon={<svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19.428 15.428a2 2 0 00-1.022-.547l-2.384-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z"/></svg>}
-              />
-              <StatCard 
-                label="Season" 
-                value={formatSeason()} 
-                icon={<svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>}
-              />
+          {/* Create this trip */}
+          <button onClick={startTrip}
+            style={{ width: "100%", padding: "15px 0", borderRadius: 12, marginBottom: 30,
+              background: C.amber, border: "1px solid rgba(255,220,150,0.15)", color: C.amberText,
+              fontFamily: sans, fontSize: 15, fontWeight: 700, cursor: "pointer",
+              letterSpacing: "0.3px", boxShadow: "0 6px 22px rgba(193,122,46,0.35)",
+              display: "flex", alignItems: "center", justifyContent: "center", gap: 10 }}
+            onMouseEnter={e => e.currentTarget.style.background = C.amberHover}
+            onMouseLeave={e => e.currentTarget.style.background = C.amber}>
+            <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2"
+                d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7"/>
+            </svg>
+            Plan a trip to {selectedHike.name}
+          </button>
+
+          {/* Divider */}
+          <div style={{ height: 1, margin: "0 0 26px",
+            background: `linear-gradient(to right, transparent, ${C.divider} 30%, ${C.cardBorder} 50%, ${C.divider} 70%, transparent)` }} />
+
+          {/* Trail readiness */}
+          <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between",
+            gap: 12, marginBottom: 18, flexWrap: "wrap" }}>
+            <div>
+              <h2 style={{ fontFamily: serif, fontSize: 22, fontWeight: "normal",
+                color: C.heading, margin: "0 0 4px" }}>Trail readiness</h2>
+              <p style={{ fontFamily: body, fontSize: 13, color: C.subtext, margin: 0, fontStyle: "italic" }}>
+                {user
+                  ? "What this trail asks for, checked against your gear locker."
+                  : "What this trail asks for — log in to check it against your gear."}
+              </p>
             </div>
-
-            {selectedHike.permits_required && (
-              <div className="bg-yellow-900/20 border border-yellow-700/50 rounded-lg p-4 flex gap-4 items-start">
-                <span className="text-2xl">⚠️</span>
-                <div>
-                  <h3 className="text-yellow-500 font-bold">Permits Required</h3>
-                  <p className="text-yellow-600/80 text-sm mt-1">Check local regulations and obtain necessary passes before heading out.</p>
-                </div>
+            {readiness.length > 0 && (
+              <div style={{
+                padding: "7px 14px", borderRadius: 999, fontFamily: sans, fontSize: 12, fontWeight: 600,
+                display: "flex", alignItems: "center", gap: 8, whiteSpace: "nowrap",
+                background: unmetCount === 0 ? C.greenDim : C.amberDim,
+                border: `1px solid ${unmetCount === 0 ? "rgba(96,200,120,0.4)" : C.amberBorder}`,
+                color: unmetCount === 0 ? C.green : C.amber,
+              }}>
+                <span style={{ width: 8, height: 8, borderRadius: "50%",
+                  background: unmetCount === 0 ? C.green : C.amber }} />
+                {unmetCount === 0
+                  ? "You're set"
+                  : essentialsMissing > 0
+                    ? `${essentialsMissing} essential${essentialsMissing !== 1 ? "s" : ""} to sort`
+                    : `${unmetCount} thing${unmetCount !== 1 ? "s" : ""} to check`}
               </div>
             )}
           </div>
 
-          {/* Right: Cost / Quick Summary */}
-          <div className="bg-slate-800 rounded-2xl p-6 border border-slate-700 h-fit">
-              <h2 className="text-xl font-bold mb-4 flex items-center gap-2">
-                <svg className="w-5 h-5 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
-                Est. Trip Cost
-              </h2>
-              <CostBreakdownPanel costs={calculatedCosts} theme="dark" />
-          </div>
-        </div>
-
-        <div className="border-t border-slate-700 my-10"></div>
-
-        {/* Gear Showcase Section */}
-        <div className="space-y-6">
-          <div className="flex items-end justify-between">
-            <div>
-              <h2 className="text-2xl font-bold text-white mb-2">Required Gear</h2>
-              <p className="text-slate-400">Items tagged specifically for this hike.</p>
-            </div>
-            
-            <div className={`px-4 py-2 rounded-full border text-sm font-semibold flex items-center gap-2 ${
-                gearDetails.length > 0 && gearDetails.every(g => g.owned) 
-                ? "bg-green-900/30 border-green-500/50 text-green-400" 
-                : "bg-yellow-900/30 border-yellow-500/50 text-yellow-500"
-            }`}>
-                {gearDetails.length > 0 && gearDetails.every(g => g.owned) ? (
-                    <>
-                        <span className="w-2 h-2 rounded-full bg-green-500"></span>
-                        Fully Equipped
-                    </>
-                ) : (
-                    <>
-                        <span className="w-2 h-2 rounded-full bg-yellow-500"></span>
-                        Missing Items
-                    </>
-                )}
-            </div>
-          </div>
-
-          {loadingGear ? (
-            <div className="text-center text-slate-500 py-8">
-              <div className="animate-pulse">Loading gear details from database...</div>
-            </div>
+          {readiness.length === 0 ? (
+            <p style={{ fontFamily: body, fontSize: 14, color: C.muted, fontStyle: "italic",
+              textAlign: "center", padding: "24px 0" }}>
+              No gear requirements recorded for this trail.
+            </p>
           ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-              {gearDetails.map((gear, index) => (
-                <div 
-                  key={`${gear.id}-${index}`}
-                  className={`relative rounded-xl border transition-all duration-300 overflow-hidden ${
-                    gear.owned 
-                      ? "bg-green-900/10 border-green-500/50 shadow-[0_0_15px_rgba(34,197,94,0.1)]" 
-                      : "bg-slate-800 border-slate-700 opacity-80"
-                  }`}
-                >
-                  {/* Item Image */}
-                  {gear.fullDetails?.image_url ? (
-                    <div className="w-full h-32 bg-slate-700 overflow-hidden">
-                      <img 
-                        src={gear.fullDetails.image_url} 
-                        alt={gear.name}
-                        className="w-full h-full object-cover"
-                      />
-                    </div>
-                  ) : (
-                    <div className="w-full h-32 bg-slate-700 flex items-center justify-center">
-                      <svg className="w-12 h-12 text-slate-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/>
-                      </svg>
-                    </div>
-                  )}
-
-                  <div className="p-5">
-                    <div className="flex justify-between items-start mb-2">
-                        <span className={`text-xs font-bold uppercase tracking-wider ${
-                            gear.owned ? "text-green-500" : "text-slate-500"
-                        }`}>
-                            {gear.owned ? "Owned" : "Needed"}
-                        </span>
-                        {gear.owned && (
-                            <svg className="w-5 h-5 text-green-500" fill="currentColor" viewBox="0 0 20 20">
-                                <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
-                            </svg>
-                        )}
-                    </div>
-
-                    <h3 className={`font-bold text-lg mb-1 ${
-                        gear.owned ? "text-green-100" : "text-slate-300"
-                    }`}>
-                        {gear.name}
-                    </h3>
-                    
-                    <p className={`text-sm mb-2 ${
-                        gear.owned ? "text-green-400/70" : "text-slate-500"
-                    }`}>
-                        {gear.reason}
-                    </p>
-
-                    {/* Show additional details if available */}
-                    {gear.fullDetails && (
-                      <div className={`text-xs space-y-1 ${
-                        gear.owned ? "text-green-400/60" : "text-slate-500"
-                      }`}>
-                        {gear.fullDetails.cost && (
-                          <div className="flex items-center gap-1">
-                            <span>Cost: ${gear.fullDetails.cost}</span>
-                          </div>
-                        )}
-                        {gear.fullDetails.weight && (
-                          <div className="flex items-center gap-1">
-                            <span>Weight: {gear.fullDetails.weight}oz</span>
-                          </div>
-                        )}
-                      </div>
-                    )}
-
-                    {!gear.owned && (
-                        <div className="mt-4 pt-3 border-t border-slate-700/50 flex items-center gap-2 text-xs text-slate-400">
-                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.293 2.293c-.63.63-.184 1.707.707 1.707H17m0 0a2 2 0 100 4 2 2 0 000-4zm-8 2a2 2 0 11-4 0 2 2 0 014 0z"/></svg>
-                            Available in Shop
-                        </div>
-                    )}
-                  </div>
-                </div>
-              ))}
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {readiness.map(row => <ReadinessRow key={row.category} row={row} />)}
             </div>
           )}
-        </div>
 
-      </div>
-    </ScrollBar>
+          <p style={{ textAlign: "center", fontFamily: sans, fontSize: 11,
+            color: C.muted, marginTop: 40, letterSpacing: "0.5px" }}>
+            Leave no trace · Stay on the trail
+          </p>
+        </div>
+      </ScrollBar>
+    </div>
   );
 }
+
+/* ─── Small shared bits ──────────────────────────────────────────────────── */
+const Icon = ({ d }) => (
+  <svg width="22" height="22" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d={d} />
+  </svg>
+);
+
+const BackButton = ({ navigate }) => (
+  <button onClick={() => navigate("/map")}
+    style={{ display: "flex", alignItems: "center", gap: 8, background: "none", border: "none",
+      padding: 0, cursor: "pointer", fontFamily: sans, fontSize: 13, color: C.label }}
+    onMouseEnter={e => e.currentTarget.style.color = C.amber}
+    onMouseLeave={e => e.currentTarget.style.color = C.label}>
+    <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"/>
+    </svg>
+    Back to Map
+  </button>
+);

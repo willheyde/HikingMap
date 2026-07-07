@@ -61,7 +61,8 @@ class UserRepository(BaseRepository[User]):
                     SELECT 
                         u.id, u.email, u.hashed_password, u.name, u.avatar_url, 
                         u.home_location, u.timezone, u.created_at,
-                        i.id as item_id, i.name as item_name, i.weight, i.cost, i.item_type, i.image_url
+                        i.id as item_id, i.name as item_name, i.weight, i.cost, i.item_type, i.image_url,
+                        i.attributes as item_attributes
                     FROM users u
                     LEFT JOIN user_items ui ON u.id = ui.user_id
                     LEFT JOIN items i ON ui.item_id = i.id
@@ -97,7 +98,8 @@ class UserRepository(BaseRepository[User]):
                             "weight": row['weight'],
                             "cost": row['cost'],
                             "item_type": row['item_type'],
-                            "image_url": row['image_url']
+                            "image_url": row['image_url'],
+                            "attributes": row.get('item_attributes') or {},
                         })
                 #for item in items_list:
                     #print(f"Item data: {item}")  # Debug: see what data is being passed

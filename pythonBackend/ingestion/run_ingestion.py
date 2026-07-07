@@ -46,6 +46,17 @@ for el in relations:
             region     = hike.region,
         )
 
+        # Catalog-independent required LEVELS, persisted on the hike itself so
+        # GearGapAnalyzer can check adequacy. Same call the backfill script uses.
+        hike.gear_requirements = GearInferenceEngine.infer_gear_levels(
+            length_km  = hike.length_km,
+            gain_m     = hike.elevation_gain_m,
+            max_alt_m  = hike.max_altitude_m or 0.0,
+            difficulty = hike.difficulty,
+            tags       = hike.tags,
+            can_camp   = hike.can_camp,
+        )
+
         hikes_with_gear.append((hike, gear_reqs))
 
     except Exception as e:

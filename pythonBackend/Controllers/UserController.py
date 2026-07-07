@@ -5,11 +5,14 @@ from typing import List, Optional, Dict, Any
 from pydantic import BaseModel, EmailStr
 
 from Services.UserService import UserService
+from Services.ItemService import ItemService
 from Repos.UserRepo import UserRepository
+from Repos.ItemRepo import ItemRepository
 from PyObjects.User import User
 from PyObjects.Items import Item
 from Auth.authentication import hash_password, verify_password, create_access_token, get_current_user_id
 from Schemas.UserSchemas import TokenResponse
+from gear_levels import GEAR_CATEGORIES, is_valid_level, valid_levels
 
 # ---------------------------------------------------------
 # Pydantic Schemas
@@ -46,6 +49,16 @@ class ItemAdd(BaseModel):
 class ItemsBatchAdd(BaseModel):
     item_ids: List[str]  # list of UUIDs
 
+# Free-text "I have this" gear: a functional category (+ optional capability
+# level) rather than a catalog item_id. See gear_levels.py for the vocabulary.
+class GearAdd(BaseModel):
+    name:          str
+    gear_category: str
+    level:         Optional[str]   = None
+    weight:        float           = 0.0   # grams
+    cost:          float           = 0.0   # USD
+    temp_rating_f: Optional[float] = None  # sleep bags only
+
 # ---------------------------------------------------------
 # Router
 # ---------------------------------------------------------
@@ -54,6 +67,7 @@ router = APIRouter(tags=["Users"])
 
 user_repo = UserRepository()
 user_service = UserService(user_repo)
+item_service = ItemService(ItemRepository())
 
 # ---------------------------------------------------------
 # Auth
@@ -176,6 +190,47 @@ def add_user_items_batch(
         return [i.to_dict() for i in updated_items]
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+# Free-text gear add: creates a user-owned item from a functional category
+# (+ optional capability level) instead of linking an existing catalog item_id.
+@router.post("/{user_id}/gear", response_model=dict)
+def add_user_gear(
+    user_id: UUID,
+    payload: GearAdd,
+    current_user_id: str = Depends(get_current_user_id),
+):
+    if str(user_id) != current_user_id:
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    category = payload.gear_category.strip().lower()
+    if category not in GEAR_CATEGORIES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid gear_category '{payload.gear_category}'. "
+                   f"Must be one of: {', '.join(sorted(GEAR_CATEGORIES))}.",
+        )
+    if not is_valid_level(category, payload.level):
+        allowed = valid_levels(category)
+        raise HTTPException(
+            status_code=400,
+            detail=(f"Invalid level '{payload.level}' for {category}. "
+                    + (f"Must be one of: {', '.join(allowed)}." if allowed
+                       else f"{category} does not take a level.")),
+        )
+
+    try:
+        item = item_service.create_user_gear(
+            user_id       = user_id,
+            name          = payload.name.strip() or category.replace("_", " ").title(),
+            gear_category = category,
+            level         = payload.level,
+            weight        = payload.weight,
+            cost          = payload.cost,
+            temp_rating_f = payload.temp_rating_f,
+        )
+        return item.to_dict()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 # FIX 5: Path param renamed item_index: int → item_id: UUID, matching the service
 # signature (delete_item expects a string UUID, not a list index).

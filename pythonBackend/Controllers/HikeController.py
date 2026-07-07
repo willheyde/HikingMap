@@ -55,6 +55,7 @@ class HikeResponseSchema(BaseModel):
     season_start_month: int
     season_end_month: int
     required_gear_tags: List[str]
+    gear_requirements: Dict[str, Any] = Field(default_factory=dict)
     permits_required: bool
     nearest_airport_code: Optional[str] = None
     parking_coordinates: Optional[Dict[str, float]] = None
@@ -93,6 +94,7 @@ def _to_response(h: Hike, **extra) -> HikeResponseSchema:
         season_start_month=h.season_start_month,
         season_end_month=h.season_end_month,
         required_gear_tags=h.required_gear_tags,
+        gear_requirements=h.gear_requirements or {},
         permits_required=h.permits_required,
         nearest_airport_code=h.nearest_airport_code,
         parking_coordinates=h.parking_coordinates,

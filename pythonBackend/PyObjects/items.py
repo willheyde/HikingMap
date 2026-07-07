@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from uuid import UUID
 from enum import Enum
 from typing import Optional
@@ -55,6 +55,11 @@ class Item:
     cost: float         # USD
     item_type: str
     image_url: Optional[str] = None
+    # Raw items.attributes jsonb, preserved verbatim on load. The typed
+    # subclasses lift specific keys into fields, but that's lossy (e.g. Footwear
+    # drops footwear_type); this keeps the full dict so gear-adequacy code can
+    # read gear_category / level / footwear_type / season_rating / nav_type.
+    attributes: dict = field(default_factory=dict)
 
     def __post_init__(self):
         if self.weight < 0:
@@ -71,6 +76,7 @@ class Item:
             cost=float(data["cost"]),
             item_type=data.get("item_type", ItemType.MISC.value),
             image_url=data.get("image_url"),
+            attributes=data.get("attributes") or {},
         )
 
     def to_dict(self) -> dict:
@@ -81,6 +87,7 @@ class Item:
             "cost": float(self.cost),
             "item_type": self.item_type,
             "image_url": self.image_url,
+            "attributes": self.attributes or {},
         }
 
 

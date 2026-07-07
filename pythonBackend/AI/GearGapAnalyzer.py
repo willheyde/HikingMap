@@ -27,6 +27,7 @@ from typing import Set
 
 from PyObjects.Items import ItemType
 from .TripPlan import GearGap
+from gear_levels import meets, sleep_meets, level_index
 
 logger = logging.getLogger(__name__)
 
@@ -99,6 +100,122 @@ def _user_owns_category(user_gear: list[dict], category: str) -> bool:
     return any(bool(item.get("waterproof")) == needs_waterproof for item in matches)
 
 
+# ── Requirement-level metadata ────────────────────────────────────────────────
+#
+# Bridges the per-hike requirement categories emitted by
+# GearInferenceEngine.infer_gear_levels() to the CAT_* / item_type vocabulary
+# the rest of the gear pipeline (GEAR ADD, PromptBuilder) already speaks.
+
+# req category → the GearGap.category to emit. Must be a CAT_* value so the
+# GEAR ADD flow's CATEGORY_TO_ITEM_TYPE lookup still resolves. Traction has no
+# item_type of its own; it rides under footwear, matching the legacy analyzer.
+_REQ_TO_CAT: dict[str, str] = {
+    "footwear":     CAT_FOOTWEAR,
+    "traction":     CAT_FOOTWEAR,
+    "insulation":   CAT_INSULATION,
+    "shell":        CAT_RAIN_GEAR,
+    "navigation":   CAT_NAVIGATION,
+    "illumination": CAT_ILLUMINATION,
+    "first_aid":    CAT_FIRST_AID,
+    "hydration":    CAT_HYDRATION,
+    "shelter":      CAT_SHELTER,
+    "sleep":        CAT_SLEEP_SYSTEM,
+}
+
+_REQ_LABEL: dict[str, str] = {
+    "footwear": "footwear", "traction": "traction devices",
+    "insulation": "insulation layer", "shell": "rain shell",
+    "navigation": "navigation", "illumination": "headlamp",
+    "first_aid": "first-aid kit", "hydration": "water carry or treatment",
+    "shelter": "shelter", "sleep": "sleep system",
+}
+
+_REQ_SUGGESTION: dict[str, str] = {
+    "footwear":     "Boots suited to the terrain",
+    "traction":     "Kahtoola MICROspikes (crampons for glacier/ice)",
+    "insulation":   "Lightweight puffy or a fleece mid-layer",
+    "shell":        "Patagonia Torrentshell 3L or any packable hardshell",
+    "navigation":   "Gaia GPS (free tier) or a paper topo + compass",
+    "illumination": "Black Diamond Spot 400",
+    "first_aid":    "Adventure Medical Kits Ultralight .7",
+    "hydration":    "Sawyer Squeeze + two 1 L soft flasks",
+    "shelter":      "Big Agnes Copper Spur HV UL2 or a bivy for solo use",
+    "sleep":        "Bag rated ~10 °F below the overnight low",
+}
+
+# Human display for capability levels, used in gap detail text.
+_LEVEL_DISPLAY: dict[str, str] = {
+    "sandal": "sandals", "trail_runner": "trail runners",
+    "hiking_boot": "hiking boots", "mountaineering_boot": "mountaineering boots",
+    "microspikes": "microspikes", "crampons": "crampons",
+    "fleece": "a fleece layer", "puffy": "a puffy", "expedition": "an expedition-weight layer",
+    "water_resistant": "a water-resistant shell", "hardshell": "a hardshell",
+    "map": "a map & compass", "gps": "a GPS unit", "satellite": "a satellite communicator",
+    "3_season": "a 3-season shelter", "4_season": "a 4-season shelter",
+    "carry": "water capacity", "filter": "water filtration",
+}
+
+# Traction devices have no item_type; infer the user's level from item names.
+_TRACTION_KEYWORDS: tuple[tuple[str, str], ...] = (
+    ("crampon", "crampons"),
+    ("microspike", "microspikes"),
+    ("yaktrax", "microspikes"),
+    ("yak trax", "microspikes"),
+    ("traction", "microspikes"),
+)
+
+
+def _display_level(level) -> str:
+    return _LEVEL_DISPLAY.get(level, level or "the right gear")
+
+
+def _user_traction_level(user_gear: list[dict]):
+    """Best traction device the user owns, inferred from item names (there's no
+    dedicated item_type). Returns a level from the traction scale, or None."""
+    best, best_idx = None, -1
+    for item in user_gear:
+        name = item.get("name", "").lower()
+        for kw, lvl in _TRACTION_KEYWORDS:
+            if kw in name:
+                idx = level_index("traction", lvl)
+                if idx > best_idx:
+                    best, best_idx = lvl, idx
+    return best
+
+
+def _user_min_sleep_temp(user_gear: list[dict]):
+    """Warmest (lowest °F) temperature rating among the user's sleeping bags."""
+    sleep_type = CATEGORY_TO_ITEM_TYPE[CAT_SLEEP_SYSTEM]
+    temps = [
+        float(item["temp_rating_f"]) for item in user_gear
+        if (item.get("gear_category") == "sleep"
+            or item.get("category", "").lower().strip() == sleep_type)
+        and item.get("temp_rating_f") is not None
+    ]
+    return min(temps) if temps else None
+
+
+def _owns_req_category(user_gear: list[dict], req_category: str, gap_cat: str) -> bool:
+    """Presence check preferring the functional gear_category (A+ model), with a
+    fallback to the legacy item_type mapping so pre-existing catalog gear still
+    counts."""
+    if any(item.get("gear_category") == req_category for item in user_gear):
+        return True
+    return _user_owns_category(user_gear, gap_cat)
+
+
+def _best_user_level(user_gear: list[dict], req_category: str):
+    """Highest capability level the user owns in a level-bearing category, read
+    from each item's resolved `level` (set by trip_chat._load_user_gear)."""
+    best, best_idx = None, -1
+    for item in user_gear:
+        if item.get("gear_category") == req_category and item.get("level"):
+            idx = level_index(req_category, item["level"])
+            if idx > best_idx:
+                best, best_idx = item["level"], idx
+    return best
+
+
 class GearGapAnalyzer:
     """
     Stateless.  Instantiate once (module-level singleton in trip_chat.py)
@@ -114,14 +231,163 @@ class GearGapAnalyzer:
         Returns a list of GearGap objects for this hike / gear combination.
         An empty list means the user's kit looks solid for this trail.
 
-        user_gear items need at minimum:
-            category (str)           — item_type of the owned item
-            name     (str)
-        Optional fields consumed:
-            temp_rating_f (float)    — used for sleeping-bag adequacy check
-            waterproof    (bool)     — distinguishes rain gear from
-                                       insulating layers (both "clothing")
+        Prefers the hike's per-trail required LEVELS (hike.gear_requirements,
+        from GearInferenceEngine.infer_gear_levels) so gaps reflect what THIS
+        trail actually demands and can flag inadequate gear, not just absent
+        gear. Falls back to the legacy hardcoded checks for any hike that
+        predates the backfill (empty gear_requirements).
         """
+        reqs = getattr(hike, "gear_requirements", None) or {}
+        if reqs:
+            return self._analyze_from_requirements(user_gear, reqs)
+        return self._legacy_analyze(user_gear, hike)
+
+    # ── Requirement-driven analysis (preferred) ───────────────────────────────
+
+    def _analyze_from_requirements(self, user_gear: list[dict], reqs: dict) -> list[GearGap]:
+        """Walk the hike's required categories, emitting a gap for each one the
+        user is missing or under-equipped for. Required items are surfaced
+        before recommended ones."""
+        def _order(kv):
+            _cat, spec = kv
+            return (0 if spec.get("importance") == "required" else 1, _cat)
+
+        gaps: list[GearGap] = []
+        for category, spec in sorted(reqs.items(), key=_order):
+            gap = self._check_requirement(user_gear, category, spec)
+            if gap:
+                gaps.append(gap)
+        return gaps
+
+    def readiness_for_hike(self, user_gear: list[dict], hike) -> list[dict]:
+        """
+        Full per-trail readiness for the 'double-check before you go' checklist:
+        EVERY required category with a status, not just the gaps. Reuses the same
+        presence/adequacy logic as analyze_for_hike (via _check_requirement) so
+        the checklist and the AI's gap discussion can never disagree.
+
+        Row shape: {category, label, importance, required, status, note}
+          status "ok"      → green ✓ (satisfied)
+          status "missing" → red ✗   (required category the user lacks)
+          status "flag"    → amber ⚠ (recommended-but-absent, or under-spec)
+        """
+        reqs = getattr(hike, "gear_requirements", None) or {}
+
+        def _order(kv):
+            _cat, spec = kv
+            return (0 if spec.get("importance") == "required" else 1, _cat)
+
+        rows: list[dict] = []
+        for category, spec in sorted(reqs.items(), key=_order):
+            gap = self._check_requirement(user_gear, category, spec)
+
+            if "min_level" in spec:
+                required = _display_level(spec["min_level"])
+            elif "min_temp_f" in spec:
+                required = f"{int(spec['min_temp_f'])}°F bag"
+            else:
+                required = None
+
+            if gap is None:
+                status, note = "ok", None
+            elif gap.issue == "missing":
+                status, note = "missing", gap.detail
+            else:
+                status, note = "flag", gap.detail
+
+            rows.append({
+                "category":   category,
+                "label":      _REQ_LABEL.get(category, category),
+                "importance": spec.get("importance", "required"),
+                "required":   required,
+                "status":     status,
+                "note":       note,
+            })
+        return rows
+
+    def _check_requirement(self, user_gear: list[dict], req_category: str, spec: dict):
+        importance = spec.get("importance", "required")
+        required   = importance == "required"
+        gap_cat    = _REQ_TO_CAT.get(req_category, req_category)
+
+        # ── Presence ─────────────────────────────────────────────────────────
+        if req_category == "traction":
+            have_level = self._user_level_for_category(user_gear, "traction")
+            owns       = have_level is not None
+        else:
+            owns       = _owns_req_category(user_gear, req_category, gap_cat)
+            have_level = self._user_level_for_category(user_gear, req_category)
+
+        if not owns:
+            return GearGap(
+                category   = gap_cat,
+                issue      = "missing" if required else "marginal",
+                detail     = self._missing_detail(req_category, spec, required),
+                suggestion = _REQ_SUGGESTION.get(req_category),
+            )
+
+        # ── Adequacy — sleep is numeric (temperature), not an ordinal level ──
+        if req_category == "sleep":
+            need_temp = spec.get("min_temp_f")
+            have_temp = _user_min_sleep_temp(user_gear)
+            if have_temp is None:
+                return GearGap(
+                    category = gap_cat, issue = "marginal",
+                    detail   = ("Sleep system found but no temperature rating is stored — "
+                                "confirm it's warm enough for the overnight low."),
+                )
+            if not sleep_meets(have_temp, need_temp):
+                return GearGap(
+                    category   = gap_cat, issue = "marginal",
+                    detail     = (f"Your warmest bag is rated {int(have_temp)}°F, but this trip's "
+                                  f"overnight low calls for about {int(need_temp)}°F."),
+                    suggestion = _REQ_SUGGESTION.get("sleep"),
+                )
+            return None
+
+        # ── Adequacy — ordinal capability level ──────────────────────────────
+        # Live for traction now; the other level-bearing categories switch on
+        # automatically once the user gear model captures a level (stage 2), via
+        # _user_level_for_category().
+        need_level = spec.get("min_level")
+        if need_level and have_level is not None and not meets(req_category, have_level, need_level):
+            return GearGap(
+                category   = gap_cat, issue = "marginal",
+                detail     = (f"You have {_display_level(have_level)}, but this trail calls for "
+                              f"{_display_level(need_level)}."),
+                suggestion = _REQ_SUGGESTION.get(req_category),
+            )
+        return None
+
+    def _missing_detail(self, req_category: str, spec: dict, required: bool) -> str:
+        need_level = spec.get("min_level")
+        label      = _REQ_LABEL.get(req_category, req_category)
+        # A meaningful minimum level makes a more specific message than the bare
+        # category name ("calls for hiking boots" > "no footwear"). "map"/"carry"
+        # are the baseline tiers, so they don't add anything to name them.
+        if need_level and need_level not in ("map", "carry"):
+            return f"This trail calls for {_display_level(need_level)} — none on record."
+        return f"No {label} on record ({'required' if required else 'recommended'} for this trail)."
+
+    def _user_level_for_category(self, user_gear: list[dict], req_category: str):
+        """The user's capability level for a level-bearing category, or None if
+        it can't be determined. Prefers the resolved `level` on the gear (from
+        an explicit level or a derived legacy attribute); traction additionally
+        falls back to name inference, since traction devices have no item_type."""
+        level = _best_user_level(user_gear, req_category)
+        if level is not None:
+            return level
+        if req_category == "traction":
+            return _user_traction_level(user_gear)
+        return None
+
+    # ── Legacy hardcoded analysis (fallback for un-backfilled hikes) ──────────
+
+    def _legacy_analyze(
+        self,
+        user_gear: list[dict],
+        hike,               # PyObjects.Hike instance
+    ) -> list[GearGap]:
         # Name lookup for sub-category checks (traction devices, etc.)
         owned_names: Set[str] = {
             item.get("name", "").lower()

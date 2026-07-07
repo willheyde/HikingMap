@@ -32,6 +32,10 @@ class HikeService:
     def delete_hike(self, hike_id: UUID) -> None:
         self.repo.delete(hike_id)
 
+    def search_hikes_by_name(self, query: str, limit: int = 5) -> List[Hike]:
+        """Direct name lookup — see HikeRepository.search_by_name."""
+        return self.repo.search_by_name(query, limit=limit)
+
     def search_hikes(
         self,
         min_length_km=None,

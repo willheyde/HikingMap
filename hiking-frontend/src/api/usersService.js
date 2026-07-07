@@ -69,3 +69,11 @@ export const addUserItemsBatch = async (userId, itemIds) => {
 export const deleteUserItem = async (userId, itemId) => {
   await apiClient.delete(`/users/${userId}/items/${itemId}`);
 };
+
+// Free-text "I have this" gear: a functional category (+ optional level), not a
+// catalog item_id. Matches the GearAdd schema on POST /users/:id/gear.
+// gear = { name, gear_category, level?, weight?, cost?, temp_rating_f? }
+export const createUserGear = async (userId, gear) => {
+  const res = await apiClient.post(`/users/${userId}/gear`, gear);
+  return res.data; // the created item dict (includes id)
+};

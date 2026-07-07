@@ -232,6 +232,45 @@ export const UserProvider = ({ children }) => {
     }
   };
 
+  // Pull the authoritative item list from the server and sync it into context +
+  // localStorage. Used after gear is added outside the batch/catalog flow (the
+  // onboarding wizard and the gear manager both create gear via POST /gear) and
+  // on Profile mount, so newly-added generalized gear shows without a re-login.
+  const refreshItems = async (userId) => {
+    const id = userId || user?.id;
+    if (!id) return [];
+    try {
+      const fresh = await userService.getUserItems(id);
+      setItems(fresh);
+      if (user) updateLocalUser({ ...user, items: fresh });
+      return fresh;
+    } catch (err) {
+      setError(err.response?.data?.detail || err.message);
+      return [];
+    }
+  };
+
+  // Free-text "I have this" gear (functional category + optional level), created
+  // via POST /users/:id/gear. Appends the created item to context so the profile
+  // and manager update immediately.
+  const createGear = async (userId, gear) => {
+    setLoading(true);
+    try {
+      const created = await userService.createUserGear(userId, gear);
+      setItems(prev => {
+        const next = [...prev, created];
+        if (user) updateLocalUser({ ...user, items: next });
+        return next;
+      });
+      return created;
+    } catch (err) {
+      setError(err.response?.data?.detail || err.message);
+      throw err;
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const deleteItem = async (userId, itemId) => {
     setLoading(true);
     try {
@@ -265,6 +304,8 @@ export const UserProvider = ({ children }) => {
     addItem,
     deleteItem,
     addItemsBatch,
+    refreshItems,
+    createGear,
   };
 
   return (

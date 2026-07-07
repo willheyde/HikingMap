@@ -5,6 +5,23 @@ const TripContext = createContext(null);
 
 export const useTrip = () => useContext(TripContext);
 
+// Attaches the current hike option set to the last assistant message so the
+// cards render anchored in place on resume/duplicate (the per-message shape
+// sendMessage uses). The backend only returns the *current* option set, so on
+// rehydration we can only anchor it to the most recent assistant turn — good
+// enough, since that's the only turn whose options are still actionable.
+const anchorOptionsToLastAssistant = (messages, hikeOptions) => {
+  if (!hikeOptions?.length) return messages;
+  let lastAssistant = -1;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === "assistant") { lastAssistant = i; break; }
+  }
+  if (lastAssistant === -1) return messages;
+  return messages.map((m, i) =>
+    i === lastAssistant ? { ...m, hikeOptions } : m
+  );
+};
+
 // ─── Initial state shapes ────────────────────────────────────────────────────
 
 const INITIAL_CHAT_STATE = {
@@ -79,6 +96,12 @@ export const TripProvider = ({ children }) => {
 
         // If the AI just confirmed a save, persist the trip immediately
 
+        // Anchor the hike option cards to the assistant message that produced
+        // them, rather than a single chat-level field re-rendered at the
+        // bottom every turn. This keeps each option set in place in the
+        // transcript: a later refinement's fresh 5 attach to their own message
+        // and become the new set, while the old cards stay put above them
+        // instead of following the conversation and crowding later phases.
         setChat((prev) => ({
           ...prev,
           sessionId: data.session_id,
@@ -87,7 +110,11 @@ export const TripProvider = ({ children }) => {
           hikeOptions: data.hike_options || [],
           messages: [
             ...prev.messages,
-            { role: "assistant", content: data.response },
+            {
+              role: "assistant",
+              content: data.response,
+              hikeOptions: data.hike_options || [],
+            },
           ],
         }));
         if (data.save_confirmed) {
@@ -145,7 +172,10 @@ export const TripProvider = ({ children }) => {
           sessionId: data.id,
           phase: data.phase,
           plan: data.plan,
-          messages: data.messages || [],
+          messages: anchorOptionsToLastAssistant(
+            data.messages || [],
+            data.hike_options || []
+          ),
           serviceReady: true,
           hikeOptions: data.hike_options || [],
         });
@@ -199,13 +229,33 @@ export const TripProvider = ({ children }) => {
         sessionId: data.session_id,
         phase: data.phase,
         plan: data.plan,
-        messages: [{ role: "assistant", content: data.response }],
+        messages: [
+          {
+            role: "assistant",
+            content: data.response,
+            hikeOptions: data.hike_options || [],
+          },
+        ],
         serviceReady: true,
         hikeOptions: data.hike_options || [],
       });
       // The clone is a brand-new active session — reflect that in the sidebar.
       tripService.getChats().then(setChatList).catch(() => {});
       return data;
+    });
+  }, []);
+
+  /**
+   * "Not going" — the user has decided to skip an upcoming (saved) trip.
+   * Deletes the trip and drops it from the sidebar / clears the open view.
+   * Deliberately a hard delete: there is no "cancelled" lifecycle state, and
+   * an abandoned upcoming trip is noise in the Past Hikes review flow.
+   */
+  const cancelChat = useCallback(async (chatId) => {
+    return withLoading(async () => {
+      await tripService.deleteTrip(chatId);
+      setChatList((prev) => prev.filter((c) => c.id !== chatId));
+      setReadOnlyChat((prev) => (prev?.id === chatId ? null : prev));
     });
   }, []);
 
@@ -262,6 +312,7 @@ export const TripProvider = ({ children }) => {
         markChatCompleted,
         submitChatReview,
         duplicateChat,
+        cancelChat,
 
         // Saved-trip state
         savedTrips,

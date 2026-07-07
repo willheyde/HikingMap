@@ -61,6 +61,15 @@ class TripPlan:
     activity_type:     Optional[str]  = None
     duration_days:     Optional[int]  = None
     difficulty:        Optional[str]  = None
+    # Authoritative stats for the selected trail, captured from the DB at hike
+    # selection (not the user's search filters or the LLM's guesses). Populated
+    # by trip_chat._capture_selected_hike_facts once plan.hike_id is set, and
+    # surfaced in the finalize summary + saved trail_data. estimated_duration is
+    # a human on-trail-time label (Naismith) — e.g. "~45 min" — distinct from
+    # duration_days (the trip's calendar span, used to structure the itinerary).
+    hike_length_km:        Optional[float] = None
+    hike_elevation_gain_m: Optional[float] = None
+    estimated_duration:    Optional[str]   = None
     # Search criteria from the last full destination search — persisted here
     # (not just left in session.phase_data, which is wiped on every phase
     # transition) so TripService can capture them in trail_data at save time
@@ -99,6 +108,9 @@ class TripPlan:
             "activity_type":      self.activity_type,
             "duration_days":      self.duration_days,
             "difficulty":         self.difficulty,
+            "hike_length_km":        self.hike_length_km,
+            "hike_elevation_gain_m": self.hike_elevation_gain_m,
+            "estimated_duration":    self.estimated_duration,
             "required_tags":      self.required_tags,
             "preferred_tags":     self.preferred_tags,
             "priority_tags":      self.priority_tags,
@@ -124,6 +136,9 @@ class TripPlan:
             activity_type      = d.get("activity_type"),
             duration_days      = d.get("duration_days"),
             difficulty         = d.get("difficulty"),
+            hike_length_km        = d.get("hike_length_km"),
+            hike_elevation_gain_m = d.get("hike_elevation_gain_m"),
+            estimated_duration    = d.get("estimated_duration"),
             required_tags      = d.get("required_tags", []),
             preferred_tags     = d.get("preferred_tags", []),
             priority_tags      = d.get("priority_tags", []),

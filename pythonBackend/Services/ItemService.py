@@ -31,3 +31,20 @@ class ItemService:
         return self.repo.list_by_user(user_id)
     def create_item_for_user(self, item: Item, user_id: UUID) -> UUID:
         return self.repo.create_item_for_user(item, user_id)
+
+    def create_user_gear(
+        self,
+        user_id: UUID,
+        name: str,
+        gear_category: str,
+        level: Optional[str] = None,
+        weight: float = 0.0,
+        cost: float = 0.0,
+        temp_rating_f: Optional[float] = None,
+    ) -> Item:
+        """Create a free-text 'I have this' gear item (functional category +
+        optional level) and link it to the user."""
+        return self.repo.create_user_gear(
+            user_id=user_id, name=name, gear_category=gear_category,
+            level=level, weight=weight, cost=cost, temp_rating_f=temp_rating_f,
+        )

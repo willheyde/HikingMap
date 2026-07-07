@@ -19,6 +19,7 @@ omitted — they don't exist in the items table.
 
 import math
 from PyObjects.Hike import DifficultyLevel
+from gear_levels import IMPORTANCE_REQUIRED, IMPORTANCE_RECOMMENDED
 
 
 BEAR_REGIONS = {
@@ -167,6 +168,109 @@ class GearInferenceEngine:
 
             # Kitchen
             add("kitchen", {"stove_type": "canister"})
+
+        return reqs
+
+    # ── Required capability LEVELS (catalog-independent) ─────────────────────────
+
+    @staticmethod
+    def infer_gear_levels(
+        length_km:  float,
+        gain_m:     float,
+        max_alt_m:  float,
+        difficulty,                 # DifficultyLevel
+        tags=None,                  # set[str] | list[str] | None
+        can_camp:   bool = False,
+    ) -> dict:
+        """
+        Per-hike REQUIRED gear expressed as capability levels per category —
+        the adequacy counterpart to infer_requirements(). Unlike that method
+        (which resolves to specific catalog items and so is only as complete as
+        the catalog), this derives levels straight from the hike's physical
+        stats + tags, so it always produces a full answer.
+
+        Shape (see gear_levels for the vocabulary):
+            {
+              "footwear":   {"min_level": "hiking_boot", "importance": "required"},
+              "traction":   {"min_level": "microspikes", "importance": "recommended"},
+              "sleep":      {"min_temp_f": 30,           "importance": "required"},
+              "first_aid":  {"importance": "required"},   # presence-only
+              ...
+            }
+
+        Reuses the same derived flags as infer_requirements so the two stay
+        consistent; only the output representation differs.
+        """
+        tagset = {t.lower() for t in (tags or [])}
+
+        duration_h   = GearInferenceEngine._naismith(length_km, gain_m)
+        is_multiday  = length_km > 20 or duration_h > 10
+        is_alpine    = max_alt_m > 2000
+        is_winter    = max_alt_m > 1500 or bool(tagset & {"snow", "winter", "ice"})
+        is_technical = max_alt_m > 2500 or "glacier" in tagset
+        diff_name    = difficulty.name if hasattr(difficulty, "name") else str(difficulty).upper()
+        is_hard      = diff_name in {"DIFFICULT", "EXPERT", "HARD"}
+        is_scramble  = bool(tagset & {"scramble", "technical", "via_ferrata"})
+
+        reqs: dict = {}
+
+        # ── Footwear ─────────────────────────────────────────────────────────
+        if is_technical:
+            footwear = "mountaineering_boot"
+        elif gain_m > 300 or is_hard or is_scramble:
+            footwear = "hiking_boot"
+        else:
+            footwear = "trail_runner"
+        reqs["footwear"] = {"min_level": footwear, "importance": IMPORTANCE_REQUIRED}
+
+        # ── Traction ─────────────────────────────────────────────────────────
+        if is_technical:
+            reqs["traction"] = {"min_level": "crampons", "importance": IMPORTANCE_REQUIRED}
+        elif is_winter:
+            reqs["traction"] = {"min_level": "microspikes", "importance": IMPORTANCE_REQUIRED}
+
+        # ── Insulation ───────────────────────────────────────────────────────
+        if is_alpine or is_winter:
+            reqs["insulation"] = {"min_level": "puffy", "importance": IMPORTANCE_REQUIRED}
+        elif max_alt_m > 1000 or length_km > 10 or is_hard:
+            reqs["insulation"] = {"min_level": "fleece", "importance": IMPORTANCE_RECOMMENDED}
+
+        # ── Rain / wind shell ────────────────────────────────────────────────
+        reqs["shell"] = {
+            "min_level":  "hardshell",
+            "importance": IMPORTANCE_REQUIRED if (is_hard or is_alpine) else IMPORTANCE_RECOMMENDED,
+        }
+
+        # ── Navigation (presence-ish, but leveled) ───────────────────────────
+        reqs["navigation"] = {
+            "min_level":  "gps" if (is_hard or is_alpine or is_multiday) else "map",
+            "importance": IMPORTANCE_REQUIRED,
+        }
+
+        # ── Illumination — required once the day can run long ────────────────
+        reqs["illumination"] = {
+            "importance": IMPORTANCE_REQUIRED if (duration_h > 4 or is_multiday) else IMPORTANCE_RECOMMENDED,
+        }
+
+        # ── First aid — always part of the ten essentials ────────────────────
+        reqs["first_aid"] = {"importance": IMPORTANCE_REQUIRED}
+
+        # ── Hydration — treatment required on longer/committing days ──────────
+        if is_multiday or length_km > 15:
+            reqs["hydration"] = {"min_level": "filter", "importance": IMPORTANCE_REQUIRED}
+        else:
+            reqs["hydration"] = {"min_level": "carry", "importance": IMPORTANCE_REQUIRED}
+
+        # ── Overnight system (only when camping is actually on the table) ────
+        if is_multiday or can_camp:
+            reqs["shelter"] = {
+                "min_level":  "4_season" if (is_alpine or is_technical) else "3_season",
+                "importance": IMPORTANCE_REQUIRED if is_multiday else IMPORTANCE_RECOMMENDED,
+            }
+            reqs["sleep"] = {
+                "min_temp_f": 0 if (is_alpine or is_technical) else 30,
+                "importance": IMPORTANCE_REQUIRED if is_multiday else IMPORTANCE_RECOMMENDED,
+            }
 
         return reqs
 

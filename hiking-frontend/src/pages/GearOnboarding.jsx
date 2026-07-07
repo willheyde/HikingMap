@@ -1,9 +1,9 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { useUser } from "../context/UserContext";
-import { listItems } from "../api/itemsService";
+import { GEAR_SECTIONS } from "../data/gearCategories";
 
-/* ─── Design tokens (matches AuthModal) ─────────────────────────────────── */
+/* ─── Design tokens (matches AuthModal / old onboarding) ─────────────────── */
 const C = {
   page:        "#0d0a07",
   card:        "#1c1510",
@@ -22,31 +22,15 @@ const C = {
   ownedBg:     "rgba(60,100,40,0.25)",
   ownedBorder: "rgba(90,160,60,0.5)",
   ownedText:   "#9dcc85",
+  errorText:   "#e87060",
   divider:     "#3a2510",
 };
 const serif = "Georgia, 'Times New Roman', serif";
 const sans  = "'Trebuchet MS', 'Lucida Sans Unicode', sans-serif";
 const body  = "'Palatino Linotype', Palatino, Georgia, serif";
 
-/* ─── Step definitions ───────────────────────────────────────────────────── */
-const STEPS = [
-  { key: "backpack",       label: "Backpack",       icon: "🎒", multi: false },
-  { key: "footwear",       label: "Footwear",        icon: "👟", multi: true  },
-  { key: "shelter",        label: "Shelter",         icon: "⛺", multi: false },
-  { key: "sleeping_bag",   label: "Sleeping Bag",    icon: "🛌", multi: false },
-  { key: "sleeping_pad",   label: "Sleeping Pad",    icon: "🟫", multi: false },
-  { key: "clothing",       label: "Clothing",        icon: "🧥", multi: true  },
-  { key: "water",          label: "Water System",    icon: "💧", multi: true  },
-  { key: "kitchen",        label: "Kitchen",         icon: "🔥", multi: false },
-  { key: "navigation",     label: "Navigation",      icon: "🗺️", multi: true  },
-  { key: "safety",         label: "Safety",          icon: "🚨", multi: true  },
-  { key: "lighting",       label: "Lighting",        icon: "🔦", multi: false },
-  { key: "trekking_poles", label: "Trekking Poles",  icon: "🥢", multi: false },
-  { key: "technical",      label: "Technical Gear",  icon: "⛏️", multi: true  },
-];
-
 /* ─── Mountain mark ─────────────────────────────────────────────────────── */
-const MountainMark = ({ size = 40 }) => (
+const MountainMark = ({ size = 44 }) => (
   <svg width={size} height={size * 0.75} viewBox="0 0 56 42"
     style={{ display: "block", margin: "0 auto" }} xmlns="http://www.w3.org/2000/svg">
     <polygon points="28,2 52,40 4,40" fill="none" stroke="#7a5030" strokeWidth="1.2" strokeLinejoin="round" />
@@ -58,132 +42,106 @@ const MountainMark = ({ size = 40 }) => (
 
 /* ─── Progress bar ──────────────────────────────────────────────────────── */
 const ProgressBar = ({ step, total }) => (
-  <div style={{ marginBottom: 24 }}>
+  <div style={{ marginBottom: 22 }}>
     <div style={{ display: "flex", justifyContent: "space-between",
       fontFamily: sans, fontSize: 11, color: C.muted, marginBottom: 7 }}>
-      <span style={{ textTransform: "uppercase", letterSpacing: "1px" }}>
-        Step {step + 1} of {total}
-      </span>
+      <span style={{ textTransform: "uppercase", letterSpacing: "1px" }}>Step {step + 1} of {total}</span>
       <span>{Math.round(((step + 1) / total) * 100)}%</span>
     </div>
     <div style={{ height: 3, background: C.fieldBg, borderRadius: 2 }}>
-      <div style={{
-        height: 3, borderRadius: 2, background: C.amber,
-        width: `${((step + 1) / total) * 100}%`,
-        transition: "width 0.4s ease",
-      }} />
+      <div style={{ height: 3, borderRadius: 2, background: C.amber,
+        width: `${((step + 1) / total) * 100}%`, transition: "width 0.4s ease" }} />
     </div>
   </div>
 );
 
-/* ─── Selectable item row ────────────────────────────────────────────────── */
-const ItemRow = ({ item, selected, onClick }) => (
+/* ─── Level chip ────────────────────────────────────────────────────────── */
+const LevelChip = ({ label, selected, onClick }) => (
   <button
     onClick={onClick}
     style={{
-      display: "flex", alignItems: "center", justifyContent: "space-between",
-      width: "100%", padding: "13px 16px", marginBottom: 8, textAlign: "left",
+      padding: "9px 14px", borderRadius: 999, cursor: "pointer",
+      fontFamily: sans, fontSize: 12.5, fontWeight: selected ? 600 : 400,
       background: selected ? C.amberDim : C.fieldBg,
       border: `1.5px solid ${selected ? C.amber : C.fieldBorder}`,
-      borderRadius: 10, cursor: "pointer", transition: "all 0.15s",
-      boxShadow: selected ? `0 0 12px rgba(193,122,46,0.18)` : "none",
+      color: selected ? "#e8c9a0" : "#c8bfb0", transition: "all 0.15s",
     }}
     onMouseEnter={e => { if (!selected) e.currentTarget.style.borderColor = "#7a5a30"; }}
     onMouseLeave={e => { if (!selected) e.currentTarget.style.borderColor = C.fieldBorder; }}
   >
-    <div style={{ flex: 1 }}>
-      <div style={{ fontFamily: body, fontSize: 14, color: selected ? "#c8a97a" : "#c8bfb0", fontWeight: selected ? 600 : 400 }}>
-        {item.name}
-      </div>
-      <div style={{ fontFamily: sans, fontSize: 11, color: C.muted, marginTop: 3 }}>
-        {(Number(item.weight) / 1000).toFixed(2)} kg · ${Number(item.cost).toFixed(0)}
-      </div>
-    </div>
-    <div style={{
-      width: 18, height: 18, borderRadius: "50%", flexShrink: 0, marginLeft: 12,
-      background: selected ? C.amber : "transparent",
-      border: `1.5px solid ${selected ? C.amber : C.fieldBorder}`,
-      display: "flex", alignItems: "center", justifyContent: "center",
-    }}>
-      {selected && (
-        <svg width="10" height="7" viewBox="0 0 10 7" fill="none">
-          <path d="M1 3L3.5 5.5L9 1" stroke="white" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/>
-        </svg>
-      )}
-    </div>
+    {label}
   </button>
 );
 
-/* ─── Main component ─────────────────────────────────────────────────────── */
+/* ─── Main component ────────────────────────────────────────────────────── */
 const GearOnboarding = () => {
-  const { user, addItemsBatch } = useUser();
+  const { user, createGear, deleteItem } = useUser();
   const navigate = useNavigate();
 
-  const [stepIndex, setStepIndex]     = useState(0);
-  const [stepItems, setStepItems]     = useState([]);
-  const [loadingStep, setLoadingStep] = useState(true);
-  const [selections, setSelections]   = useState({}); // { [item_type]: Set<id> }
-  const [saving, setSaving]           = useState(false);
+  const [sectionIndex, setSectionIndex]   = useState(0);
+  const [addedBySection, setAddedBySection] = useState({}); // { key: [{id,name,levelLabel}] }
+  const [pendingLevel, setPendingLevel]   = useState(null);
+  const [pendingName, setPendingName]     = useState("");
+  const [pendingTemp, setPendingTemp]     = useState("");
+  const [busy, setBusy]                   = useState(false);
+  const [error, setError]                 = useState(null);
 
-  const step = STEPS[stepIndex];
+  const section = GEAR_SECTIONS[sectionIndex];
+  const added   = addedBySection[section.key] || [];
+  const isLast  = sectionIndex === GEAR_SECTIONS.length - 1;
+  const needsLevel = Array.isArray(section.levels);
+  const canAdd  = !busy && (!needsLevel || pendingLevel !== null);
 
-  /* Fetch items for the current step */
+  // Clear the per-section draft whenever the section changes.
   useEffect(() => {
-    setLoadingStep(true);
-    listItems(step.key)
-      .then(setStepItems)
-      .catch(console.error)
-      .finally(() => setLoadingStep(false));
-  }, [step.key]);
+    setPendingLevel(null);
+    setPendingName("");
+    setPendingTemp("");
+    setError(null);
+  }, [sectionIndex]);
 
-  /* Selection helpers */
-  const currentSel = selections[step.key] ?? new Set();
-
-  const toggle = (itemId) => {
-    setSelections(prev => {
-      const set = new Set(prev[step.key] ?? []);
-      if (step.multi) {
-        set.has(itemId) ? set.delete(itemId) : set.add(itemId);
-      } else {
-        set.clear();
-        set.add(itemId);
-      }
-      return { ...prev, [step.key]: set };
-    });
-  };
-
-  const skipStep = () => {
-    setSelections(prev => ({ ...prev, [step.key]: new Set() }));
-    advance();
-  };
-
-  const advance = () => {
-    if (stepIndex < STEPS.length - 1) {
-      setStepIndex(i => i + 1);
-    } else {
-      finish();
+  const addItem = async () => {
+    if (!canAdd || !user) return;
+    const levelObj = section.levels?.find(l => l.value === pendingLevel);
+    const name = pendingName.trim() || levelObj?.label || section.label;
+    const payload = { name, gear_category: section.key, level: needsLevel ? pendingLevel : null };
+    if (section.sleepTemp && pendingTemp !== "") {
+      const t = Number(pendingTemp);
+      if (!Number.isNaN(t)) payload.temp_rating_f = t;
     }
-  };
-
-  const finish = async () => {
-    setSaving(true);
-    const allIds = Object.values(selections).flatMap(s => Array.from(s));
+    setBusy(true); setError(null);
     try {
-      if (allIds.length > 0 && user) {
-        await addItemsBatch(user.id, allIds);
-      }
-      navigate("/gear");
-    } catch (err) {
-      console.error("Failed to save gear:", err);
-      navigate("/gear");
+      const item = await createGear(user.id, payload);
+      setAddedBySection(prev => ({
+        ...prev,
+        [section.key]: [...(prev[section.key] || []), { id: item.id, name, levelLabel: levelObj?.label }],
+      }));
+      setPendingLevel(null);
+      setPendingName("");
+      setPendingTemp("");
+    } catch (e) {
+      setError(e.response?.data?.detail || e.message);
     } finally {
-      setSaving(false);
+      setBusy(false);
     }
   };
 
-  const isLast = stepIndex === STEPS.length - 1;
+  const removeItem = async (item) => {
+    setError(null);
+    try {
+      await deleteItem(user.id, item.id);
+      setAddedBySection(prev => ({
+        ...prev,
+        [section.key]: (prev[section.key] || []).filter(i => i.id !== item.id),
+      }));
+    } catch (e) {
+      setError(e.response?.data?.detail || e.message);
+    }
+  };
 
-  /* ── Render ─────────────────────────────────────────────────────────────── */
+  const next = () => (isLast ? navigate("/") : setSectionIndex(i => i + 1));
+  const back = () => setSectionIndex(i => Math.max(0, i - 1));
+
   return (
     <div style={{
       minHeight: "100vh", background: C.page,
@@ -196,37 +154,27 @@ const GearOnboarding = () => {
         borderRadius: 20, padding: "2rem 1.75rem",
         boxShadow: "0 32px 80px rgba(0,0,0,0.55)",
       }}>
-
         {/* Header */}
-        <div style={{ textAlign: "center", marginBottom: "1.75rem" }}>
+        <div style={{ textAlign: "center", marginBottom: "1.5rem" }}>
           <MountainMark size={44} />
-          <h1 style={{
-            fontFamily: serif, fontSize: 24, fontWeight: "normal",
-            color: C.heading, margin: "14px 0 5px", letterSpacing: "0.3px",
-          }}>
+          <h1 style={{ fontFamily: serif, fontSize: 24, fontWeight: "normal",
+            color: C.heading, margin: "14px 0 5px", letterSpacing: "0.3px" }}>
             Build your kit
           </h1>
           <p style={{ fontFamily: body, fontSize: 13, color: C.subtext, margin: 0, fontStyle: "italic" }}>
-            Select what you own — we'll plan around it.
+            Tell us what you own — we plan trips around it.
           </p>
         </div>
 
-        {/* Divider */}
-        <div style={{
-          height: 1, marginBottom: "1.5rem",
-          background: `linear-gradient(to right, transparent, ${C.divider} 30%, ${C.cardBorder} 50%, ${C.divider} 70%, transparent)`,
-        }} />
+        <ProgressBar step={sectionIndex} total={GEAR_SECTIONS.length} />
 
         {/* Skip onboarding */}
-        <div style={{ textAlign: "right", marginBottom: "1rem", marginTop: "-0.75rem" }}>
+        <div style={{ textAlign: "right", marginBottom: "0.75rem", marginTop: "-0.5rem" }}>
           <button
-            onClick={() => navigate("/gear")}
-            style={{
-              background: "none", border: "none", padding: 0,
-              fontFamily: sans, fontSize: 11, color: C.muted,
-              letterSpacing: "0.5px", cursor: "pointer",
-              textDecoration: "underline", textUnderlineOffset: "3px",
-            }}
+            onClick={() => navigate("/")}
+            style={{ background: "none", border: "none", padding: 0,
+              fontFamily: sans, fontSize: 11, color: C.muted, letterSpacing: "0.5px",
+              cursor: "pointer", textDecoration: "underline", textUnderlineOffset: "3px" }}
             onMouseEnter={e => e.currentTarget.style.color = C.label}
             onMouseLeave={e => e.currentTarget.style.color = C.muted}
           >
@@ -234,76 +182,146 @@ const GearOnboarding = () => {
           </button>
         </div>
 
-        {/* Item list */}
-        <div style={{ maxHeight: 340, overflowY: "auto", marginBottom: 4,
-          scrollbarWidth: "thin", scrollbarColor: `${C.cardBorder} transparent` }}>
-          {loadingStep ? (
-            <div style={{ textAlign: "center", padding: "40px 0",
-              fontFamily: sans, fontSize: 12, color: C.muted, letterSpacing: "1px" }}>
-              Loading…
+        {/* Section */}
+        <div style={{ marginBottom: 4 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
+            <span style={{ fontSize: 22 }}>{section.icon}</span>
+            <span style={{ fontFamily: serif, fontSize: 18, color: C.heading }}>{section.label}</span>
+          </div>
+          <p style={{ fontFamily: body, fontSize: 13, color: C.subtext, margin: "0 0 14px" }}>
+            {section.prompt}
+          </p>
+
+          {/* Level chips */}
+          {needsLevel && (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 12 }}>
+              {section.levels.map(l => (
+                <LevelChip
+                  key={l.value}
+                  label={l.label}
+                  selected={pendingLevel === l.value}
+                  onClick={() => setPendingLevel(v => (v === l.value ? null : l.value))}
+                />
+              ))}
             </div>
-          ) : stepItems.length === 0 ? (
-            <div style={{ textAlign: "center", padding: "40px 0",
-              fontFamily: body, fontSize: 14, color: C.muted, fontStyle: "italic" }}>
-              No items found for this category.
+          )}
+
+          {/* Sleep temp */}
+          {section.sleepTemp && (
+            <input
+              type="number"
+              value={pendingTemp}
+              onChange={e => setPendingTemp(e.target.value)}
+              placeholder="Temp rating °F (e.g. 20) — optional"
+              style={{
+                width: "100%", boxSizing: "border-box", marginBottom: 10,
+                padding: "11px 13px", background: C.fieldBg,
+                border: `1.5px solid ${C.fieldBorder}`, borderRadius: 10,
+                color: C.heading, fontFamily: sans, fontSize: 13,
+              }}
+            />
+          )}
+
+          {/* Name + Add */}
+          <div style={{ display: "flex", gap: 8 }}>
+            <input
+              value={pendingName}
+              onChange={e => setPendingName(e.target.value)}
+              onKeyDown={e => { if (e.key === "Enter") addItem(); }}
+              placeholder={needsLevel
+                ? (section.levels.find(l => l.value === pendingLevel)?.label || "Name it (optional)")
+                : `e.g. my ${section.label.toLowerCase()}`}
+              style={{
+                flex: 1, boxSizing: "border-box", padding: "11px 13px",
+                background: C.fieldBg, border: `1.5px solid ${C.fieldBorder}`,
+                borderRadius: 10, color: C.heading, fontFamily: sans, fontSize: 13,
+              }}
+            />
+            <button
+              onClick={addItem}
+              disabled={!canAdd}
+              title={needsLevel && !pendingLevel ? "Pick a level first" : "Add"}
+              style={{
+                padding: "0 18px", borderRadius: 10, flexShrink: 0,
+                background: canAdd ? C.amber : C.fieldBg,
+                border: `1px solid ${canAdd ? C.amber : C.fieldBorder}`,
+                color: canAdd ? C.amberText : C.muted,
+                fontFamily: sans, fontSize: 13, fontWeight: 600,
+                cursor: canAdd ? "pointer" : "default", transition: "all 0.15s",
+              }}
+            >
+              {busy ? "…" : "Add"}
+            </button>
+          </div>
+
+          {error && (
+            <div style={{ fontFamily: sans, fontSize: 11.5, color: C.errorText, marginTop: 8 }}>
+              {error}
             </div>
-          ) : (
-            stepItems.map(item => (
-              <ItemRow
-                key={item.id}
-                item={item}
-                selected={currentSel.has(item.id)}
-                onClick={() => toggle(item.id)}
-              />
-            ))
+          )}
+
+          {/* Added items */}
+          {added.length > 0 && (
+            <div style={{ marginTop: 14, display: "flex", flexDirection: "column", gap: 6 }}>
+              {added.map(item => (
+                <div key={item.id} style={{
+                  display: "flex", alignItems: "center", justifyContent: "space-between",
+                  padding: "9px 12px", borderRadius: 9,
+                  background: C.ownedBg, border: `1px solid ${C.ownedBorder}`,
+                }}>
+                  <span style={{ fontFamily: sans, fontSize: 12.5, color: C.ownedText }}>
+                    {item.name}
+                    {item.levelLabel && item.levelLabel !== item.name && (
+                      <span style={{ color: C.muted }}>{"  ·  " + item.levelLabel}</span>
+                    )}
+                  </span>
+                  <button
+                    onClick={() => removeItem(item)}
+                    title="Remove"
+                    style={{ background: "none", border: "none", cursor: "pointer",
+                      color: C.muted, fontSize: 15, lineHeight: 1, padding: "2px 4px" }}
+                  >
+                    ✕
+                  </button>
+                </div>
+              ))}
+            </div>
           )}
         </div>
 
-        {/* Actions */}
-        <div style={{ display: "flex", gap: 10, marginTop: 18 }}>
-          {/* Back / Skip */}
+        {/* Nav */}
+        <div style={{ display: "flex", gap: 10, marginTop: 22 }}>
           <button
-            onClick={stepIndex === 0 ? skipStep : () => setStepIndex(i => i - 1)}
+            onClick={back}
+            disabled={sectionIndex === 0}
             style={{
-              flex: 1, padding: "12px 0", borderRadius: 10,
-              background: "transparent",
+              flex: 1, padding: "12px 0", borderRadius: 10, background: "transparent",
               border: `1px solid ${C.fieldBorder}`,
-              color: C.muted, fontFamily: sans, fontSize: 12,
-              cursor: "pointer", letterSpacing: "0.5px",
+              color: sectionIndex === 0 ? C.muted : C.label,
+              opacity: sectionIndex === 0 ? 0.4 : 1,
+              fontFamily: sans, fontSize: 12, letterSpacing: "0.5px",
+              cursor: sectionIndex === 0 ? "default" : "pointer",
             }}
-            onMouseEnter={e => e.currentTarget.style.color = C.label}
-            onMouseLeave={e => e.currentTarget.style.color = C.muted}
           >
-            {stepIndex === 0 ? "Skip" : "← Back"}
+            ← Back
           </button>
-
-          {/* Continue */}
           <button
-            onClick={currentSel.size > 0 ? advance : skipStep}
-            disabled={saving}
+            onClick={next}
             style={{
-              flex: 3, padding: "12px 0", borderRadius: 10,
-              background: saving ? "#7a4a1e" : C.amber,
-              border: `1px solid ${saving ? "#5a3010" : "rgba(255,220,150,0.15)"}`,
-              color: C.amberText, fontFamily: sans, fontSize: 13,
-              fontWeight: 600, cursor: saving ? "not-allowed" : "pointer",
+              flex: 3, padding: "12px 0", borderRadius: 10, background: C.amber,
+              border: `1px solid rgba(255,220,150,0.15)`, color: C.amberText,
+              fontFamily: sans, fontSize: 13, fontWeight: 600, cursor: "pointer",
               letterSpacing: "0.5px", transition: "background 0.2s",
             }}
-            onMouseEnter={e => { if (!saving) e.currentTarget.style.background = C.amberHover; }}
-            onMouseLeave={e => { if (!saving) e.currentTarget.style.background = C.amber; }}
+            onMouseEnter={e => e.currentTarget.style.background = C.amberHover}
+            onMouseLeave={e => e.currentTarget.style.background = C.amber}
           >
-            {saving
-              ? "Saving…"
-              : currentSel.size > 0
-                ? isLast ? `Finish  ✓` : `Continue  →`
-                : isLast ? "Finish without this" : "Skip this category"}
+            {isLast ? "Finish  ✓" : added.length > 0 ? "Next  →" : "Skip this  →"}
           </button>
         </div>
 
-        <p style={{
-          textAlign: "center", fontFamily: sans, fontSize: 11,
-          color: C.muted, marginTop: 20, letterSpacing: "0.5px",
-        }}>
+        <p style={{ textAlign: "center", fontFamily: sans, fontSize: 11,
+          color: C.muted, marginTop: 20, letterSpacing: "0.5px" }}>
           Leave no trace · Stay on the trail
         </p>
       </div>

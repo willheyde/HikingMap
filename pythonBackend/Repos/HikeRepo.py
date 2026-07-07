@@ -4,7 +4,6 @@ from typing import List, Optional
 from PyObjects.Hike import Hike
 from Repos.RepositoryBase import BaseRepository
 from DBConnection import get_connection
-from Repos.ItemRepo import _row_to_item
 from PyObjects.Hike import Hike, DifficultyLevel
 
 
@@ -24,7 +23,7 @@ class HikeRepository(BaseRepository[Hike]):
                         season_start_month, season_end_month,
                         permits_required, nearest_airport_code, parking_coordinates,
                         last_synced_at, tags, can_camp,
-                        lat, lng
+                        lat, lng, gear_requirements
                     ) VALUES (
                         %(id)s, %(source_id)s, %(name)s, %(geometry)s,
                         %(difficulty)s, %(length_km)s, %(elevation_gain_m)s,
@@ -33,7 +32,7 @@ class HikeRepository(BaseRepository[Hike]):
                         %(season_start_month)s, %(season_end_month)s,
                         %(permits_required)s, %(nearest_airport_code)s, %(parking_coordinates)s,
                         %(last_synced_at)s, %(tags)s, %(can_camp)s,
-                        %(lat)s, %(lng)s
+                        %(lat)s, %(lng)s, %(gear_requirements)s
                     )
                     """,
                     {
@@ -58,6 +57,7 @@ class HikeRepository(BaseRepository[Hike]):
                         "can_camp":             hike.can_camp,
                         "lat":                  hike.lat,
                         "lng":                  hike.lng,
+                        "gear_requirements":    json.dumps(hike.gear_requirements or {}),
                     }
                 )
         return hike
@@ -88,6 +88,7 @@ class HikeRepository(BaseRepository[Hike]):
             with conn.cursor() as cur:
                 params = hike.to_dict()
                 params["geometry"] = json.dumps(params["geometry"])
+                params["gear_requirements"] = json.dumps(params.get("gear_requirements") or {})
                 cur.execute(
                     """
                     UPDATE hikes SET
@@ -109,7 +110,8 @@ class HikeRepository(BaseRepository[Hike]):
                         tags=%(tags)s,
                         can_camp=%(can_camp)s,
                         lat=%(lat)s,
-                        lng=%(lng)s
+                        lng=%(lng)s,
+                        gear_requirements=%(gear_requirements)s
                     WHERE id=%(id)s
                     """,
                     params
@@ -121,65 +123,38 @@ class HikeRepository(BaseRepository[Hike]):
             with conn.cursor() as cur:
                 cur.execute("DELETE FROM hikes WHERE id=%s", (hike_id,))
 
-    def get_items_for_hike(self, hike_id: UUID) -> List[tuple]:
+    def search_by_name(self, query: str, limit: int = 5) -> List[Hike]:
+        """
+        Direct trail-name lookup for the trip planner's "I want to hike <name>"
+        path (there is no name search in `search()` — that's filter-only).
+
+        Matches containment in EITHER direction, case-insensitively:
+          - the trail name contains the user's phrase
+            ("sterling" → "Mount Sterling Trail")
+          - the user's phrase contains the trail name
+            ("the Mount Sterling Trail, please" → "Mount Sterling Trail")
+
+        Shorter names rank first so a tight/exact match beats an incidental
+        substring. Collapsing several rows into a single confident pick (vs a
+        disambiguation set) is the caller's job.
+        """
+        q = (query or "").strip()
+        if not q:
+            return []
         with get_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT i.id, i.name, i.weight, i.cost, i.item_type, i.image_url, i.attributes,
-                        hi.importance
-                    FROM items i
-                    JOIN hike_items hi ON hi.item_id = i.id
-                    WHERE hi.hike_id = %s
-                    ORDER BY hi.importance, i.name
+                    SELECT * FROM hikes
+                    WHERE name ILIKE %(contains)s
+                       OR %(q)s ILIKE '%%' || name || '%%'
+                    ORDER BY length(name) ASC
+                    LIMIT %(limit)s
                     """,
-                    (str(hike_id),)
+                    {"contains": f"%{q}%", "q": q, "limit": limit},
                 )
                 rows = cur.fetchall()
-
-        result = []
-        for row in rows:
-            row_dict = dict(row)
-            importance = row_dict.pop("importance")
-            item = _row_to_item(row_dict)
-            result.append((item, importance))
-        return result
-
-    def _attach_items_to_hikes(self, hikes: List[Hike]) -> None:
-        if not hikes:
-            return
-
-        hike_ids = [str(h.id) for h in hikes]
-
-        with get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT hi.hike_id, hi.importance,
-                        i.id, i.name, i.weight, i.cost, i.item_type, i.image_url, i.attributes
-                    FROM hike_items hi
-                    JOIN items i ON i.id = hi.item_id
-                    WHERE hi.hike_id::text = ANY(%s)
-                    ORDER BY hi.importance, i.name
-                    """,
-                    (hike_ids,)
-                )
-                rows = cur.fetchall()
-
-        items_by_hike: dict = {}
-        for row in rows:
-            row_dict = dict(row)
-            hike_id = str(row_dict.pop("hike_id"))
-            importance = row_dict.pop("importance")
-            item = _row_to_item(row_dict)
-            items_by_hike.setdefault(hike_id, []).append((item, importance))
-
-        for hike in hikes:
-            hike.items = items_by_hike.get(str(hike.id), [])
-            hike.required_gear_tags = [
-                item.item_type for item, importance in hike.items
-                if importance == "required"
-            ]
+        return [Hike.from_dict(dict(r)) for r in rows]
 
     def search(
         self,
@@ -287,5 +262,6 @@ class HikeRepository(BaseRepository[Hike]):
                     hike_obj.distance_km = distance_val
                     results.append(hike_obj)
 
-                self._attach_items_to_hikes(results)
+                # required_gear_tags is derived from gear_requirements in
+                # Hike.from_dict — no legacy hike_items join needed.
                 return results

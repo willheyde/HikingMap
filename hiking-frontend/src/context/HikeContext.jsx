@@ -54,7 +54,7 @@ export const HikeProvider = ({ children }) => {
       const results = await hikeService.searchHikes(filters, controller.signal);
       setHikes(results);
     } catch (err) {
-      if (axios.isCancel(err) || err.code === "ERR_CANCELED" || err.name === "CanceledError") return;
+      if (err.code === "ERR_CANCELED" || err.name === "CanceledError" || err.name === "AbortError") return;
       setError(err.response?.data?.detail || err.message);
     } finally {
       if (!controller.signal.aborted) setLoading(false);

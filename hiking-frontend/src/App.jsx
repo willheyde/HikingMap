@@ -3,8 +3,8 @@ import { Routes, Route, Navigate } from "react-router-dom";
 import MapPage from "./pages/MapPage";
 import HikeDetailPage from "./pages/HikeDetailPage";
 import AuthModal from "./components/AuthModal"; // Import the modal
-import Profile from "./pages/Profile";  
-import QuickGearSetup from "./pages/QuickGearSetup";
+import Profile from "./pages/Profile";
+import GearManager from "./pages/GearManager";
 import GearOnboarding from "./pages/GearOnboarding"; // Assuming this is the correct path
 import TripPlanner from "./pages/TripPlanner";
 
@@ -24,7 +24,7 @@ function App() {
           <Route path="/map" element={<MapPage />} />
           <Route path="/hike/:hikeId" element={<HikeDetailPage />} />
           <Route path="/profile" element={<Profile/>} />
-          <Route path="/gear" element={<QuickGearSetup />} />
+          <Route path="/gear" element={<GearManager />} />
           <Route path="/onboarding" element={<GearOnboarding />} />
           <Route path="/trip-planner" element={<TripPlanner />} />
         </Routes>

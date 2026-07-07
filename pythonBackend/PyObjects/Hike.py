@@ -35,6 +35,11 @@ class Hike:
     last_synced_at: datetime = field(default_factory=datetime.utcnow)
     tags: List[str] = field(default_factory=list)
     can_camp: bool = False
+    # Catalog-independent required gear, keyed by category → {min_level |
+    # min_temp_f, importance}. Derived from this hike's stats + tags by
+    # GearInferenceEngine.infer_gear_levels(); consumed by GearGapAnalyzer for
+    # adequacy checks. Empty until backfilled/ingested. See gear_levels.py.
+    gear_requirements: Dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not self.name:
@@ -89,13 +94,27 @@ class Hike:
                 data_copy["difficulty"] = DifficultyLevel.MODERATE
 
         # 3. Handle JSON Fields
-        for field_name in ["geometry", "required_gear_tags", "parking_coordinates"]:
+        _dict_defaults = {"geometry", "gear_requirements"}
+        for field_name in ["geometry", "required_gear_tags", "parking_coordinates", "gear_requirements"]:
             val = data_copy.get(field_name)
             if isinstance(val, str):
                 try:
                     data_copy[field_name] = json.loads(val)
                 except json.JSONDecodeError:
-                    data_copy[field_name] = {} if field_name == "geometry" else []
+                    data_copy[field_name] = {} if field_name in _dict_defaults else []
+
+        # 3b. Derive required_gear_tags from gear_requirements.
+        # There is no required_gear_tags column; it used to be synthesized from
+        # the legacy hike_items join. Now that per-trail needs live in the
+        # catalog-independent gear_requirements jsonb, expose the *required*
+        # categories from there so every read path (search, get_by_id) has it
+        # without hike_items.
+        gr = data_copy.get("gear_requirements")
+        if isinstance(gr, dict) and not data_copy.get("required_gear_tags"):
+            data_copy["required_gear_tags"] = [
+                cat for cat, spec in gr.items()
+                if isinstance(spec, dict) and spec.get("importance") == "required"
+            ]
 
         # 4. Handle Datetime
         if isinstance(data_copy.get("last_synced_at"), str):

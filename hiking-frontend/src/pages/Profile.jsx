@@ -4,6 +4,7 @@ import { useNavigate } from "react-router-dom";
 import ScrollBar from "../components/ScrollBar";
 import { useTrip } from "../context/TripContext";
 import { getPastHikesStats } from "../api/tripService";
+import { resolveGearCategory, levelLabelFor, categoryMeta } from "../data/gearCategories";
 
 /* ─── Design tokens ─────────────────────────────────────────────────────── */
 const C = {
@@ -27,24 +28,6 @@ const C = {
 const serif = "Georgia, 'Times New Roman', serif";
 const sans  = "'Trebuchet MS', 'Lucida Sans Unicode', sans-serif";
 const body  = "'Palatino Linotype', Palatino, Georgia, serif";
-
-/* ─── Category display names ────────────────────────────────────────────── */
-const CATEGORY_LABELS = {
-  backpack:       { label: "Backpacks",     icon: "🎒" },
-  footwear:       { label: "Footwear",       icon: "👟" },
-  shelter:        { label: "Shelter",        icon: "⛺" },
-  sleeping_bag:   { label: "Sleeping Bags",  icon: "🛌" },
-  sleeping_pad:   { label: "Sleeping Pads",  icon: "🟫" },
-  clothing:       { label: "Clothing",       icon: "🧥" },
-  water:          { label: "Water",          icon: "💧" },
-  kitchen:        { label: "Kitchen",        icon: "🔥" },
-  navigation:     { label: "Navigation",     icon: "🗺️" },
-  lighting:       { label: "Lighting",       icon: "🔦" },
-  safety:         { label: "Safety",         icon: "🚨" },
-  trekking_poles: { label: "Trekking Poles", icon: "🥢" },
-  technical:      { label: "Technical",      icon: "⛏️" },
-};
-const getCatMeta = (t) => CATEGORY_LABELS[(t||"").toLowerCase()] ?? { label: t, icon: "📦" };
 
 /* ─── Mountain avatar (shown when no avatar_url) ────────────────────────── */
 const MountainAvatar = ({ size = 96 }) => (
@@ -88,26 +71,44 @@ const StatCard = ({ label, value, sub, icon }) => (
 );
 
 /* ─── Gear item pill ────────────────────────────────────────────────────── */
-const GearPill = ({ item }) => (
-  <div style={{
-    padding: "7px 10px", borderRadius: 7,
-    background: C.fieldBg, border: `1px solid ${C.fieldBorder}`,
-    display: "flex", flexDirection: "column", gap: 3,
-  }}>
-    <span style={{ fontFamily: body, fontSize: 12, color: "#c8bfb0", lineHeight: 1.3,
-      overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-      {item.name}
-    </span>
-    <div style={{ display: "flex", gap: 8 }}>
-      <span style={{ fontFamily: "monospace", fontSize: 10, color: C.muted }}>
-        {(Number(item.weight) / 1000).toFixed(2)} kg
+const GearPill = ({ item, categoryKey }) => {
+  const level = levelLabelFor(categoryKey, item.attributes?.level);
+  const temp  = item.attributes?.temp_rating_f;
+  const weight = Number(item.weight) || 0;
+  const cost   = Number(item.cost) || 0;
+  // Level/temp is the meaningful signal for generalized gear; weight & cost are
+  // only shown when actually captured (onboarding doesn't collect them → 0).
+  const sub = level
+    ? (level !== item.name ? level : null)
+    : (temp != null ? `${Math.round(temp)}°F` : null);
+  return (
+    <div style={{
+      padding: "7px 10px", borderRadius: 7,
+      background: C.fieldBg, border: `1px solid ${C.fieldBorder}`,
+      display: "flex", flexDirection: "column", gap: 3,
+    }}>
+      <span style={{ fontFamily: body, fontSize: 12, color: "#c8bfb0", lineHeight: 1.3,
+        overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+        {item.name}
       </span>
-      <span style={{ fontFamily: "monospace", fontSize: 10, color: "#7a5a30" }}>
-        ${Number(item.cost).toFixed(0)}
-      </span>
+      <div style={{ display: "flex", gap: 8 }}>
+        {sub && (
+          <span style={{ fontFamily: sans, fontSize: 10, color: C.label }}>{sub}</span>
+        )}
+        {weight > 0 && (
+          <span style={{ fontFamily: "monospace", fontSize: 10, color: C.muted }}>
+            {(weight / 1000).toFixed(2)} kg
+          </span>
+        )}
+        {cost > 0 && (
+          <span style={{ fontFamily: "monospace", fontSize: 10, color: "#7a5a30" }}>
+            ${cost.toFixed(0)}
+          </span>
+        )}
+      </div>
     </div>
-  </div>
-);
+  );
+};
 
 /* ─── Divider ────────────────────────────────────────────────────────────── */
 const Divider = () => (
@@ -119,16 +120,26 @@ const Divider = () => (
 
 /* ─── Main component ─────────────────────────────────────────────────────── */
 const Profile = () => {
-  const { user, items, updateLocation, loadingLocation, logout } = useUser();
+  const { user, items, updateLocation, loadingLocation, logout, refreshItems } = useUser();
   const navigate = useNavigate();
   const { chatList, loadChatList, openChat, loading: loadingTrips } = useTrip();
   const [pastStats, setPastStats] = useState({ hike_count: 0, total_miles: 0, favorite_region: null });
 
+  // Depend on user?.id, NOT the whole user object: refreshItems() below calls
+  // updateLocalUser({ ...user, items }), which replaces the user reference every
+  // run. Keying on the object would make this effect retrigger itself in an
+  // infinite loop — loadChatList's shared `loading` flag toggling on each pass
+  // is what made the trip cards flash in and vanish.
   useEffect(() => {
     if (!user) return;
     loadChatList();
     getPastHikesStats().then(setPastStats).catch(() => {});
-  }, [user, loadChatList]);
+    // Pull fresh gear so items added via the onboarding wizard / gear manager
+    // show here without a full re-login (context is otherwise hydrated from a
+    // cached blob on mount).
+    refreshItems(user.id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.id, loadChatList]);
 
   // "Saved Trips" (below) means status=saved specifically now — truly
   // upcoming, not-yet-hiked trips — not every trip regardless of lifecycle
@@ -145,7 +156,7 @@ const Profile = () => {
   const itemsByCategory = useMemo(() => {
     if (!items?.length) return {};
     return items.reduce((acc, item) => {
-      const key = item.item_type || "misc";
+      const key = resolveGearCategory(item);
       (acc[key] = acc[key] || []).push(item);
       return acc;
     }, {});
@@ -462,7 +473,7 @@ const Profile = () => {
           ) : (
             <div>
               {Object.entries(itemsByCategory).map(([type, catItems], idx, arr) => {
-                const meta = getCatMeta(type);
+                const meta = categoryMeta(type);
                 const catWeight = catItems.reduce((s, i) => s + (Number(i.weight) || 0), 0) / 1000;
                 return (
                   <div key={type}>
@@ -487,7 +498,7 @@ const Profile = () => {
                     {/* Items */}
                     <div style={{ display: "grid",
                       gridTemplateColumns: "repeat(3, 1fr)", gap: 6, marginBottom: 8 }}>
-                      {catItems.map((item, i) => <GearPill key={`${item.id}-${i}`} item={item} />)}
+                      {catItems.map((item, i) => <GearPill key={`${item.id}-${i}`} item={item} categoryKey={type} />)}
                     </div>
 
                     {idx < arr.length - 1 && <Divider />}

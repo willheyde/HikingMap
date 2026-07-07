@@ -6,6 +6,7 @@ from fastapi import logger
 
 from PyObjects.Trip import Trip, TripGearItem, TripStop, HikeCompletion
 from Repos.TripRepo import TripRepository
+from trip_metrics import km_to_miles
 
 _VALID_DIFFICULTY_FELT: frozenset = frozenset({"EASY", "MODERATE", "DIFFICULT", "EXPERT"})
 
@@ -109,11 +110,18 @@ class TripService:
         region_counts: Dict[str, int] = {}
         for trip in trips:
             for stop in trip.stops:
-                for day in (stop.itinerary or {}).get("days", []):
-                    distance = day.get("distance_miles")
-                    if distance:
-                        total_miles += distance
-                state = (stop.trail_data or {}).get("state")
+                trail = stop.trail_data or {}
+                # Prefer the real trail length (metric, from the DB at selection)
+                # over summing LLM-authored per-day distances, which can drift.
+                length_km = trail.get("length_km")
+                if length_km:
+                    total_miles += km_to_miles(length_km) or 0.0
+                else:
+                    for day in (stop.itinerary or {}).get("days", []):
+                        distance = day.get("distance_miles")
+                        if distance:
+                            total_miles += distance
+                state = trail.get("state")
                 if state:
                     region_counts[state] = region_counts.get(state, 0) + 1
 
@@ -127,7 +135,12 @@ class TripService:
 
     # ── Save from AI session ───────────────────────────────────────────────────
 
-    def save_from_session(self, user_id: UUID, session: "TripSession") -> Trip:
+    def save_from_session(
+        self,
+        user_id: UUID,
+        session: "TripSession",
+        owned_item_ids: Optional[List[str]] = None,
+    ) -> Trip:
         """
         Translates a completed TripSession (Redis/AI layer) into persisted
         Trip + TripStop + TripGearItem rows.
@@ -138,9 +151,11 @@ class TripService:
         Mapping:
           TripPlan.destination_full  → one TripStop (stop_order=1)
           TripPlan.days              → stop.itinerary
-          TripPlan.gear_selected     → TripGearItem rows (status="owned")
-          TripPlan.gear_gaps         → TripGearItem rows where issue="missing"
-                                       with status="need_to_buy"
+          owned_item_ids             → TripGearItem rows (status="owned") — the
+                                       user's actual kit at save time. Falls back
+                                       to TripPlan.gear_selected (gap-fills added
+                                       during planning) when not supplied.
+          TripPlan.gear_gaps         → not persisted (no catalog item_id yet)
         """
         plan = session.plan
 
@@ -182,10 +197,14 @@ class TripService:
         trip.stops = [saved_stop]
 
         # ── 3. Persist gear ────────────────────────────────────────────────
+        # The trip's "packed" list is the user's actual kit at save time, so a
+        # well-equipped user no longer saves with "gear packed: none". Gap-fills
+        # they added during gear_review are already in that kit; union with
+        # plan.gear_selected (deduped, order-preserving) covers the case where
+        # the owned-gear snapshot couldn't be loaded.
         gear_rows: list[TripGearItem] = []
-
-        # Items the user confirmed they own and are bringing
-        for item_id_str in plan.gear_selected:
+        item_ids = list(dict.fromkeys((owned_item_ids or []) + list(plan.gear_selected)))
+        for item_id_str in item_ids:
             try:
                 gear = self.repo.add_gear(TripGearItem(
                     trip_id = trip.id,
@@ -315,6 +334,12 @@ class TripService:
             "required_tags":     plan.required_tags,
             "preferred_tags":    plan.preferred_tags,
             "priority_tags":     plan.priority_tags,
+            # Authoritative trail stats captured at selection (metric, as stored
+            # in the DB) plus the Naismith on-trail-time estimate. The UI and the
+            # Past Hikes total read these rather than trusting the LLM itinerary.
+            "length_km":          plan.hike_length_km,
+            "elevation_gain_m":   plan.hike_elevation_gain_m,
+            "estimated_duration": plan.estimated_duration,
         }
 
     def _build_camping(self, plan) -> Optional[Dict[str, Any]]:

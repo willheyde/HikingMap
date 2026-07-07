@@ -1,8 +1,19 @@
 import { useState, useRef, useEffect } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
 import GlobalStyles    from "./GlobalStyles";
 import AmbientHue     from "../components/AmbientHue";
 import { useTrip }    from "../context/TripContext";
 import { useUser } from "../context/UserContext";
+import { createUserGear } from "../api/usersService";
+
+// Gap categories (GearGapAnalyzer) → functional gear_category the
+// POST /users/:id/gear endpoint expects. Most already match; these don't.
+const GAP_TO_GEAR_CATEGORY = {
+  rain_gear:     "shell",
+  sleep_system:  "sleep",
+  trekking_poles: "misc",
+};
+const toGearCategory = (c) => GAP_TO_GEAR_CATEGORY[c] || c;
 
 /* ─── Design tokens ───────────────────────────────────────────────────── */
 const C = {
@@ -400,25 +411,30 @@ const Message = ({ msg }) => {
 // selection logic (PhaseController.extract_hike_selection) is unchanged.
 const HikeOptionCards = ({ options, onPick }) => {
   if (!options?.length) return null;
+  // No onPick → read-only record of an earlier offer (a hike is already
+  // selected). Render the same cards, dimmed and non-interactive.
+  const interactive = typeof onPick === "function";
   return (
     <div style={{
       display: "grid", gap: 10, marginBottom: 24,
       gridTemplateColumns: "repeat(auto-fill, minmax(230px, 1fr))",
       animation: "slideUp 0.25s ease",
+      opacity: interactive ? 1 : 0.5,
     }}>
       {options.map((opt) => (
         <button
           key={opt.index}
-          onClick={() => onPick(opt)}
+          onClick={interactive ? () => onPick(opt) : undefined}
+          disabled={!interactive}
           style={{
-            textAlign: "left", cursor: "pointer",
+            textAlign: "left", cursor: interactive ? "pointer" : "default",
             background: C.fieldBg, border: `1px solid ${C.fieldBorder}`,
             borderRadius: 12, padding: "14px 16px",
             transition: "all 0.15s",
             display: "flex", flexDirection: "column", gap: 6,
           }}
-          onMouseEnter={e => { e.currentTarget.style.borderColor = C.amber; e.currentTarget.style.background = C.amberDim; }}
-          onMouseLeave={e => { e.currentTarget.style.borderColor = C.fieldBorder; e.currentTarget.style.background = C.fieldBg; }}
+          onMouseEnter={e => { if (interactive) { e.currentTarget.style.borderColor = C.amber; e.currentTarget.style.background = C.amberDim; } }}
+          onMouseLeave={e => { if (interactive) { e.currentTarget.style.borderColor = C.fieldBorder; e.currentTarget.style.background = C.fieldBg; } }}
         >
           <div style={{ fontFamily: sans, fontSize: 13.5, fontWeight: 600, color: C.heading }}>
             {opt.name}
@@ -495,11 +511,20 @@ const StatusBadge = ({ status, size = 11 }) => {
 // finished and the Redis session is gone) — this recaps the structured
 // trip data GET /chats/:id returns, same information the finalize-phase
 // summary showed at save time.
-const ReadOnlyTripView = ({ trip, onMarkDone, marking, onOpenReview, onGoAgain, duplicating }) => {
+const ReadOnlyTripView = ({ trip, onMarkDone, marking, onCancel, cancelling, onOpenReview, onGoAgain, duplicating }) => {
   const stop = trip.stops?.[0];
   const trail = stop?.trail_data || {};
   const days = stop?.itinerary?.days || [];
   const completion = trip.completion;
+
+  // Real trail stats (metric, from the DB at selection) → imperial for display.
+  // These are authoritative; the per-day itinerary figures below are the LLM's.
+  const distanceMi = trail.length_km != null ? (trail.length_km / 1.60934).toFixed(1) : null;
+  const gainFt     = trail.elevation_gain_m != null ? Math.round(trail.elevation_gain_m * 3.28084) : null;
+  // Prefer the on-trail time estimate over the calendar-day span — a 3.4 km
+  // trail is "~45 min", not "1 day".
+  const durationLabel = trail.estimated_duration
+    || (stop?.duration_days ? `${stop.duration_days} day${stop.duration_days !== 1 ? "s" : ""}` : null);
 
   return (
     <div style={{ flex: 1, overflowY: "auto", padding: "32px 24px" }}>
@@ -516,15 +541,29 @@ const ReadOnlyTripView = ({ trip, onMarkDone, marking, onOpenReview, onGoAgain, 
           </div>
 
           {trip.status === "saved" && (
-            <button onClick={onMarkDone} disabled={marking}
-              style={{
-                padding: "8px 16px", borderRadius: 9, cursor: marking ? "default" : "pointer",
-                background: C.amber, border: "none", color: C.amberText,
-                fontFamily: sans, fontSize: 12.5, fontWeight: 600, opacity: marking ? 0.7 : 1,
-              }}
-            >
-              {marking ? "Marking…" : "Mark as done"}
-            </button>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button onClick={onMarkDone} disabled={marking || cancelling}
+                style={{
+                  padding: "8px 16px", borderRadius: 9, cursor: (marking || cancelling) ? "default" : "pointer",
+                  background: C.amber, border: "none", color: C.amberText,
+                  fontFamily: sans, fontSize: 12.5, fontWeight: 600, opacity: (marking || cancelling) ? 0.7 : 1,
+                }}
+              >
+                {marking ? "Marking…" : "Mark as done"}
+              </button>
+              <button onClick={onCancel} disabled={marking || cancelling}
+                title="Remove this trip — you've decided not to go"
+                style={{
+                  padding: "8px 16px", borderRadius: 9, cursor: (marking || cancelling) ? "default" : "pointer",
+                  background: "none", border: `1px solid ${C.fieldBorder}`, color: C.muted,
+                  fontFamily: sans, fontSize: 12.5, fontWeight: 600, opacity: (marking || cancelling) ? 0.6 : 1,
+                }}
+                onMouseEnter={e => { if (!marking && !cancelling) { e.currentTarget.style.borderColor = C.errorBorder; e.currentTarget.style.color = C.errorText; } }}
+                onMouseLeave={e => { e.currentTarget.style.borderColor = C.fieldBorder; e.currentTarget.style.color = C.muted; }}
+              >
+                {cancelling ? "Removing…" : "Not going"}
+              </button>
+            </div>
           )}
 
           {trip.status === "completed" && (
@@ -600,9 +639,21 @@ const ReadOnlyTripView = ({ trip, onMarkDone, marking, onOpenReview, onGoAgain, 
             <div style={{ fontFamily: sans, fontSize: 13.5, color: C.heading, marginTop: 3 }}>{stop?.destination || "—"}</div>
           </div>
           <div>
-            <div style={{ fontFamily: sans, fontSize: 10.5, color: C.muted, textTransform: "uppercase", letterSpacing: "0.05em" }}>Duration</div>
+            <div style={{ fontFamily: sans, fontSize: 10.5, color: C.muted, textTransform: "uppercase", letterSpacing: "0.05em" }}>Time on trail</div>
             <div style={{ fontFamily: sans, fontSize: 13.5, color: C.heading, marginTop: 3 }}>
-              {stop?.duration_days ? `${stop.duration_days} day${stop.duration_days !== 1 ? "s" : ""}` : "—"}
+              {durationLabel || "—"}
+            </div>
+          </div>
+          <div>
+            <div style={{ fontFamily: sans, fontSize: 10.5, color: C.muted, textTransform: "uppercase", letterSpacing: "0.05em" }}>Distance</div>
+            <div style={{ fontFamily: sans, fontSize: 13.5, color: C.heading, marginTop: 3 }}>
+              {distanceMi != null ? `${distanceMi} mi` : "—"}
+            </div>
+          </div>
+          <div>
+            <div style={{ fontFamily: sans, fontSize: 10.5, color: C.muted, textTransform: "uppercase", letterSpacing: "0.05em" }}>Elevation gain</div>
+            <div style={{ fontFamily: sans, fontSize: 13.5, color: C.heading, marginTop: 3 }}>
+              {gainFt != null ? `${gainFt} ft` : "—"}
             </div>
           </div>
           <div>
@@ -618,6 +669,68 @@ const ReadOnlyTripView = ({ trip, onMarkDone, marking, onOpenReview, onGoAgain, 
             </div>
           </div>
         </div>
+
+        {/* Trail readiness — live per-category check of the user's kit vs what
+            THIS trail needs (computed server-side in GET /chats/:id). */}
+        {Array.isArray(trip.readiness) && trip.readiness.length > 0 && (
+          <div style={{
+            background: C.fieldBg, border: `1px solid ${C.fieldBorder}`,
+            borderRadius: 14, padding: "18px 22px", marginBottom: 18,
+          }}>
+            <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 12, gap: 10, flexWrap: "wrap" }}>
+              <div style={{ fontFamily: sans, fontSize: 11, color: C.label, textTransform: "uppercase", letterSpacing: "0.05em", fontWeight: 600 }}>
+                Trail readiness
+              </div>
+              {(() => {
+                const missing = trip.readiness.filter(r => r.status === "missing").length;
+                return (
+                  <div style={{ fontFamily: sans, fontSize: 11.5, color: missing > 0 ? C.errorText : C.successText }}>
+                    {missing > 0
+                      ? `${missing} essential${missing !== 1 ? "s" : ""} to sort before you go`
+                      : `Set on all ${trip.readiness.length} — you're good to go`}
+                  </div>
+                );
+              })()}
+            </div>
+
+            <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
+              {trip.readiness.map(r => {
+                const meta = {
+                  ok:      { icon: "✓", color: C.successText },
+                  missing: { icon: "✗", color: C.errorText },
+                  flag:    { icon: "!", color: C.amber },
+                }[r.status] || { icon: "•", color: C.muted };
+                const title = r.label.charAt(0).toUpperCase() + r.label.slice(1);
+                return (
+                  <div key={r.category} style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
+                    <span aria-hidden="true" style={{
+                      flexShrink: 0, marginTop: 1, width: 17, height: 17, borderRadius: "50%",
+                      display: "inline-flex", alignItems: "center", justifyContent: "center",
+                      fontSize: 11, fontWeight: 700, color: meta.color,
+                      background: `${meta.color}22`, border: `1px solid ${meta.color}55`,
+                    }}>{meta.icon}</span>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontFamily: sans, fontSize: 13, color: C.heading }}>
+                        {title}
+                        {r.required && (
+                          <span style={{ color: C.muted, fontWeight: 400 }}>{`  ·  needs ${r.required}`}</span>
+                        )}
+                        {r.status !== "ok" && r.importance === "recommended" && (
+                          <span style={{ color: C.muted, fontSize: 11 }}>{"  (recommended)"}</span>
+                        )}
+                      </div>
+                      {r.note && r.status !== "ok" && (
+                        <div style={{ fontFamily: serif, fontSize: 12, color: C.subtext, marginTop: 1 }}>
+                          {r.note}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
 
         {days.length > 0 && (
           <div style={{
@@ -921,19 +1034,22 @@ export default function TripPlanner() {
     markChatCompleted,
     submitChatReview,
     duplicateChat,
+    cancelChat,
   } = useTrip();
 
-  const { messages, phase, serviceReady, hikeOptions } = chat;
+  const { messages, phase, serviceReady } = chat;
   const { user } = useUser();
+  const location = useLocation();
+  const navigate = useNavigate();
   // ── Local UI state ────────────────────────────────────────────────────────
   const [input,          setInput]          = useState("");
   const [sidebarOpen,    setSidebarOpen]    = useState(true);
-  const [model,          setModel]          = useState("Thinking");
   const [userLocation,   setUserLocation]   = useState({ lat: null, lng: null });
   const [locLabel,       setLocLabel]       = useState(null);
   const [savedToast,     setSavedToast]     = useState(false);
   // Mark-as-done / review questionnaire state
   const [marking,          setMarking]          = useState(false);
+  const [cancelling,       setCancelling]       = useState(false);
   const [reviewModalOpen,  setReviewModalOpen]  = useState(false);
   const [reviewSubmitting, setReviewSubmitting] = useState(false);
   const [duplicating,      setDuplicating]      = useState(false);
@@ -949,6 +1065,7 @@ export default function TripPlanner() {
 
   const endRef   = useRef(null);
   const inputRef = useRef(null);
+  const seededRef = useRef(false);
 
   // ── On mount: health check + chat history ─────────────────────────────────
   useEffect(() => {
@@ -1007,6 +1124,35 @@ export default function TripPlanner() {
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); }
   };
 
+  // ── Seeded draft (e.g. "Plan a trip to X" from a hike detail page) ────────
+  // Consume a router-state draft once: start a fresh session and PRE-FILL the
+  // composer with the message (crafted to hit the name lookup) without sending —
+  // the user reviews it and hits send. Clear the state so a refresh / back-nav
+  // doesn't re-fill it.
+  // Mount-only: reading location.state here (not in deps) is deliberate — the
+  // navigate() below clears it, and we must NOT let that re-run this effect
+  // (its cleanup would cancel the pending prefill before it lands).
+  useEffect(() => {
+    const draft = location.state?.draftMessage;
+    if (!draft || seededRef.current) return;
+    seededRef.current = true;
+    resetChat();
+    setInput(draft);
+    // Clear the router state so a refresh / back-nav doesn't re-fill it.
+    navigate(location.pathname, { replace: true, state: {} });
+    // Size + focus the composer after the draft has painted.
+    const raf = requestAnimationFrame(() => {
+      const el = inputRef.current;
+      if (el) {
+        el.focus();
+        el.style.height = "auto";
+        el.style.height = Math.min(el.scrollHeight, 160) + "px";
+      }
+    });
+    return () => cancelAnimationFrame(raf);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // ── Location ──────────────────────────────────────────────────────────────
   const requestLocation = () => {
     if (!navigator.geolocation) return;
@@ -1033,11 +1179,15 @@ export default function TripPlanner() {
       await Promise.all(
         selectedCategories.map((category) => {
           const suggestion = gearSuggestions.find(s => s.category === category);
-          if (!suggestion) return Promise.resolve();
-          return createItem(suggestion.category, {
-            name:     suggestion.name,
-            weight_g: suggestion.weight_g,
-            cost:     suggestion.cost,
+          if (!suggestion || !user) return Promise.resolve();
+          // Add the suggested item to the user's kit (creates + links). The old
+          // createItem() made an orphan catalog row that was never tied to the
+          // user; createUserGear is the stage-2 category-based add.
+          return createUserGear(user.id, {
+            name:          suggestion.name || suggestion.display_name || category,
+            gear_category: toGearCategory(suggestion.category),
+            weight:        suggestion.weight_g ?? 0,
+            cost:          suggestion.cost ?? 0,
           });
         })
       );
@@ -1086,6 +1236,19 @@ export default function TripPlanner() {
       // error surfaced via context's `error` state already
     } finally {
       setMarking(false);
+    }
+  };
+
+  const handleCancel = async () => {
+    if (!readOnlyChat || cancelling) return;
+    if (!window.confirm(`Remove "${readOnlyChat.title}"? This can't be undone.`)) return;
+    setCancelling(true);
+    try {
+      await cancelChat(readOnlyChat.id);
+    } catch {
+      // error surfaced via context's `error` state
+    } finally {
+      setCancelling(false);
     }
   };
 
@@ -1307,23 +1470,20 @@ export default function TripPlanner() {
                 }}
               />
 
-              <select value={model} onChange={e => setModel(e.target.value)}
+              <button
+                onClick={() => navigate("/profile")}
                 style={{
-                  background: C.fieldBg, border: `1px solid ${C.fieldBorder}`,
-                  borderRadius: 20, padding: "5px 30px 5px 12px",
-                  color: C.label, fontFamily: sans, fontSize: 12.5,
-                  cursor: "pointer", appearance: "none", WebkitAppearance: "none",
-                  backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%236a4e30' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E")`,
-                  backgroundRepeat: "no-repeat", backgroundPosition: "right 10px center",
+                  background: "none", border: `1px solid ${C.fieldBorder}`, borderRadius: 20,
+                  padding: "6px 16px", color: C.label,
+                  fontFamily: sans, fontSize: 12.5, cursor: "pointer",
+                  fontWeight: 600, letterSpacing: "0.03em", transition: "all 0.15s",
                 }}
-              >
-                <option>Thinking</option>
-                <option>Standard</option>
-                <option>Lightweight</option>
-              </select>
+                onMouseEnter={e => { e.currentTarget.style.borderColor = C.amberBorder; e.currentTarget.style.color = C.amberText; }}
+                onMouseLeave={e => { e.currentTarget.style.borderColor = C.fieldBorder; e.currentTarget.style.color = C.label; }}
+              >Profile</button>
 
               <button
-                onClick={() => window.location.href = "/map"}
+                onClick={() => navigate("/map")}
                 style={{
                   background: C.amber, border: "none", borderRadius: 20,
                   padding: "6px 16px", color: C.amberText,
@@ -1361,6 +1521,8 @@ export default function TripPlanner() {
               trip={readOnlyChat}
               onMarkDone={handleMarkDone}
               marking={marking}
+              onCancel={handleCancel}
+              cancelling={cancelling}
               onOpenReview={() => setReviewModalOpen(true)}
               onGoAgain={handleGoAgain}
               duplicating={duplicating}
@@ -1378,21 +1540,37 @@ export default function TripPlanner() {
               <WelcomeView onSend={sendMessage} serviceReady={serviceReady} />
             ) : (
               <div style={{ maxWidth: 680, width: "100%", margin: "0 auto", padding: "0 24px" }}>
-                {messages.map((msg, i) => <Message key={i} msg={msg} />)}
-
-                {!loading && phase === "destination" && hikeOptions.length > 0 && (
-                  <HikeOptionCards
-                    options={hikeOptions}
-                    // "option N" must come first: PhaseController.extract_hike_selection
-                    // regex-matches the FIRST "option|trail|hike|choice|number|#"
-                    // + digit it finds left-to-right. If the trail's own name
-                    // happened to contain a number 1-5 (e.g. "Trail 2") and it
-                    // came before "option N" in the string, that embedded digit
-                    // would win instead — leading "option N" guarantees the
-                    // intended index always matches first regardless of name.
-                    onPick={(opt) => sendMessage(`Option ${opt.index}: ${opt.name}`)}
-                  />
-                )}
+                {messages.map((msg, i) => {
+                  // Cards render anchored under the assistant message that
+                  // produced them (msg.hikeOptions), not floating at the bottom
+                  // of the thread. They stay interactive only while no hike is
+                  // selected yet (plan.hike_id null) — once a trail is picked
+                  // the phase advances and the earlier sets become a read-only
+                  // record of what was offered.
+                  const selectable = !loading && !chat.plan?.hike_id;
+                  return (
+                    <div key={i}>
+                      <Message msg={msg} />
+                      {msg.hikeOptions?.length > 0 && (
+                        <HikeOptionCards
+                          options={msg.hikeOptions}
+                          // "option N" must come first: PhaseController.extract_hike_selection
+                          // regex-matches the FIRST "option|trail|hike|choice|number|#"
+                          // + digit it finds left-to-right. If the trail's own name
+                          // happened to contain a number 1-5 (e.g. "Trail 2") and it
+                          // came before "option N" in the string, that embedded digit
+                          // would win instead — leading "option N" guarantees the
+                          // intended index always matches first regardless of name.
+                          onPick={
+                            selectable
+                              ? (opt) => sendMessage(`Option ${opt.index}: ${opt.name}`)
+                              : undefined
+                          }
+                        />
+                      )}
+                    </div>
+                  );
+                })}
 
                 {loading && (
                   <div style={{ display: "flex", gap: 12, marginBottom: 24, animation: "fadeIn 0.2s ease" }}>

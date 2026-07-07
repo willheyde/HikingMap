@@ -1,8 +1,9 @@
 import psycopg
-from uuid import UUID
+from uuid import UUID, uuid4
 from typing import Optional, List
 from urllib.parse import unquote
 from DBConnection import get_connection
+from gear_levels import GEAR_CATEGORY_TO_ITEM_TYPE
 
 from PyObjects.Items import (
     Item, Backpack, Footwear, Shelter, SleepingBag, SleepingPad,
@@ -61,6 +62,7 @@ def _row_to_item(row) -> Item:
     def mk(cls, **kwargs):
         obj = cls(id=id_, name=name, weight=float(weight), cost=float(cost), item_type=item_type, **kwargs)
         obj.image_url = image_url
+        obj.attributes = attrs        # preserve the full jsonb (gear_category, level, …)
         return obj
     if item_type == ItemType.BACKPACK.value:
         return mk(Backpack,
@@ -130,6 +132,7 @@ def _row_to_item(row) -> Item:
     # Fallback for MISC or unknown types
     obj = Item(id=id_, name=name, weight=float(weight), cost=float(cost), item_type=item_type)
     obj.image_url = image_url
+    obj.attributes = attrs
     return obj
 
 
@@ -233,6 +236,57 @@ class ItemRepository:
                 )
                 rows = cur.fetchall()
         return [_row_to_item(r) for r in rows]
+    def create_user_gear(
+        self,
+        user_id:       UUID,
+        name:          str,
+        gear_category: str,
+        level:         Optional[str] = None,
+        weight:        float = 0.0,
+        cost:          float = 0.0,
+        temp_rating_f: Optional[float] = None,
+    ) -> Item:
+        """
+        Free-text "I have this" gear: creates an item described by a functional
+        gear_category (+ optional capability level), links it to the user, and
+        returns the loaded Item. The functional fields live in attributes jsonb
+        (the A+ model); item_type is derived for backward compat with the
+        catalog/query code.
+
+        For a shell, waterproof is stamped True so the legacy waterproof-aware
+        presence checks (rain_gear) still recognize it.
+        """
+        item_type = GEAR_CATEGORY_TO_ITEM_TYPE.get(gear_category, "misc")
+        attrs: dict = {"gear_category": gear_category}
+        if level:
+            attrs["level"] = level
+        if temp_rating_f is not None:
+            attrs["temp_rating_f"] = temp_rating_f
+        if gear_category == "shell":
+            attrs["waterproof"] = True
+
+        item_id = uuid4()
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO items (id, name, weight, cost, item_type, image_url, attributes)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb)
+                    """,
+                    (str(item_id), name, weight, cost, item_type, None,
+                     psycopg.types.json.Jsonb(attrs)),
+                )
+                cur.execute(
+                    "INSERT INTO user_items (user_id, item_id) VALUES (%s, %s)",
+                    (str(user_id), str(item_id)),
+                )
+                conn.commit()
+
+        item = Item(id=item_id, name=name, weight=float(weight), cost=float(cost),
+                    item_type=item_type)
+        item.attributes = attrs
+        return item
+
     def create_item_for_user(self, item: Item, user_id: UUID) -> UUID:
         """
         Creates the item row and links it to the given user via user_items,
