@@ -163,16 +163,17 @@ npm run dev                   # Vite dev server on :5173
 The current focus is getting HikeBuilder onto **AWS** as a public soft launch. Tracked work, roughly in order:
 
 **Deployment blockers**
-- [ ] Pin dependencies (`requirements.txt` / Dockerfile) for reproducible builds
-- [ ] Connection pooling for PostgreSQL (currently one connection per request)
-- [ ] Environment-driven CORS (currently hard-coded to localhost)
-- [ ] Move secrets to AWS Secrets Manager / SSM; harden the `USER` env resolution
-- [ ] A migration runner (migrations are applied by hand today)
+- [x] Pin dependencies (`requirements.txt`) for reproducible builds — *Dockerfile still to come*
+- [x] Connection pooling for PostgreSQL (`psycopg_pool`, with a per-call fallback)
+- [x] Environment-driven CORS (`ALLOWED_ORIGINS`, defaults to local)
+- [x] Harden the `USER` env resolution (`DB_USER` preferred, `.env` override) — *secrets are now a deploy-time step; code is env-ready*
+- [x] A migration runner (`migrate.py`: up / status / baseline)
+- [ ] Dockerfile + AWS deploy config (App Runner / ECS task definition)
 
 **Before public**
 - [x] Rate limiting (per-IP on auth, per-account burst on AI)
 - [x] AI usage controls — per-account message quota to cap cost/abuse (keeps the capable model, caps volume)
-- [ ] Offload the blocking LLM call off the async request path (geocoding already offloaded)
+- [x] Offload the blocking LLM + geocoding calls off the async request path
 
 **Known data-quality issues (ingestion)**
 - [ ] Lake tag applied as a default, producing false "lake" tags on trails without one
