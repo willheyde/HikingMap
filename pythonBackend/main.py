@@ -1,6 +1,7 @@
 # main.py
 from dotenv import load_dotenv
-load_dotenv()
+load_dotenv(override=True)   # .env is authoritative locally; no-op on AWS (no file)
+import os
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -11,6 +12,7 @@ from Controllers.TripController import router as trip_router
 from Controllers.ItemController import router as item_router
 from AI.TripChat import router as trip_chat_router
 from Repos.TripRepo import TripRepository
+from DBConnection import close_pool
 import logging
 logging.basicConfig(
     level=logging.INFO,
@@ -49,15 +51,22 @@ async def lifespan(app: FastAPI):
     logger.info("APScheduler started — needs_review check runs every 6h.")
     yield
     _scheduler.shutdown()
+    close_pool()   # release pooled DB connections on graceful shutdown
 
 
 app = FastAPI(title="Hiking App API", lifespan=lifespan)
+
+# Allowed CORS origins are env-driven so the same code serves local dev and a
+# deployed frontend. Set ALLOWED_ORIGINS to a comma-separated list in prod
+# (e.g. "https://hikebuilder.app"); it DEFAULTS to the local Vite origins, so
+# unset (local dev) keeps working without any configuration.
+_DEFAULT_ORIGINS = "http://localhost:5173,http://127.0.0.1:5173"
+_allowed_origins = [
+    o.strip() for o in os.getenv("ALLOWED_ORIGINS", _DEFAULT_ORIGINS).split(",") if o.strip()
+]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",  # Vite dev server
-        "http://127.0.0.1:5173",
-    ],
+    allow_origins=_allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

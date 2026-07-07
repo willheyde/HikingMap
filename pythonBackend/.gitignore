@@ -2,3 +2,6 @@
 __pycache__/
 *.pyc
 *.osm.pbf
+
+# One-shot migration data snapshots (recoverable backups, not source)
+migrations/*_purge_backup_*.json

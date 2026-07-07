@@ -1,0 +1,24 @@
+# HikeBuilder backend — runtime dependencies.
+#   pip install -r requirements.txt
+#
+# Versions are pinned to the known-good set the app is developed against.
+# This is a direct-dependency manifest, not a full lockfile; a lockfile
+# (pip-tools / uv) can layer on top later for byte-for-byte reproducibility.
+
+# ── Web server ────────────────────────────────────────────────────────────────
+fastapi==0.124.4
+uvicorn==0.38.0
+psycopg[binary]==3.3.2
+psycopg-pool>=3.2,<4          # connection pooling (see DBConnection.py; optional at runtime)
+pydantic==2.12.5
+python-dotenv==1.1.1
+APScheduler==3.11.2
+groq==1.2.0
+redis==8.0.0
+python-jose[cryptography]==3.5.0
+bcrypt==5.0.0
+httpx==0.28.1                 # reverse geocoding (trip_metrics.py)
+
+# ── Ingestion pipeline (pythonBackend/ingestion/) ─────────────────────────────
+requests==2.32.5
+geopy==2.4.1
