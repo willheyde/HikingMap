@@ -53,7 +53,11 @@ class Item:
     name: str
     weight: float       # grams
     cost: float         # USD
-    item_type: str
+    # Defaulted so the typed subclasses (which set item_type authoritatively in
+    # __post_init__) can be constructed without callers passing it — the POST
+    # /items/* create routes do exactly that. A bare Item with no item_type
+    # falls back to MISC rather than raising a TypeError in __init__.
+    item_type: str = ItemType.MISC.value
     image_url: Optional[str] = None
     # Raw items.attributes jsonb, preserved verbatim on load. The typed
     # subclasses lift specific keys into fields, but that's lossy (e.g. Footwear
