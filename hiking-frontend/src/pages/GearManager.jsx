@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { useUser } from "../context/UserContext";
+import { useUser } from "../context/useUser";
 import { GEAR_SECTIONS, resolveGearCategory, levelLabelFor } from "../data/gearCategories";
 import ScrollBar from "../components/ScrollBar";
 

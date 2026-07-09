@@ -8,7 +8,7 @@ import HikeSummaryCard from "../components/HikeSummaryCard";
 import { HikeCardSkeletonList } from "../components/Skeleton";
 import MapLegend from "../components/MapLegend";
 import { useUserLocation } from "../components/UserLocation";
-import { useHikes } from "../context/HikeContext";
+import { useHikes } from "../context/useHikes";
 import { palette as P } from "../styles/theme";
 
 mapboxgl.accessToken = import.meta.env.VITE_MAPBOX_TOKEN;
@@ -422,8 +422,10 @@ export default function MapPage() {
   useEffect(() => { locRef.current         = userLocation; }, [userLocation]);
 
   /* ── [2][4] Param builder – always reads latest state through refs ──────── */
-  // Assigned each render so it always captures current filter + location state.
-  // Reads map.current.getBounds() for the live viewport bbox.
+  // Reassigned after every render (in an effect, not during render — refs must
+  // not be mutated in render) so it always captures current filter + location
+  // state. Read only from effects/handlers below. Reads map.getBounds() for bbox.
+  useEffect(() => {
   buildParamsRef.current = () => {
     const f  = filtersRef.current ?? {};
     const ul = locRef.current;
@@ -453,6 +455,7 @@ export default function MapPage() {
 
     return p;
   };
+  });
 
   /* ── Effect 1: Map init, sources, layers, and persistent event handlers ── */
   useEffect(() => {
@@ -540,7 +543,7 @@ export default function MapPage() {
       map.current?.remove();
       map.current = null;
     };
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []);
 
   /* ── Effect 2: User-location dot ──────────────────────────────────────── */
   useEffect(() => {
@@ -561,14 +564,14 @@ export default function MapPage() {
     if (!map.current?.loaded()) return;   // map's 'load' handler covers the first search
     const t = setTimeout(() => searchRef.current?.(buildParamsRef.current()), 300);
     return () => clearTimeout(t);
-  }, [filters, userLocation]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [filters, userLocation]);
 
   /* ── Effect 4: Immediate re-fetch when navigating back to /map ─────────── */
   useEffect(() => {
     if (location.pathname !== "/map") return;
     if (!map.current?.loaded()) return;   // same — avoid duplicating the initial search
     searchRef.current?.(buildParamsRef.current());
-  }, [location.pathname]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [location.pathname]);
 
   /* ── Effect 5: Push new hike data into the WebGL sources ──────────────── */
   // Single setData call per hikes change – no DOM marker creation at all

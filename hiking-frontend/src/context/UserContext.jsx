@@ -1,11 +1,6 @@
-import { createContext, useContext, useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef } from "react";
 import * as userService from "../api/usersService";
-
-const UserContext = createContext(null);
-
-export const useUser = () => {
-  return useContext(UserContext);
-};
+import { UserContext } from "./useUser";
 
 export const UserProvider = ({ children }) => {
   const [user, setUser] = useState(null);

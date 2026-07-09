@@ -134,14 +134,13 @@ jobs:
         working-directory: hiking-frontend
         run: npm ci
 
-      # Advisory for now: the SPA has a pre-existing lint backlog (unused vars,
-      # a few react-hooks rules). continue-on-error keeps lint visible in the log
-      # without blocking the build gate. Flip this off once the backlog is fixed
-      # to make lint a hard gate.
-      - name: Lint (advisory)
+      # Blocking: the error backlog is cleared (0 errors), so lint is now a hard
+      # gate — any new eslint error fails the job. eslint doesn't fail on
+      # warnings; add `--max-warnings 0` here once the 2 remaining exhaustive-deps
+      # warnings are resolved to gate on those too.
+      - name: Lint
         working-directory: hiking-frontend
         run: npm run lint
-        continue-on-error: true
 
       - name: Build
         working-directory: hiking-frontend

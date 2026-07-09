@@ -2,8 +2,8 @@ import { useState, useRef, useEffect } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import GlobalStyles    from "./GlobalStyles";
 import AmbientHue     from "../components/AmbientHue";
-import { useTrip }    from "../context/TripContext";
-import { useUser } from "../context/UserContext";
+import { useTrip }    from "../context/useTrip";
+import { useUser } from "../context/useUser";
 import { createUserGear } from "../api/usersService";
 
 // Gap categories (GearGapAnalyzer) → functional gear_category the

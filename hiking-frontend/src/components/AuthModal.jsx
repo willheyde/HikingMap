@@ -1,6 +1,6 @@
 import { useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
-import { useUser } from "../context/UserContext";
+import { useUser } from "../context/useUser";
 import GoogleSignInButton from "./GoogleSignInButton";
 
 /* ─── Theme tokens ──────────────────────────────────────────────────────── */

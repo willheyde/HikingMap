@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import { useUser } from "../context/UserContext";
+import { useUser } from "../context/useUser";
 import { GEAR_SECTIONS } from "../data/gearCategories";
 
 /* ─── Field Journal tokens (matches AuthModal / old onboarding) — hikeStyle ── */

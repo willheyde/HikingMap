@@ -2,16 +2,19 @@
 import { useState, useEffect } from "react";
 
 export function useUserLocation() {
+  // Geolocation support is a stable browser capability — decide it at render so
+  // the effect never has to setState synchronously for the unsupported case
+  // (react-hooks/set-state-in-effect). When unsupported we start already-settled:
+  // not loading, with the error message; the effect below then does nothing.
+  const geoSupported = typeof navigator !== "undefined" && "geolocation" in navigator;
   const [location, setLocation] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
+  const [loading, setLoading] = useState(geoSupported);
+  const [error, setError] = useState(
+    geoSupported ? null : "Geolocation not supported by your browser."
+  );
 
   useEffect(() => {
-    if (!navigator.geolocation) {
-      setError("Geolocation not supported by your browser.");
-      setLoading(false);
-      return;
-    }
+    if (!geoSupported) return;
 
     const watchId = navigator.geolocation.watchPosition(
       (position) => {
@@ -45,7 +48,7 @@ export function useUserLocation() {
     );
 
     return () => navigator.geolocation.clearWatch(watchId);
-  }, []);
+  }, [geoSupported]);
 
   return { location, loading, error };
 }

@@ -1,8 +1,8 @@
 import { useMemo, useState, useEffect } from "react";
-import { useUser } from "../context/UserContext";
+import { useUser } from "../context/useUser";
 import { useNavigate } from "react-router-dom";
 import ScrollBar from "../components/ScrollBar";
-import { useTrip } from "../context/TripContext";
+import { useTrip } from "../context/useTrip";
 import { getPastHikesStats } from "../api/tripService";
 import { resolveGearCategory, levelLabelFor, categoryMeta } from "../data/gearCategories";
 

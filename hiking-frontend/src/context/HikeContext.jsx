@@ -1,11 +1,6 @@
-import { createContext, useContext, useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback } from "react";
 import * as hikeService from "../api/hikesService";
-
-const HikeContext = createContext(null);
-
-export const useHikes = () => {
-  return useContext(HikeContext);
-};
+import { HikeContext } from "./useHikes";
 
 export const HikeProvider = ({ children }) => {
   const [hikes, setHikes] = useState([]);

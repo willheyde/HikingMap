@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 
-import { useHikes } from "../context/HikeContext";
-import { useUser } from "../context/UserContext";
+import { useHikes } from "../context/useHikes";
+import { useUser } from "../context/useUser";
 import ScrollBar from "../components/ScrollBar";
 import { HikeDetailSkeleton } from "../components/Skeleton";
 import { readinessForHike } from "../data/gearCategories";
