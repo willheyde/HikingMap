@@ -1,5 +1,5 @@
 import { useState, useCallback } from "react";
-import * as itemService from "../api/itemService";
+import * as itemService from "../api/itemsService";
 import { ItemContext } from "./useItems";
 
 export const ItemProvider = ({ children }) => {

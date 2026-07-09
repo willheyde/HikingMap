@@ -95,16 +95,27 @@ jobs:
       - name: Start API server
         working-directory: pythonBackend
         run: |
-          uvicorn main:app --host 127.0.0.1 --port 8000 > "$GITHUB_WORKSPACE/uvicorn.log" 2>&1 &
-          echo "Waiting for /health…"
-          for i in $(seq 1 30); do
+          # `python -m uvicorn` (not bare `uvicorn`) so it's found regardless of
+          # console-script PATH. 60s budget: a cold 2-core runner importing groq/
+          # cryptography/psycopg can take well over the old 30s.
+          python -m uvicorn main:app --host 127.0.0.1 --port 8000 > "$GITHUB_WORKSPACE/uvicorn.log" 2>&1 &
+          SERVER_PID=$!
+          echo "Waiting for /health… (pid $SERVER_PID)"
+          for i in $(seq 1 60); do
             if curl -sf http://127.0.0.1:8000/health > /dev/null; then
-              echo "Server is up."
+              echo "Server is up after ${i}s."
               exit 0
+            fi
+            # If uvicorn already died, stop waiting and show why immediately.
+            if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+              echo "uvicorn exited during startup — log:"
+              cat "$GITHUB_WORKSPACE/uvicorn.log"
+              exit 1
             fi
             sleep 1
           done
-          echo "Server did not become healthy in time."
+          echo "Server did not become healthy in 60s — log:"
+          cat "$GITHUB_WORKSPACE/uvicorn.log"
           exit 1
 
       - name: Run integration tests (non-Groq surface)

@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import GlobalStyles    from "./GlobalStyles";
-import AmbientHue     from "../components/AmbientHue";
+import GlobalStyles    from "./Globalstyles";
+import AmbientHue     from "../components/Ambienthue";
 import { useTrip }    from "../context/useTrip";
 import { useUser } from "../context/useUser";
 import { createUserGear } from "../api/usersService";
