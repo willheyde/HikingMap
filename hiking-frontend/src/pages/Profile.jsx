@@ -6,48 +6,48 @@ import { useTrip } from "../context/TripContext";
 import { getPastHikesStats } from "../api/tripService";
 import { resolveGearCategory, levelLabelFor, categoryMeta } from "../data/gearCategories";
 
-/* ─── Design tokens ─────────────────────────────────────────────────────── */
+/* ─── Field Journal tokens (hikeStyle.md) ───────────────────────────────── */
 const C = {
-  page:        "#0d0a07",
-  card:        "#1c1510",
-  cardBorder:  "#4a3520",
-  fieldBg:     "#241a10",
-  fieldBorder: "#5a3e22",
-  heading:     "#f0e6d0",
-  subtext:     "#a08060",
-  muted:       "#6a4e30",
-  label:       "#b8906a",
-  amber:       "#c17a2e",
-  amberDim:    "rgba(193,122,46,0.12)",
-  amberBorder: "rgba(193,122,46,0.35)",
-  amberText:   "#fff8ee",
-  divider:     "#3a2510",
-  ownedText:   "#9dcc85",
-  errorBg:     "#2a100a",
+  page:        "#dccaa0", // canvas
+  card:        "#ebe0c2", // paper
+  cardBorder:  "#a2855a", // rule
+  fieldBg:     "#ccb98f", // paper-sunk
+  fieldBorder: "#a2855a", // rule
+  heading:     "#3d2817", // ink
+  subtext:     "#5c3a21", // ink-soft
+  muted:       "#6a4a26", // ink-muted
+  label:       "#a83b2c", // ember (accent)
+  amber:       "#a83b2c", // ember
+  amberDim:    "rgba(168,59,44,0.12)",
+  amberBorder: "rgba(168,59,44,0.35)",
+  amberText:   "#ebe0c2", // on-ember
+  divider:     "#a2855a", // rule
+  ownedText:   "#7a6236", // sage
+  errorBg:     "#e6c29a", // rust-wash
 };
-const serif = "Georgia, 'Times New Roman', serif";
-const sans  = "'Trebuchet MS', 'Lucida Sans Unicode', sans-serif";
-const body  = "'Palatino Linotype', Palatino, Georgia, serif";
+const serif = "'Fraunces', Georgia, serif";
+const sans  = "'Work Sans', 'Trebuchet MS', sans-serif";
+const body  = "'Spectral', Georgia, serif";
 
 /* ─── Mountain avatar (shown when no avatar_url) ────────────────────────── */
 const MountainAvatar = ({ size = 96 }) => (
   <div style={{
     width: size, height: size, borderRadius: "50%",
-    background: "#1a110a", border: `2px solid ${C.cardBorder}`,
+    background: "#ccb98f", border: `2px solid ${C.cardBorder}`,
     display: "flex", alignItems: "center", justifyContent: "center",
     flexShrink: 0,
   }}>
     <svg width={size * 0.72} height={size * 0.55} viewBox="0 0 72 55" fill="none">
       {/* Far peak */}
-      <polygon points="54,52 68,20 82,52" fill="none" stroke="#5a3820" strokeWidth="1.2" strokeLinejoin="round"/>
+      <polygon points="54,52 68,20 82,52" fill="none" stroke="#6a4a26" strokeWidth="1.2" strokeLinejoin="round"/>
       {/* Mid peak */}
-      <polygon points="20,52 38,14 56,52" fill="#2a1810" stroke="#7a5030" strokeWidth="1.3" strokeLinejoin="round"/>
+      <polygon points="20,52 38,14 56,52" fill="#e4cb9e" stroke="#5c3a21" strokeWidth="1.3" strokeLinejoin="round"/>
       {/* Front peak */}
-      <polygon points="-2,52 16,26 34,52" fill="none" stroke="#4a2e18" strokeWidth="1.2" strokeLinejoin="round"/>
+      <polygon points="-2,52 16,26 34,52" fill="none" stroke="#8a7256" strokeWidth="1.2" strokeLinejoin="round"/>
       {/* Snow cap */}
-      <polygon points="38,14 42,22 34,22" fill="#8a6a50"/>
+      <polygon points="38,14 42,22 34,22" fill="#a83b2c"/>
       {/* Horizon water line */}
-      <path d="M-4,52 Q18,48 36,51 Q54,54 74,50" fill="none" stroke="#1e3048" strokeWidth="1.5" strokeLinecap="round"/>
+      <path d="M-4,52 Q18,48 36,51 Q54,54 74,50" fill="none" stroke="#a2855a" strokeWidth="1.5" strokeLinecap="round"/>
     </svg>
   </div>
 );
@@ -87,7 +87,7 @@ const GearPill = ({ item, categoryKey }) => {
       background: C.fieldBg, border: `1px solid ${C.fieldBorder}`,
       display: "flex", flexDirection: "column", gap: 3,
     }}>
-      <span style={{ fontFamily: body, fontSize: 12, color: "#c8bfb0", lineHeight: 1.3,
+      <span style={{ fontFamily: body, fontSize: 12, color: "#3d2817", lineHeight: 1.3,
         overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
         {item.name}
       </span>
@@ -101,7 +101,7 @@ const GearPill = ({ item, categoryKey }) => {
           </span>
         )}
         {cost > 0 && (
-          <span style={{ fontFamily: "monospace", fontSize: 10, color: "#7a5a30" }}>
+          <span style={{ fontFamily: "monospace", fontSize: 10, color: "#6a4a26" }}>
             ${cost.toFixed(0)}
           </span>
         )}
@@ -184,7 +184,7 @@ const Profile = () => {
         <div style={{
           background: C.card, border: `1px solid ${C.cardBorder}`,
           borderRadius: 20, padding: "32px", marginBottom: 20,
-          boxShadow: "0 8px 40px rgba(0,0,0,0.4)",
+          boxShadow: "0 8px 30px rgba(61,40,23,0.10)",
         }}>
           <div style={{ display: "flex", gap: 24, alignItems: "flex-start",
             flexWrap: "wrap", justifyContent: "space-between" }}>
@@ -232,12 +232,12 @@ const Profile = () => {
               <button onClick={() => navigate("/map")}
                 style={{
                   padding: "9px 18px", borderRadius: 9, cursor: "pointer",
-                  background: "rgba(90,58,26,0.3)", border: `1px solid ${C.fieldBorder}`,
+                  background: "#ccb98f", border: `1px solid ${C.fieldBorder}`,
                   color: C.label, fontFamily: sans, fontSize: 12, fontWeight: 600,
                   display: "flex", alignItems: "center", gap: 6,
                 }}
-                onMouseEnter={e => e.currentTarget.style.background = "rgba(90,58,26,0.55)"}
-                onMouseLeave={e => e.currentTarget.style.background = "rgba(90,58,26,0.3)"}
+                onMouseEnter={e => e.currentTarget.style.background = "#e0d0b0"}
+                onMouseLeave={e => e.currentTarget.style.background = "#ccb98f"}
               >
                 <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7"/>
@@ -247,12 +247,12 @@ const Profile = () => {
               <button onClick={() => navigate("/trip-planner")}
                 style={{
                   padding: "9px 18px", borderRadius: 9, cursor: "pointer",
-                  background: "rgba(90,58,26,0.3)", border: `1px solid ${C.fieldBorder}`,
+                  background: "#ccb98f", border: `1px solid ${C.fieldBorder}`,
                   color: C.label, fontFamily: sans, fontSize: 12, fontWeight: 600,
                   display: "flex", alignItems: "center", gap: 6,
                 }}
-                onMouseEnter={e => e.currentTarget.style.background = "rgba(90,58,26,0.55)"}
-                onMouseLeave={e => e.currentTarget.style.background = "rgba(90,58,26,0.3)"}
+                onMouseEnter={e => e.currentTarget.style.background = "#e0d0b0"}
+                onMouseLeave={e => e.currentTarget.style.background = "#ccb98f"}
               >
                 <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7"/>
@@ -262,12 +262,12 @@ const Profile = () => {
               <button onClick={() => navigate("/gear")}
                 style={{
                   padding: "9px 18px", borderRadius: 9, cursor: "pointer",
-                  background: C.amber, border: "1px solid rgba(255,220,150,0.15)",
+                  background: C.amber, border: `1px solid ${C.amberBorder}`,
                   color: C.amberText, fontFamily: sans, fontSize: 12, fontWeight: 600,
                   display: "flex", alignItems: "center", gap: 6,
-                  boxShadow: "0 4px 16px rgba(193,122,46,0.3)",
+                  boxShadow: "0 4px 16px rgba(168,59,44,0.3)",
                 }}
-                onMouseEnter={e => e.currentTarget.style.background = "#d98c38"}
+                onMouseEnter={e => e.currentTarget.style.background = "#8e3022"}
                 onMouseLeave={e => e.currentTarget.style.background = C.amber}
               >
                 <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -278,19 +278,19 @@ const Profile = () => {
               <button onClick={logout}
                 style={{
                   padding: "9px 18px", borderRadius: 9, cursor: "pointer",
-                  background: "rgba(122,58,42,0.1)", border: "1px solid rgba(154,80,58,0.4)",
-                  color: "#c99a80", fontFamily: sans, fontSize: 12, fontWeight: 600,
+                  background: "rgba(150,48,31,0.10)", border: "1px solid rgba(150,48,31,0.4)",
+                  color: "#96301f", fontFamily: sans, fontSize: 12, fontWeight: 600,
                   display: "flex", alignItems: "center", gap: 6,
                 }}
                 onMouseEnter={e => {
-                  e.currentTarget.style.background = "rgba(122,58,42,0.22)";
-                  e.currentTarget.style.borderColor = "#9a5a3e";
-                  e.currentTarget.style.color = "#e0ac8e";
+                  e.currentTarget.style.background = "rgba(150,48,31,0.18)";
+                  e.currentTarget.style.borderColor = "#96301f";
+                  e.currentTarget.style.color = "#8a3626";
                 }}
                 onMouseLeave={e => {
-                  e.currentTarget.style.background = "rgba(122,58,42,0.1)";
-                  e.currentTarget.style.borderColor = "rgba(154,80,58,0.4)";
-                  e.currentTarget.style.color = "#c99a80";
+                  e.currentTarget.style.background = "rgba(150,48,31,0.10)";
+                  e.currentTarget.style.borderColor = "rgba(150,48,31,0.4)";
+                  e.currentTarget.style.color = "#96301f";
                 }}
               >
                 <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -418,7 +418,7 @@ const Profile = () => {
                   {/* Reviewed pairs its green with an explicit label — not color alone. */}
                   <span style={{
                     fontFamily: sans, fontSize: 10.5, fontWeight: 600,
-                    color: trip.status === "reviewed" ? "#60c878" : C.subtext,
+                    color: trip.status === "reviewed" ? "#7a6236" : C.subtext,
                   }}>
                     {trip.status === "reviewed" ? "✓ Reviewed" : "○ Awaiting review"}
                   </span>
@@ -442,11 +442,11 @@ const Profile = () => {
               <button onClick={() => navigate("/gear")}
                 style={{
                   padding: "7px 16px", borderRadius: 8, cursor: "pointer", fontSize: 12,
-                  background: "rgba(90,58,26,0.3)", border: `1px solid ${C.fieldBorder}`,
+                  background: "#ccb98f", border: `1px solid ${C.fieldBorder}`,
                   color: C.label, fontFamily: sans, fontWeight: 600,
                 }}
-                onMouseEnter={e => e.currentTarget.style.background = "rgba(90,58,26,0.55)"}
-                onMouseLeave={e => e.currentTarget.style.background = "rgba(90,58,26,0.3)"}
+                onMouseEnter={e => e.currentTarget.style.background = "#e0d0b0"}
+                onMouseLeave={e => e.currentTarget.style.background = "#ccb98f"}
               >
                 Edit Gear
               </button>
@@ -465,7 +465,7 @@ const Profile = () => {
                   padding: "9px 22px", borderRadius: 9, cursor: "pointer",
                   background: C.amber, border: "none", color: C.amberText,
                   fontFamily: sans, fontSize: 12, fontWeight: 600,
-                  boxShadow: "0 4px 16px rgba(193,122,46,0.3)",
+                  boxShadow: "0 4px 16px rgba(168,59,44,0.3)",
                 }}>
                 Set Up Gear
               </button>

@@ -2,8 +2,9 @@
 ingestion/overpass_enrichment.py
 
 Post-ingest enrichment pass that queries the Overpass API for natural and
-man-made features inside each hike's bounding box, then patches `tags[]`
-and `can_camp` on every hike record in the database.
+man-made features within a short distance of each hike's trail line (via
+Overpass `around:`), then patches `tags[]` and `can_camp` on every hike
+record in the database.
 
 Concurrency model
 ─────────────────
@@ -36,6 +37,7 @@ Options:
 
 import sys
 import time
+import math
 import logging
 import argparse
 import threading
@@ -68,6 +70,16 @@ OVERPASS_TIMEOUT = 30          # [timeout:N] value embedded in QL query
 MAX_RETRIES      = 3
 RETRY_BACKOFF    = 6.0         # initial back-off seconds; doubles on each retry
 BBOX_BUFFER_DEG  = 0.009       # ≈ 1 km padding added to every side of trail bbox
+
+# Proximity filtering. `around:` tests the trail LINE server-side, so a feature
+# is only returned when the trail actually passes within this many metres of it
+# — replacing the old "anywhere in the trail's bounding box" test that let a
+# stream 1 km away in the bbox corner tag a hike as `river`. Containment
+# features (protected areas / nature reserves) stay on the bbox test instead —
+# a trail deep inside a reserve is nowhere near its boundary line.
+TRAIL_PROXIMITY_M = 75         # around-radius (m) for proximity features
+_COORD_MIN_GAP_M  = 60.0       # decimate trail to ~this spacing before building the polyline
+_COORD_MAX_POINTS = 200        # hard cap on polyline vertices (keeps the QL body small)
 
 MARKER_TAG = "overpass_enriched"
 
@@ -140,16 +152,27 @@ DETECTORS: list[tuple[str, Predicate]] = [
     ("summit",     lambda t: t.get("natural") in {"peak", "volcano"}),
 
     # ── Standing water ─────────────────────────────────────────────────────────
+    # Requires an EXPLICIT water=* subtag naming a standing-water body. A bare
+    # `natural=water` (no subtag) is NOT assumed to be a lake — that default was
+    # over-tagging riverbank/greenway polygons (which OSM often maps as bare
+    # `natural=water` or `water=river`) as lakes. A `natural=water` + `water=river`
+    # polygon matches neither this detector nor the waterway detectors below
+    # (those key off `waterway`, not `water`), so it is intentionally dropped.
     (
         "lake",
         lambda t: (
             t.get("natural") == "water"
-            and t.get("water", "lake") in {"lake", "reservoir", "pond", "lagoon"}
+            and t.get("water") in {"lake", "reservoir", "pond", "lagoon"}
         ),
     ),
 
     # ── Moving water ───────────────────────────────────────────────────────────
-    ("river",      lambda t: t.get("waterway") in {"river", "stream", "canal"}),
+    # `river` and `stream` are separate tags. Streams are by far the densest
+    # waterway in mountain terrain, so folding them into `river` made `river`
+    # fire on ~every trail; keeping them apart lets `river` mean an actual river
+    # (waterway=river|canal) while a nearby creek gets the distinct `stream` tag.
+    ("river",      lambda t: t.get("waterway") in {"river", "canal"}),
+    ("stream",     lambda t: t.get("waterway") == "stream"),
 
     # ── Springs / water sources ────────────────────────────────────────────────
     # Matches "spring", "water source", "potable water on trail" queries.
@@ -294,29 +317,39 @@ VERIFIABLE_TAGS = frozenset(feature for feature, _ in DETECTORS if not feature.s
 #
 # Structure: nodes first (point features), then ways (area / linear features).
 # Relations are intentionally omitted — protected area boundaries as relations
-# are rarely needed at trail-bbox scale and slow the query significantly.
+# are rarely needed at trail scale and slow the query significantly.
+#
+# Two region filters are interpolated:
+#   {filt}  →  around:<r>,<trail polyline>   (proximity — most features)
+#   {bbox}  →  <s,w,n,e>                      (containment — protected areas)
+# `around` returns only features the trail passes near, which both fixes the
+# over-broad `river`/`stream` tagging AND shrinks payloads. Protected areas /
+# nature reserves stay on {bbox}: their boundary line can be far from a trail
+# that runs deep inside them, so proximity would wrongly drop `wildlife`.
 
 _QUERY_TEMPLATE = """\
 [out:json][timeout:{timeout}];
 (
-  node["natural"~"waterfall|peak|volcano|cave_entrance|glacier|hot_spring|spring|water|grassland|heath|scrub|cliff|gorge|arch|bare_rock|scree|wetland|marsh|bog|beach|dune|rapids"]({bbox});
-  node["waterway"~"waterfall|weir|dam|river|stream|canal"]({bbox});
-  node["whitewater"="rapid"]({bbox});
-  node["rapid"="yes"]({bbox});
-  node["tourism"~"viewpoint|camp_site|caravan_site|wilderness_hut|picnic_site"]({bbox});
-  node["historic"~"ruins|castle|fort|archaeological_site|monument|battlefield|memorial|mine"]({bbox});
-  node["leisure"~"nature_reserve|camp_site|swimming_area|bird_hide"]({bbox});
-  node["amenity"~"camping|shelter"]({bbox});
+  node["natural"~"waterfall|peak|volcano|cave_entrance|glacier|hot_spring|spring|water|grassland|heath|scrub|cliff|gorge|arch|bare_rock|scree|wetland|marsh|bog|beach|dune|rapids"]({filt});
+  node["waterway"~"waterfall|weir|dam|river|stream|canal"]({filt});
+  node["whitewater"="rapid"]({filt});
+  node["rapid"="yes"]({filt});
+  node["tourism"~"viewpoint|camp_site|caravan_site|wilderness_hut|picnic_site"]({filt});
+  node["historic"~"ruins|castle|fort|archaeological_site|monument|battlefield|memorial|mine"]({filt});
+  node["leisure"~"camp_site|swimming_area|bird_hide"]({filt});
+  node["amenity"~"camping|shelter"]({filt});
+  node["man_made"~"weir|tower|lighthouse|pier"]({filt});
+  way["natural"~"waterfall|water|glacier|grassland|heath|scrub|cliff|gorge|arch|bare_rock|scree|wetland|marsh|bog|beach|dune"]({filt});
+  way["waterway"~"waterfall|weir|dam|river|stream|canal"]({filt});
+  way["tourism"~"camp_site|caravan_site|wilderness_hut|picnic_site"]({filt});
+  way["historic"~"ruins|castle|fort|archaeological_site|monument|battlefield|memorial|mine"]({filt});
+  way["leisure"~"camp_site|swimming_area"]({filt});
+  way["amenity"~"camping|shelter"]({filt});
+  way["man_made"~"weir|tower|lighthouse|pier"]({filt});
   node["boundary"="protected_area"]({bbox});
-  node["man_made"~"weir|tower|lighthouse|pier"]({bbox});
-  way["natural"~"waterfall|water|glacier|grassland|heath|scrub|cliff|gorge|arch|bare_rock|scree|wetland|marsh|bog|beach|dune"]({bbox});
-  way["waterway"~"waterfall|weir|dam|river|stream|canal"]({bbox});
-  way["tourism"~"camp_site|caravan_site|wilderness_hut|picnic_site"]({bbox});
-  way["historic"~"ruins|castle|fort|archaeological_site|monument|battlefield|memorial|mine"]({bbox});
-  way["leisure"~"nature_reserve|camp_site|swimming_area"]({bbox});
-  way["amenity"~"camping|shelter"]({bbox});
+  node["leisure"="nature_reserve"]({bbox});
   way["boundary"="protected_area"]({bbox});
-  way["man_made"~"weir|tower|lighthouse|pier"]({bbox});
+  way["leisure"="nature_reserve"]({bbox});
 );
 out tags;"""
 
@@ -360,10 +393,72 @@ def _bbox_from_geometry(
         return None
 
 
-def _build_query(bbox: tuple[float, float, float, float]) -> str:
+def _flatten_points(geometry: dict) -> list[tuple[float, float]]:
+    """
+    Flattened (lat, lon) vertices of a GeoJSON LineString / MultiLineString.
+    GeoJSON coords are [lon, lat, ele?]; returned tuples are (lat, lon) to match
+    Overpass's coordinate order. Returns [] if geometry is absent or malformed.
+    """
+    try:
+        coords = geometry["coordinates"]
+        if not coords:
+            return []
+        if geometry.get("type") == "MultiLineString":
+            raw = [pt for segment in coords for pt in segment]
+        else:
+            raw = coords
+        return [(p[1], p[0]) for p in raw if len(p) >= 2]
+    except (KeyError, IndexError, TypeError):
+        return []
+
+
+def _trail_coords_string(geometry: dict) -> Optional[str]:
+    """
+    Builds the 'lat,lon,lat,lon,...' polyline that Overpass `around:` tests
+    against. The trail is decimated to ~_COORD_MIN_GAP_M spacing (capped at
+    _COORD_MAX_POINTS) so the query body stays small — `around` matches against
+    the segments connecting these points, not just the points themselves, so
+    light decimation doesn't open coverage gaps at a 75 m radius.
+
+    Returns None when the geometry has no usable vertices (same signal as
+    _bbox_from_geometry → treated as invalid_geometry upstream).
+    """
+    pts = _flatten_points(geometry)
+    if not pts:
+        return None
+
+    # Local metres-per-degree at the trail's latitude (equirectangular; the
+    # trail spans at most a few km so this is well under 1 % off).
+    lat0 = pts[0][0]
+    m_per_deg_lat = 111_320.0
+    m_per_deg_lon = 111_320.0 * math.cos(math.radians(lat0))
+    gap_sq = _COORD_MIN_GAP_M ** 2
+
+    kept = [pts[0]]
+    last = pts[0]
+    for la, lo in pts[1:]:
+        dx = (lo - last[1]) * m_per_deg_lon
+        dy = (la - last[0]) * m_per_deg_lat
+        if dx * dx + dy * dy >= gap_sq:
+            kept.append((la, lo))
+            last = (la, lo)
+    if kept[-1] != pts[-1]:
+        kept.append(pts[-1])
+
+    if len(kept) > _COORD_MAX_POINTS:
+        step = math.ceil(len(kept) / _COORD_MAX_POINTS)
+        kept = kept[::step]
+        if kept[-1] != pts[-1]:
+            kept.append(pts[-1])
+
+    return ",".join(f"{la:.5f},{lo:.5f}" for la, lo in kept)
+
+
+def _build_query(bbox: tuple[float, float, float, float], coords_str: str) -> str:
     s, w, n, e = bbox
     return _QUERY_TEMPLATE.format(
         timeout=OVERPASS_TIMEOUT,
+        filt=f"around:{TRAIL_PROXIMITY_M},{coords_str}",
         bbox=f"{s:.6f},{w:.6f},{n:.6f},{e:.6f}",
     )
 
@@ -446,12 +541,13 @@ def enrich_one(hike, limiter: "_RateLimiter") -> tuple[set[str], bool, str]:
                             retries. TRANSIENT — callers must leave the hike
                             completely unmarked so it's retried next run.
     """
-    bbox = _bbox_from_geometry(hike.geometry)
-    if bbox is None:
+    bbox   = _bbox_from_geometry(hike.geometry)
+    coords = _trail_coords_string(hike.geometry)
+    if bbox is None or coords is None:
         log.warning(f"  [{hike.name}] Missing or malformed geometry — skipped")
         return set(), False, "invalid_geometry"
 
-    data = _post_overpass(_build_query(bbox), limiter)
+    data = _post_overpass(_build_query(bbox, coords), limiter)
     if data is None:
         log.error(f"  [{hike.name}] Overpass failed after {MAX_RETRIES} attempts")
         return set(), False, "api_failure"

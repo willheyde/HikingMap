@@ -1,36 +1,172 @@
 @import "tailwindcss";
 
+/* ─── Field Journal design tokens (Daylight Paper) ────────────────────────────
+   Tailwind v4 CSS-first config. `@theme` both generates utilities
+   (bg-canvas, text-ink, border-rule, text-ember, font-display, …) and exposes
+   each token as a --color-* / --font-* CSS variable used by the hand-written
+   rules below. Mirror of src/styles/theme.js `palette` — keep in sync.
+   Spec: hiking-frontend/hikeStyle.md
+   ──────────────────────────────────────────────────────────────────────────── */
+@theme {
+  /* Surfaces — warm aged paper, never pure white */
+  --color-canvas:     #dccaa0;
+  --color-paper:      #ebe0c2;
+  --color-paper-sunk: #ccb98f;
+  --color-rule:       #a2855a;
+
+  /* Ink — text, never pure black */
+  --color-ink:       #3d2817;
+  --color-ink-soft:  #5c3a21;
+  --color-ink-muted: #6a4a26;
+
+  /* Ember — primary accent / ink-highlight */
+  --color-ember:       #a83b2c;
+  --color-ember-hover: #8e3022;
+  --color-ember-wash:  #e4cb9e;
+
+  /* Sage — nature / eco / success */
+  --color-sage:      #7a6236;
+  --color-sage-wash: #d8c48e;
+
+  /* Rust — alerts / destructive */
+  --color-rust:      #96301f;
+  --color-rust-wash: #e6c29a;
+
+  --color-water: #cdb483;
+
+  /* Type (loaded in index.html) */
+  --font-display: "Fraunces", Georgia, "Times New Roman", serif;
+  --font-serif:   "Spectral", Georgia, serif;
+  --font-sans:    "Work Sans", "Trebuchet MS", system-ui, sans-serif;
+  --font-hand:    "Caveat", cursive;
+}
+
+:root {
+  --shadow: rgba(61, 40, 23, 0.14);
+}
+
 /* App-wide defaults */
 html, body, #root {
   height: 100%;
   margin: 0;
 }
+body {
+  background: var(--color-canvas);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+input::placeholder, textarea::placeholder { color: var(--color-ink-muted); }
+
+/* ─── Aged paper texture (hikeStyle §4) ───────────────────────────────────────
+   Two fixed, pointer-events-none layers turn the flat parchment into a surface
+   you feel you're holding:
+   · ::before — fine fractal fiber grain (multiply)
+   · ::after  — soft warm foxing blotches + a worn, darkened edge vignette
+   Fixed to the viewport so the grain reads as the page you're looking through. */
+body::before,
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+}
+body::before {
+  z-index: 9998;
+  background-image:
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='220' height='220'%3E%3Cfilter id='p'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23p)'/%3E%3C/svg%3E");
+  background-size: 220px 220px;
+  mix-blend-mode: multiply;
+  opacity: 0.09;
+}
+body::after {
+  z-index: 9997;
+  background:
+    /* faint fold creases — a barely-there seam, folded in thirds + half */
+    linear-gradient(90deg, transparent calc(33.3% - 1px),
+      rgba(70,48,26,0.05) calc(33.3%), transparent calc(33.3% + 1px)),
+    linear-gradient(90deg, transparent calc(66.6% - 1px),
+      rgba(70,48,26,0.05) calc(66.6%), transparent calc(66.6% + 1px)),
+    linear-gradient(0deg, transparent calc(50% - 1px),
+      rgba(70,48,26,0.045) calc(50%), transparent calc(50% + 1px)),
+    /* gentle worn sepia edges */
+    radial-gradient(140% 130% at 50% 42%, transparent 62%, rgba(70,48,26,0.11) 100%);
+}
+
+/* ─── User location marker — ink dot with paper ring, distinct from red pins ─── */
 .user-location-dot {
   width: 15px;
   height: 15px;
-  background-color: #4285F4; /* Google Blue */
-  border: 2px solid white;
+  background-color: var(--color-ink);
+  border: 2px solid var(--color-paper);
   border-radius: 50%;
-  box-shadow: 0 0 5px rgba(0,0,0,0.3);
+  box-shadow: 0 0 5px rgba(61, 40, 23, 0.4);
   cursor: pointer;
   position: relative;
 }
-
-/* Optional: Add a pulsing ring around it */
+/* Pulsing ring */
 .user-location-dot::after {
   content: '';
   width: 100%;
   height: 100%;
   position: absolute;
-  top: -2px; /* Compensate for border */
+  top: -2px;  /* compensate for border */
   left: -2px;
   border-radius: 50%;
-  border: 2px solid #4285F4;
+  border: 2px solid var(--color-ink);
   opacity: 0;
   animation: pulse 2s infinite;
 }
-
 @keyframes pulse {
-  0% { transform: scale(1); opacity: 1; }
+  0%   { transform: scale(1);   opacity: 1; }
   100% { transform: scale(2.5); opacity: 0; }
 }
+
+/* ─── Skeleton shimmer (loading placeholders — Skeleton.jsx) ──────────────────
+   A light band sweeps across paper-toned placeholder blocks while data loads. */
+@keyframes skeleton-shimmer {
+  0%   { background-position: -150% 0; }
+  100% { background-position: 250% 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  /* Respect reduced-motion: hold a static tint instead of sweeping. */
+  .skeleton-block { animation: none !important; }
+}
+
+/* ─── Mapbox chrome → paper (hikeStyle §5) ────────────────────────────────────
+   Restyle the default white Mapbox controls + popups to journal paper so they
+   don't break theme on the aged map. */
+.mapboxgl-ctrl-group {
+  background: var(--color-paper) !important;
+  border: 1px solid var(--color-rule) !important;
+  box-shadow: 0 2px 8px var(--shadow) !important;
+  border-radius: 6px !important;
+  overflow: hidden;
+}
+.mapboxgl-ctrl-group button + button {
+  border-top: 1px solid var(--color-rule) !important;
+}
+.mapboxgl-ctrl-group button .mapboxgl-ctrl-icon {
+  filter: sepia(0.35) saturate(0.7) brightness(0.75);
+}
+.mapboxgl-popup-content {
+  background: var(--color-paper) !important;
+  color: var(--color-ink) !important;
+  border: 1px solid var(--color-rule) !important;
+  border-radius: 6px !important;
+  box-shadow: 0 2px 10px var(--shadow) !important;
+}
+.mapboxgl-popup-tip {
+  border-top-color: var(--color-paper) !important;
+  border-bottom-color: var(--color-paper) !important;
+}
+.mapboxgl-ctrl-attrib {
+  background: rgba(227, 201, 160, 0.75) !important;
+}
+.mapboxgl-ctrl-attrib a { color: var(--color-ink-soft) !important; }
+
+/* Thin ink scrollbar */
+::-webkit-scrollbar       { width: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--color-rule); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--color-ink-muted); }

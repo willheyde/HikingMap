@@ -3,40 +3,40 @@ import { useNavigate } from "react-router-dom";
 import { useUser } from "../context/UserContext";
 import { GEAR_SECTIONS } from "../data/gearCategories";
 
-/* ─── Design tokens (matches AuthModal / old onboarding) ─────────────────── */
+/* ─── Field Journal tokens (matches AuthModal / old onboarding) — hikeStyle ── */
 const C = {
-  page:        "#0d0a07",
-  card:        "#1c1510",
-  cardBorder:  "#4a3520",
-  fieldBg:     "#241a10",
-  fieldBorder: "#5a3e22",
-  heading:     "#f0e6d0",
-  subtext:     "#a08060",
-  muted:       "#6a4e30",
-  label:       "#b8906a",
-  amber:       "#c17a2e",
-  amberHover:  "#d98c38",
-  amberText:   "#fff8ee",
-  amberDim:    "rgba(193,122,46,0.15)",
-  amberBorder: "rgba(193,122,46,0.4)",
-  ownedBg:     "rgba(60,100,40,0.25)",
-  ownedBorder: "rgba(90,160,60,0.5)",
-  ownedText:   "#9dcc85",
-  errorText:   "#e87060",
-  divider:     "#3a2510",
+  page:        "#dccaa0", // canvas
+  card:        "#ebe0c2", // paper
+  cardBorder:  "#a2855a", // rule
+  fieldBg:     "#ccb98f", // paper-sunk
+  fieldBorder: "#a2855a", // rule
+  heading:     "#3d2817", // ink
+  subtext:     "#5c3a21", // ink-soft
+  muted:       "#6a4a26", // ink-muted
+  label:       "#a83b2c", // ember
+  amber:       "#a83b2c", // ember
+  amberHover:  "#8e3022", // ember-hover
+  amberText:   "#ebe0c2", // on-ember
+  amberDim:    "rgba(168,59,44,0.15)",
+  amberBorder: "rgba(168,59,44,0.4)",
+  ownedBg:     "#d8c48e",              // sage-wash
+  ownedBorder: "rgba(122,98,54,0.5)",
+  ownedText:   "#6e5a2e",              // deep sage
+  errorText:   "#96301f",              // rust
+  divider:     "#a2855a",              // rule
 };
-const serif = "Georgia, 'Times New Roman', serif";
-const sans  = "'Trebuchet MS', 'Lucida Sans Unicode', sans-serif";
-const body  = "'Palatino Linotype', Palatino, Georgia, serif";
+const serif = "'Fraunces', Georgia, serif";
+const sans  = "'Work Sans', 'Trebuchet MS', sans-serif";
+const body  = "'Spectral', Georgia, serif";
 
 /* ─── Mountain mark ─────────────────────────────────────────────────────── */
 const MountainMark = ({ size = 44 }) => (
   <svg width={size} height={size * 0.75} viewBox="0 0 56 42"
     style={{ display: "block", margin: "0 auto" }} xmlns="http://www.w3.org/2000/svg">
-    <polygon points="28,2 52,40 4,40" fill="none" stroke="#7a5030" strokeWidth="1.2" strokeLinejoin="round" />
-    <polygon points="14,40 28,14 42,40" fill="#2a1810" stroke="#5a3820" strokeWidth="1" strokeLinejoin="round" />
-    <polygon points="28,2 33,10 23,10" fill="#8a6a50" />
-    <path d="M0,40 Q14,36 28,39 Q42,42 56,38" fill="none" stroke="#1e3048" strokeWidth="2" strokeLinecap="round" />
+    <polygon points="28,2 52,40 4,40" fill="none" stroke="#a83b2c" strokeWidth="1.2" strokeLinejoin="round" />
+    <polygon points="14,40 28,14 42,40" fill="#e4cb9e" stroke="#5c3a21" strokeWidth="1" strokeLinejoin="round" />
+    <polygon points="28,2 33,10 23,10" fill="#ebe0c2" />
+    <path d="M0,40 Q14,36 28,39 Q42,42 56,38" fill="none" stroke="#a2855a" strokeWidth="2" strokeLinecap="round" />
   </svg>
 );
 
@@ -64,9 +64,9 @@ const LevelChip = ({ label, selected, onClick }) => (
       fontFamily: sans, fontSize: 12.5, fontWeight: selected ? 600 : 400,
       background: selected ? C.amberDim : C.fieldBg,
       border: `1.5px solid ${selected ? C.amber : C.fieldBorder}`,
-      color: selected ? "#e8c9a0" : "#c8bfb0", transition: "all 0.15s",
+      color: selected ? "#3d2817" : "#5c3a21", transition: "all 0.15s",
     }}
-    onMouseEnter={e => { if (!selected) e.currentTarget.style.borderColor = "#7a5a30"; }}
+    onMouseEnter={e => { if (!selected) e.currentTarget.style.borderColor = "#c9b488"; }}
     onMouseLeave={e => { if (!selected) e.currentTarget.style.borderColor = C.fieldBorder; }}
   >
     {label}
@@ -152,7 +152,7 @@ const GearOnboarding = () => {
         width: "100%", maxWidth: 460,
         background: C.card, border: `1px solid ${C.cardBorder}`,
         borderRadius: 20, padding: "2rem 1.75rem",
-        boxShadow: "0 32px 80px rgba(0,0,0,0.55)",
+        boxShadow: "0 24px 60px rgba(61,40,23,0.16)",
       }}>
         {/* Header */}
         <div style={{ textAlign: "center", marginBottom: "1.5rem" }}>
@@ -309,7 +309,7 @@ const GearOnboarding = () => {
             onClick={next}
             style={{
               flex: 3, padding: "12px 0", borderRadius: 10, background: C.amber,
-              border: `1px solid rgba(255,220,150,0.15)`, color: C.amberText,
+              border: `1px solid ${C.amberBorder}`, color: C.amberText,
               fontFamily: sans, fontSize: 13, fontWeight: 600, cursor: "pointer",
               letterSpacing: "0.5px", transition: "background 0.2s",
             }}

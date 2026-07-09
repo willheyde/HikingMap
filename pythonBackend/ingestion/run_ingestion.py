@@ -1,79 +1,115 @@
-from osm_client     import fetch_hiking_routes
-from osm_geometry   import build_points_from_relation
-import os
-import sys
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from hike_parser    import parse_hike
-from gear_inference import GearInferenceEngine
-from seeder         import seed_hikes
+"""
+pbf_hiking_extractor.py
 
-# Bounding box: lat_min, lon_min, lat_max, lon_max
-BBOX = "41.18, -71.91, 42.02, -71.08"
+Extracts hiking route relations from a local .osm.pbf file and returns them
+in the same "elements" list shape that the Overpass API returns for:
 
-print(f"Fetching data for bbox: {BBOX} ...")
-data     = fetch_hiking_routes(BBOX)
-elements = data["elements"]
-print(f"Received {len(elements)} elements from Overpass.\n")
+    [out:json][timeout:180];
+    ( relation["route"="hiking"]({bbox}); );
+    out body;
+    >;
+    out skel qt;
 
-hikes_with_gear = []   # list of (Hike, gear_reqs)
-skipped_geo     = 0
-skipped_filt    = 0
-errors          = 0
+Drop-in replacement for fetch_hiking_routes(bbox) — build_points_from_relation
+and everything downstream in run_ingestion.py needs no changes.
 
-relations = [el for el in elements if el["type"] == "relation"]
-print(f"Processing {len(relations)} relation(s)...")
+Install: pip install osmium
+"""
 
-for el in relations:
-    try:
-        points = build_points_from_relation(el, elements)
-        if not points:
-            skipped_geo += 1
-            continue
+import osmium
 
-        el["points"] = points
-        hike = parse_hike(el)
 
-        if hike is None:
-            skipped_filt += 1
-            continue
+class _RelationPass(osmium.SimpleHandler):
+    """Pass 1: find hiking route relations, note which ways they need."""
+    def __init__(self):
+        super().__init__()
+        self.relations = []
+        self.needed_way_ids = set()
 
-        # Infer detailed gear requirements from this hike's physical stats
-        gear_reqs = GearInferenceEngine.infer_requirements(
-            length_km  = hike.length_km,
-            gain_m     = hike.elevation_gain_m,
-            max_alt_m  = hike.max_altitude_m or 0.0,
-            difficulty = hike.difficulty,
-            region     = hike.region,
-        )
+    def relation(self, r):
+        if r.tags.get("route") != "hiking":
+            return
+        members = []
+        for m in r.members:
+            if m.type == "w":
+                self.needed_way_ids.add(m.ref)
+            members.append({
+                "type": {"n": "node", "w": "way", "r": "relation"}[m.type],
+                "ref": m.ref,
+                "role": m.role,
+            })
+        self.relations.append({
+            "type": "relation",
+            "id": r.id,
+            "tags": dict(r.tags),
+            "members": members,
+        })
 
-        # Catalog-independent required LEVELS, persisted on the hike itself so
-        # GearGapAnalyzer can check adequacy. Same call the backfill script uses.
-        hike.gear_requirements = GearInferenceEngine.infer_gear_levels(
-            length_km  = hike.length_km,
-            gain_m     = hike.elevation_gain_m,
-            max_alt_m  = hike.max_altitude_m or 0.0,
-            difficulty = hike.difficulty,
-            tags       = hike.tags,
-            can_camp   = hike.can_camp,
-        )
 
-        hikes_with_gear.append((hike, gear_reqs))
+class _WayPass(osmium.SimpleHandler):
+    """Pass 2: pull ordered node-id lists for the ways those relations need."""
+    def __init__(self, needed_way_ids):
+        super().__init__()
+        self.needed_way_ids = needed_way_ids
+        self.ways = []
+        self.needed_node_ids = set()
 
-    except Exception as e:
-        name = el.get("tags", {}).get("name", f"id={el.get('id')}")
-        print(f"  Error parsing '{name}': {e}")
-        errors += 1
+    def way(self, w):
+        if w.id not in self.needed_way_ids:
+            return
+        node_ids = [n.ref for n in w.nodes]
+        self.needed_node_ids.update(node_ids)
+        self.ways.append({
+            "type": "way",
+            "id": w.id,
+            "tags": dict(w.tags),
+            "nodes": node_ids,
+        })
 
-print(f"\nParsing summary:")
-print(f"  Valid hikes:           {len(hikes_with_gear)}")
-print(f"  Skipped (no geometry): {skipped_geo}")
-print(f"  Skipped (too short):   {skipped_filt}")
-print(f"  Parse errors:          {errors}")
 
-if hikes_with_gear:
-    print(f"\nSeeding {len(hikes_with_gear)} hike(s)...")
-    seed_hikes(hikes_with_gear)
-else:
-    print("\nNo valid hikes to seed.")
+class _NodePass(osmium.SimpleHandler):
+    """Pass 3: pull lat/lon for every node those ways reference."""
+    def __init__(self, needed_node_ids):
+        super().__init__()
+        self.needed_node_ids = needed_node_ids
+        self.nodes = []
 
-print("Done.")
+    def node(self, n):
+        if n.id not in self.needed_node_ids:
+            return
+        self.nodes.append({
+            "type": "node",
+            "id": n.id,
+            "lat": n.location.lat,
+            "lon": n.location.lon,
+        })
+
+
+def fetch_hiking_routes_from_pbf(pbf_path):
+    """
+    Drop-in replacement for fetch_hiking_routes(bbox).
+
+    Returns {"elements": [...]} in the same shape Overpass returns, so
+    run_ingestion.py, build_points_from_relation, and parse_hike need
+    zero modification.
+    """
+    rel_pass = _RelationPass()
+    rel_pass.apply_file(pbf_path)
+
+    way_pass = _WayPass(rel_pass.needed_way_ids)
+    way_pass.apply_file(pbf_path)
+
+    node_pass = _NodePass(way_pass.needed_node_ids)
+    node_pass.apply_file(pbf_path)
+
+    elements = rel_pass.relations + way_pass.ways + node_pass.nodes
+    return {"elements": elements}
+
+
+if __name__ == "__main__":
+    import sys
+    path = sys.argv[1] if len(sys.argv) > 1 else "rhode-island-260101.osm.pbf"
+    data = fetch_hiking_routes_from_pbf(path)
+    print(f"Extracted {len(data['elements'])} elements from {path}")
+    rel_count = sum(1 for e in data["elements"] if e["type"] == "relation")
+    print(f"  of which {rel_count} are hiking-route relations")

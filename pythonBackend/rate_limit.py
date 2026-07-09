@@ -63,6 +63,11 @@ AI_BURST_WINDOW_SEC = _env_int("AI_BURST_WINDOW_SEC", 60)
 AUTH_RATE_LIMIT      = _env_int("AUTH_RATE_LIMIT", 10)
 AUTH_RATE_WINDOW_SEC = _env_int("AUTH_RATE_WINDOW_SEC", 300)  # 5 min
 
+# Number of trusted reverse proxies in front of the app (ALB = 1; front it with
+# CloudFront too → 2). Determines which X-Forwarded-For entry is the real
+# client, and MUST match the real topology — see _client_ip.
+TRUSTED_PROXY_HOPS = _env_int("TRUSTED_PROXY_HOPS", 1)
+
 
 def _hit(key: str, limit: int, window_s: int) -> tuple[bool, int]:
     """
@@ -94,10 +99,19 @@ def _enforce(key: str, limit: int, window_s: int, detail: str) -> None:
 
 
 def _client_ip(request: Request) -> str:
-    # Behind an ALB / CloudFront the real client is the first X-Forwarded-For hop.
+    # X-Forwarded-For is client-controlled and each proxy *appends* to it, so the
+    # LEFT-most entry is whatever the original caller sent — spoofable, and using
+    # it lets an attacker rotate a fake IP to dodge the per-IP cap entirely. The
+    # trustworthy value is the hop our own proxy chain added: counting
+    # TRUSTED_PROXY_HOPS from the right yields the address the outermost trusted
+    # proxy actually observed. Anything further left is attacker-influenced.
     xff = request.headers.get("x-forwarded-for")
     if xff:
-        return xff.split(",")[0].strip()
+        hops = [h.strip() for h in xff.split(",") if h.strip()]
+        if len(hops) >= TRUSTED_PROXY_HOPS:
+            return hops[-TRUSTED_PROXY_HOPS]
+        # Fewer hops than expected (misconfigured proxy count or a direct hit) —
+        # fall back to the socket peer rather than trusting a short client chain.
     return request.client.host if request.client else "unknown"
 
 

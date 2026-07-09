@@ -18,7 +18,10 @@ apiClient.interceptors.request.use((config) => {
 apiClient.interceptors.response.use(
   (response) => response,
   (error) => {
-    const isAuthEndpoint = error.config?.url?.includes("/users/login");
+    // Login and Google sign-in legitimately 401 on bad credentials — those
+    // should surface an inline error, not trigger the session-expired redirect.
+    const url = error.config?.url || "";
+    const isAuthEndpoint = url.includes("/users/login") || url.includes("/users/auth/google");
 
     if (error.response?.status === 401 && !isAuthEndpoint) {
       localStorage.removeItem("hike_token");

@@ -4,33 +4,34 @@ import { useParams, useNavigate } from "react-router-dom";
 import { useHikes } from "../context/HikeContext";
 import { useUser } from "../context/UserContext";
 import ScrollBar from "../components/ScrollBar";
+import { HikeDetailSkeleton } from "../components/Skeleton";
 import { readinessForHike } from "../data/gearCategories";
 
-/* ─── Design tokens (shared with Profile / GearManager) ──────────────────── */
+/* ─── Field Journal tokens (shared with Profile / GearManager) — hikeStyle ── */
 const C = {
-  page:        "#0d0a07",
-  card:        "#1c1510",
-  cardBorder:  "#4a3520",
-  fieldBg:     "#241a10",
-  fieldBorder: "#5a3e22",
-  heading:     "#f0e6d0",
-  subtext:     "#a08060",
-  muted:       "#6a4e30",
-  label:       "#b8906a",
-  amber:       "#c17a2e",
-  amberHover:  "#d98c38",
-  amberDim:    "rgba(193,122,46,0.12)",
-  amberBorder: "rgba(193,122,46,0.35)",
-  amberText:   "#fff8ee",
-  divider:     "#3a2510",
-  green:       "#60c878",
-  greenDim:    "rgba(96,200,120,0.10)",
-  red:         "#e0705a",
-  redDim:      "rgba(224,112,90,0.10)",
+  page:        "#dccaa0", // canvas
+  card:        "#ebe0c2", // paper
+  cardBorder:  "#a2855a", // rule
+  fieldBg:     "#ccb98f", // paper-sunk
+  fieldBorder: "#a2855a", // rule
+  heading:     "#3d2817", // ink
+  subtext:     "#5c3a21", // ink-soft
+  muted:       "#6a4a26", // ink-muted
+  label:       "#a83b2c", // ember
+  amber:       "#a83b2c", // ember
+  amberHover:  "#8e3022", // ember-hover
+  amberDim:    "rgba(168,59,44,0.12)",
+  amberBorder: "rgba(168,59,44,0.35)",
+  amberText:   "#ebe0c2", // on-ember
+  divider:     "#a2855a", // rule
+  green:       "#7a6236", // sage
+  greenDim:    "rgba(122,98,54,0.14)",
+  red:         "#96301f", // rust
+  redDim:      "rgba(150,48,31,0.10)",
 };
-const serif = "Georgia, 'Times New Roman', serif";
-const sans  = "'Trebuchet MS', 'Lucida Sans Unicode', sans-serif";
-const body  = "'Palatino Linotype', Palatino, Georgia, serif";
+const serif = "'Fraunces', Georgia, serif";
+const sans  = "'Work Sans', 'Trebuchet MS', sans-serif";
+const body  = "'Spectral', Georgia, serif";
 
 /* ─── Helpers ────────────────────────────────────────────────────────────── */
 const kmToMiles    = (km) => (km * 0.621371).toFixed(1);
@@ -41,8 +42,8 @@ const formatDifficulty = (d) => (d ? d.charAt(0) + d.slice(1).toLowerCase() : "U
 
 /* Status → color + glyph for a readiness row. */
 const STATUS = {
-  ok:      { color: C.green, bg: C.greenDim,  border: "rgba(96,200,120,0.35)", glyph: "✓" },
-  missing: { color: C.red,   bg: C.redDim,    border: "rgba(224,112,90,0.35)", glyph: "✗" },
+  ok:      { color: C.green, bg: C.greenDim,  border: "rgba(122,98,54,0.4)",  glyph: "✓" },
+  missing: { color: C.red,   bg: C.redDim,    border: "rgba(150,48,31,0.4)",   glyph: "✗" },
   flag:    { color: C.amber, bg: C.amberDim,  border: C.amberBorder,           glyph: "!" },
 };
 
@@ -169,9 +170,8 @@ export default function HikeDetailPage() {
   /* ── Loading / error ─────────────────────────────────────────────────── */
   if (loading || (!selectedHike && !error)) {
     return (
-      <div style={{ height: "100%", background: C.page, display: "flex",
-        alignItems: "center", justifyContent: "center" }}>
-        <p style={{ fontFamily: body, color: C.muted, fontStyle: "italic" }}>Loading hike details…</p>
+      <div style={{ height: "100%", background: C.page, overflow: "auto" }}>
+        <HikeDetailSkeleton />
       </div>
     );
   }
@@ -181,7 +181,7 @@ export default function HikeDetailPage() {
         <div style={{ maxWidth: 900, margin: "0 auto", padding: "40px 20px" }}>
           <BackButton navigate={navigate} />
           <div style={{ marginTop: 20, padding: 24, borderRadius: 12, textAlign: "center",
-            background: C.redDim, border: "1px solid rgba(224,112,90,0.4)",
+            background: C.redDim, border: "1px solid rgba(150,48,31,0.4)",
             fontFamily: body, color: C.red }}>{error}</div>
         </div>
       </ScrollBar>
@@ -247,9 +247,9 @@ export default function HikeDetailPage() {
           {/* Create this trip */}
           <button onClick={startTrip}
             style={{ width: "100%", padding: "15px 0", borderRadius: 12, marginBottom: 30,
-              background: C.amber, border: "1px solid rgba(255,220,150,0.15)", color: C.amberText,
+              background: C.amber, border: `1px solid ${C.amberBorder}`, color: C.amberText,
               fontFamily: sans, fontSize: 15, fontWeight: 700, cursor: "pointer",
-              letterSpacing: "0.3px", boxShadow: "0 6px 22px rgba(193,122,46,0.35)",
+              letterSpacing: "0.3px", boxShadow: "0 6px 22px rgba(168,59,44,0.35)",
               display: "flex", alignItems: "center", justifyContent: "center", gap: 10 }}
             onMouseEnter={e => e.currentTarget.style.background = C.amberHover}
             onMouseLeave={e => e.currentTarget.style.background = C.amber}>
@@ -281,7 +281,7 @@ export default function HikeDetailPage() {
                 padding: "7px 14px", borderRadius: 999, fontFamily: sans, fontSize: 12, fontWeight: 600,
                 display: "flex", alignItems: "center", gap: 8, whiteSpace: "nowrap",
                 background: unmetCount === 0 ? C.greenDim : C.amberDim,
-                border: `1px solid ${unmetCount === 0 ? "rgba(96,200,120,0.4)" : C.amberBorder}`,
+                border: `1px solid ${unmetCount === 0 ? "rgba(122,98,54,0.4)" : C.amberBorder}`,
                 color: unmetCount === 0 ? C.green : C.amber,
               }}>
                 <span style={{ width: 8, height: 8, borderRadius: "50%",

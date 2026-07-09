@@ -16,10 +16,14 @@ class User:
         timezone: Optional[str] = None,
         items: Optional[List] = None,
         created_at: Optional[datetime] = None,
+        google_sub: Optional[str] = None,
+        auth_provider: str = "password",
     ):
         if not email:
             raise ValueError("email must not be empty")
-        if not hashed_password:
+        # OAuth users (auth_provider="google") have no local password, so an
+        # empty hashed_password is only an error for password accounts.
+        if not hashed_password and auth_provider == "password":
             raise ValueError("hashed_password must not be empty")
         if not name:
             raise ValueError("name must not be empty")
@@ -35,6 +39,8 @@ class User:
         self.timezone = timezone
         self.items = items or []
         self.created_at = created_at or datetime.now()
+        self.google_sub = google_sub
+        self.auth_provider = auth_provider
 
     def to_dict(self):
         return {
@@ -46,7 +52,9 @@ class User:
             "home_location": self.home_location,
             "timezone": self.timezone,
             "items": [i.to_dict() for i in self.items] if self.items else [],
-            "created_at": self.created_at.isoformat()
+            "created_at": self.created_at.isoformat(),
+            "google_sub": self.google_sub,
+            "auth_provider": self.auth_provider,
         }
 
     @classmethod

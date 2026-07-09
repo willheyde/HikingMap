@@ -20,11 +20,11 @@ class UserRepository(BaseRepository[User]):
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    INSERT INTO users (id, email, hashed_password, name, avatar_url, home_location, timezone, created_at)
+                    INSERT INTO users (id, email, hashed_password, name, avatar_url, home_location, timezone, created_at, google_sub, auth_provider)
                     VALUES (
                         %(id)s, %(email)s, %(hashed_password)s, %(name)s,
                         %(avatar_url)s, %(home_location)s, %(timezone)s,
-                        %(created_at)s
+                        %(created_at)s, %(google_sub)s, %(auth_provider)s
                     )
                     """,
                     user_data
@@ -58,9 +58,10 @@ class UserRepository(BaseRepository[User]):
             with conn.cursor() as cur:
                 # JOIN users -> user_items -> items
                 query = """
-                    SELECT 
-                        u.id, u.email, u.hashed_password, u.name, u.avatar_url, 
+                    SELECT
+                        u.id, u.email, u.hashed_password, u.name, u.avatar_url,
                         u.home_location, u.timezone, u.created_at,
+                        u.google_sub, u.auth_provider,
                         i.id as item_id, i.name as item_name, i.weight, i.cost, i.item_type, i.image_url,
                         i.attributes as item_attributes
                     FROM users u
@@ -85,6 +86,8 @@ class UserRepository(BaseRepository[User]):
                 "home_location": json.loads(first_row['home_location']) if first_row['home_location'] else None,
                 "timezone": first_row['timezone'],
                 "created_at": str(first_row['created_at']),
+                "google_sub": first_row.get('google_sub'),
+                "auth_provider": first_row.get('auth_provider') or "password",
                 "items": []
             }
 
@@ -139,7 +142,31 @@ class UserRepository(BaseRepository[User]):
                 row = dict(row)
                 row['home_location'] = json.loads(row['home_location']) if row['home_location'] else None
                 return User.from_dict(row)
-    
+
+    def get_by_google_sub(self, google_sub: str) -> Optional[User]:
+        """Lookup for a returning Google login. Matches on the immutable 'sub'
+        claim, not email (which the user can change)."""
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT * FROM users WHERE google_sub = %s", (google_sub,))
+                row = cur.fetchone()
+                if not row:
+                    return None
+                row = dict(row)
+                row['home_location'] = json.loads(row['home_location']) if row['home_location'] else None
+                return User.from_dict(row)
+
+    def link_google_sub(self, user_id: UUID, google_sub: str) -> None:
+        """Attach a Google identity to an existing (password) account. Called
+        when someone signs in with Google using the verified email of an account
+        that already exists — after linking, both login paths reach the same row."""
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE users SET google_sub = %s WHERE id = %s",
+                    (google_sub, str(user_id)),
+                )
+
     def list_all(self) -> List[User]:
         # Basic list without items for performance
         with get_connection() as conn:

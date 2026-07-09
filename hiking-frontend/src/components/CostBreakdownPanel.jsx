@@ -5,7 +5,7 @@ export default function CostBreakdownPanel({ costs }) {
     (costs.fees ?? 0);
 
   return (
-    <div className="border rounded-lg p-4 bg-gray-50">
+    <div className="border border-rule rounded-lg p-4 bg-paper-sunk">
       <h3 className="text-lg font-semibold mb-2">Estimated Cost</h3>
 
       <div className="text-sm space-y-1">
@@ -27,7 +27,7 @@ export default function CostBreakdownPanel({ costs }) {
         )}
       </div>
 
-      <hr className="my-2" />
+      <hr className="my-2 border-rule" />
 
       <div className="flex justify-between font-bold">
         <span>Total</span>

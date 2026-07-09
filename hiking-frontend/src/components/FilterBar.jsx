@@ -1,17 +1,18 @@
 import React from "react";
 
-/* ─── Design tokens (matches Profile & GearSetup) ──────────────────────── */
+/* ─── Field Journal tokens (hikeStyle.md) ──────────────────────────────── */
 const C = {
-  fieldBg:     "#241a10",
-  fieldBorder: "#5a3e22",
-  heading:     "#f0e6d0",
-  muted:       "#6a4e30",
-  label:       "#b8906a",
-  amber:       "#c17a2e",
-  amberText:   "#fff8ee",
+  fieldBg:      "#ccb98f", // paper-sunk
+  fieldBorder:  "#a2855a", // rule
+  fieldBorderHover: "#c9b488",
+  heading:      "#3d2817", // ink
+  muted:        "#6a4a26", // ink-muted
+  label:        "#5c3a21", // ink-soft
+  amber:        "#a83b2c", // ember
+  amberText:    "#ebe0c2", // on-ember
 };
-const serif = "Georgia, 'Times New Roman', serif";
-const sans  = "'Trebuchet MS', 'Lucida Sans Unicode', sans-serif";
+const serif = "'Fraunces', Georgia, serif";
+const sans  = "'Work Sans', 'Trebuchet MS', sans-serif";
 
 const fieldBase = {
   width: "100%",
@@ -25,8 +26,7 @@ const fieldBase = {
   outline: "none",
   transition: "border-color 0.15s",
   boxSizing: "border-box",
-  /* Note: add this to your global CSS for placeholder color:
-     .hike-filter input::placeholder { color: #6a4e30; }  */
+  /* Placeholder color handled globally in styles/global.css */
 };
 
 const labelStyle = {
@@ -175,16 +175,16 @@ export default function FilterBar({ filters, onChange }) {
           display: "flex", alignItems: "center", gap: 10,
           padding: "8px 10px", borderRadius: 7, cursor: "pointer",
           background: filters.meetRequirementsOnly
-            ? "rgba(193,122,46,0.1)"
+            ? "rgba(168,59,44,0.1)"
             : "transparent",
           border: `1px solid ${filters.meetRequirementsOnly
-            ? "rgba(193,122,46,0.35)"
+            ? "rgba(168,59,44,0.35)"
             : C.fieldBorder}`,
           transition: "all 0.15s",
         }}
         onMouseEnter={e => {
           if (!filters.meetRequirementsOnly)
-            e.currentTarget.style.borderColor = C.fieldBorder.replace("22", "40");
+            e.currentTarget.style.borderColor = C.fieldBorderHover;
         }}
         onMouseLeave={e => {
           if (!filters.meetRequirementsOnly)

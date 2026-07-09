@@ -4,36 +4,36 @@ import { useUser } from "../context/UserContext";
 import { GEAR_SECTIONS, resolveGearCategory, levelLabelFor } from "../data/gearCategories";
 import ScrollBar from "../components/ScrollBar";
 
-/* ─── Design tokens (shared with GearOnboarding) ─────────────────────────── */
+/* ─── Field Journal tokens (shared with GearOnboarding) — hikeStyle.md ────── */
 const C = {
-  page:        "#0d0a07",
-  card:        "#1c1510",
-  cardBorder:  "#4a3520",
-  fieldBg:     "#241a10",
-  fieldBorder: "#5a3e22",
-  heading:     "#f0e6d0",
-  subtext:     "#a08060",
-  muted:       "#6a4e30",
-  label:       "#b8906a",
-  amber:       "#c17a2e",
-  amberHover:  "#d98c38",
-  amberText:   "#fff8ee",
-  amberDim:    "rgba(193,122,46,0.15)",
-  amberBorder: "rgba(193,122,46,0.4)",
-  ownedBg:     "rgba(60,100,40,0.22)",
-  ownedBorder: "rgba(90,160,60,0.45)",
-  ownedText:   "#9dcc85",
-  errorText:   "#e87060",
+  page:        "#dccaa0", // canvas
+  card:        "#ebe0c2", // paper
+  cardBorder:  "#a2855a", // rule
+  fieldBg:     "#ccb98f", // paper-sunk
+  fieldBorder: "#a2855a", // rule
+  heading:     "#3d2817", // ink
+  subtext:     "#5c3a21", // ink-soft
+  muted:       "#6a4a26", // ink-muted
+  label:       "#a83b2c", // ember
+  amber:       "#a83b2c", // ember
+  amberHover:  "#8e3022", // ember-hover
+  amberText:   "#ebe0c2", // on-ember
+  amberDim:    "rgba(168,59,44,0.15)",
+  amberBorder: "rgba(168,59,44,0.4)",
+  ownedBg:     "#d8c48e",              // sage-wash
+  ownedBorder: "rgba(122,98,54,0.45)",
+  ownedText:   "#6e5a2e",              // deep sage
+  errorText:   "#96301f",              // rust
 };
-const serif = "Georgia, 'Times New Roman', serif";
-const sans  = "'Trebuchet MS', 'Lucida Sans Unicode', sans-serif";
-const body  = "'Palatino Linotype', Palatino, Georgia, serif";
+const serif = "'Fraunces', Georgia, serif";
+const sans  = "'Work Sans', 'Trebuchet MS', sans-serif";
+const body  = "'Spectral', Georgia, serif";
 
 /* ─── Mountain mark ─────────────────────────────────────────────────────── */
 const MountainMark = () => (
   <svg width="28" height="22" viewBox="0 0 40 32" fill="none" style={{ flexShrink: 0 }}>
-    <polygon points="20,2 38,30 2,30" fill="none" stroke="#c17a2e" strokeWidth="1.5" strokeLinejoin="round"/>
-    <polygon points="10,30 20,12 30,30" fill="#2a1810" stroke="#8b5e3c" strokeWidth="1" strokeLinejoin="round"/>
+    <polygon points="20,2 38,30 2,30" fill="none" stroke="#a83b2c" strokeWidth="1.5" strokeLinejoin="round"/>
+    <polygon points="10,30 20,12 30,30" fill="#e4cb9e" stroke="#5c3a21" strokeWidth="1" strokeLinejoin="round"/>
   </svg>
 );
 
@@ -43,7 +43,7 @@ const LevelChip = ({ label, selected, onClick }) => (
     fontFamily: sans, fontSize: 12, fontWeight: selected ? 600 : 400,
     background: selected ? C.amberDim : C.fieldBg,
     border: `1.5px solid ${selected ? C.amber : C.fieldBorder}`,
-    color: selected ? "#e8c9a0" : "#c8bfb0", transition: "all 0.15s",
+    color: selected ? "#3d2817" : "#5c3a21", transition: "all 0.15s",
   }}>
     {label}
   </button>
@@ -214,9 +214,9 @@ const GearManager = () => {
       background: C.page, overflow: "hidden" }}>
 
       {/* Header */}
-      <div style={{ flexShrink: 0, background: "rgba(20,13,7,0.94)",
-        backdropFilter: "blur(12px)", borderBottom: `1px solid rgba(90,58,26,0.5)`,
-        boxShadow: "0 4px 24px rgba(0,0,0,0.4)" }}>
+      <div style={{ flexShrink: 0, background: "rgba(235,224,194,0.94)",
+        backdropFilter: "blur(12px)", borderBottom: `1px solid rgba(162,133,90,0.7)`,
+        boxShadow: "0 4px 20px rgba(61,40,23,0.08)" }}>
         <div style={{ maxWidth: 760, margin: "0 auto", padding: "14px 20px",
           display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
@@ -240,8 +240,8 @@ const GearManager = () => {
             </div>
             <button onClick={() => navigate("/profile")}
               style={{ padding: "8px 16px", borderRadius: 8, fontSize: 12.5,
-                fontFamily: sans, fontWeight: 600, background: "rgba(90,58,26,0.35)",
-                color: "#c8a97a", border: "1px solid rgba(193,122,46,0.3)", cursor: "pointer" }}>
+                fontFamily: sans, fontWeight: 600, background: "#ccb98f",
+                color: "#5c3a21", border: "1px solid #a2855a", cursor: "pointer" }}>
               Done
             </button>
           </div>
@@ -275,7 +275,7 @@ const GearManager = () => {
                     display: "flex", alignItems: "center", justifyContent: "space-between",
                     padding: "9px 12px", borderRadius: 9,
                     background: C.fieldBg, border: `1px solid ${C.fieldBorder}` }}>
-                    <span style={{ fontFamily: sans, fontSize: 12.5, color: "#c8bfb0" }}>{item.name}</span>
+                    <span style={{ fontFamily: sans, fontSize: 12.5, color: "#3d2817" }}>{item.name}</span>
                     <button onClick={() => handleRemove(item)} title="Remove"
                       style={{ background: "none", border: "none", cursor: "pointer",
                         color: C.muted, fontSize: 15, lineHeight: 1, padding: "2px 4px" }}>✕</button>

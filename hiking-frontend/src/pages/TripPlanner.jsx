@@ -17,34 +17,34 @@ const toGearCategory = (c) => GAP_TO_GEAR_CATEGORY[c] || c;
 
 /* ─── Design tokens ───────────────────────────────────────────────────── */
 const C = {
-  page:         "#0d0a07",
-  sidebar:      "#110d09",
-  sidebarBorder:"#2a1c10",
-  fieldBg:      "#241a10",
-  fieldBorder:  "#5a3e22",
-  heading:      "#f0e6d0",
-  subtext:      "#a08060",
-  muted:        "#6a4e30",
-  label:        "#b8906a",
-  amber:        "#c17a2e",
-  amberHover:   "#d98c38",
-  amberText:    "#fff8ee",
-  amberDim:     "rgba(193,122,46,0.12)",
-  amberBorder:  "rgba(193,122,46,0.35)",
-  userBubble:   "#2a1e10",
+  page:         "#dccaa0", // canvas
+  sidebar:      "#ebe0c2", // paper
+  sidebarBorder:"#a2855a", // rule
+  fieldBg:      "#ccb98f", // paper-sunk
+  fieldBorder:  "#a2855a", // rule
+  heading:      "#3d2817", // ink
+  subtext:      "#5c3a21", // ink-soft
+  muted:        "#6a4a26", // ink-muted
+  label:        "#a83b2c", // ember
+  amber:        "#a83b2c", // ember
+  amberHover:   "#8e3022", // ember-hover
+  amberText:    "#ebe0c2", // on-ember
+  amberDim:     "rgba(168,59,44,0.12)",
+  amberBorder:  "rgba(168,59,44,0.35)",
+  userBubble:   "#ccb98f", // paper-sunk
   assistBg:     "transparent",
-  inputBg:      "#1a1208",
-  inputBorder:  "#3a2810",
-  errorBg:      "rgba(180,40,20,0.12)",
-  errorBorder:  "rgba(200,60,30,0.35)",
-  errorText:    "#e87060",
-  successBg:    "rgba(40,140,60,0.14)",
-  successBorder:"rgba(50,180,80,0.35)",
-  successText:  "#60c878",
+  inputBg:      "#ccb98f", // paper-sunk
+  inputBorder:  "#a2855a", // rule
+  errorBg:      "rgba(150,48,31,0.12)",
+  errorBorder:  "rgba(150,48,31,0.35)",
+  errorText:    "#96301f", // rust
+  successBg:    "rgba(122,98,54,0.16)",
+  successBorder:"rgba(122,98,54,0.4)",
+  successText:  "#6e5a2e", // deep sage
 };
 
-const serif = "Georgia, 'Times New Roman', serif";
-const sans  = "'Trebuchet MS', 'Lucida Sans Unicode', sans-serif";
+const serif = "'Fraunces', Georgia, serif";
+const sans  = "'Work Sans', 'Trebuchet MS', sans-serif";
 const mono  = "'Courier New', Courier, monospace";
 
 // Persists which needs_review nudges the user has dismissed — "dismissible,
@@ -65,9 +65,9 @@ const phaseIndex = (key) => PHASES.findIndex(p => p.key === key);
 /* ─── Mountain logo ──────────────────────────────────────────────────── */
 const Logo = ({ size = 22 }) => (
   <svg width={size} height={size * 0.85} viewBox="0 0 56 48" xmlns="http://www.w3.org/2000/svg" style={{ display: "block" }}>
-    <polygon points="28,3 53,43 3,43"  fill="none"    stroke="#7a5030" strokeWidth="1.4" strokeLinejoin="round"/>
-    <polygon points="14,43 28,16 42,43" fill="#2a1810" stroke="#c17a2e" strokeWidth="1"   strokeLinejoin="round"/>
-    <polygon points="28,3 33,11 23,11"  fill="#c17a2e" opacity="0.8"/>
+    <polygon points="28,3 53,43 3,43"  fill="none"    stroke="#5c3a21" strokeWidth="1.4" strokeLinejoin="round"/>
+    <polygon points="14,43 28,16 42,43" fill="#e4cb9e" stroke="#a83b2c" strokeWidth="1"   strokeLinejoin="round"/>
+    <polygon points="28,3 33,11 23,11"  fill="#a83b2c" opacity="0.8"/>
   </svg>
 );
 
@@ -181,7 +181,7 @@ const GearSuggestionModal = ({ suggestions, onConfirm, onDismiss, adding }) => {
   return (
     <div style={{
       position: "fixed", inset: 0, zIndex: 200,
-      background: "rgba(0,0,0,0.72)",
+      background: "rgba(61,40,23,0.45)",
       display: "flex", alignItems: "center", justifyContent: "center",
       backdropFilter: "blur(5px)",
       animation: "fadeIn 0.2s ease",
@@ -192,7 +192,7 @@ const GearSuggestionModal = ({ suggestions, onConfirm, onDismiss, adding }) => {
         borderRadius: 18, padding: "28px 30px 24px",
         width: "100%", maxWidth: 500,
         maxHeight: "82vh", display: "flex", flexDirection: "column",
-        boxShadow: "0 32px 80px rgba(0,0,0,0.55)",
+        boxShadow: "0 24px 60px rgba(61,40,23,0.18)",
       }}>
         {/* Header */}
         <div style={{ marginBottom: 18 }}>
@@ -378,7 +378,7 @@ const Message = ({ msg }) => {
         )}
         <div style={{
           fontFamily: serif, fontSize: 14.5, lineHeight: 1.75,
-          color: isUser ? C.heading : "#d4c5a9", whiteSpace: "pre-wrap",
+          color: isUser ? C.heading : "#3d2817", whiteSpace: "pre-wrap",
         }}>
           {msg.content}
         </div>
@@ -486,10 +486,10 @@ const HikeOptionCards = ({ options, onPick }) => {
 // never color alone (matters most for "reviewed", which would otherwise
 // just be "the green one").
 const CHAT_STATUS_META = {
-  active:    { label: "In progress",     icon: "●", color: "#c17a2e" },
-  saved:     { label: "Upcoming",        icon: "◐", color: "#7a9bc1" },
-  completed: { label: "Awaiting review", icon: "○", color: "#a08060" },
-  reviewed:  { label: "Reviewed",        icon: "✓", color: "#60c878" },
+  active:    { label: "In progress",     icon: "●", color: "#a83b2c" },
+  saved:     { label: "Upcoming",        icon: "◐", color: "#6a4a26" },
+  completed: { label: "Awaiting review", icon: "○", color: "#6a4a26" },
+  reviewed:  { label: "Reviewed",        icon: "✓", color: "#7a6236" },
 };
 
 const StatusBadge = ({ status, size = 11 }) => {
@@ -583,7 +583,7 @@ const ReadOnlyTripView = ({ trip, onMarkDone, marking, onCancel, cancelling, onO
               title="Re-run this search against current trail data — not a replay of the original results"
               style={{
                 padding: "8px 16px", borderRadius: 9, cursor: duplicating ? "default" : "pointer",
-                background: "rgba(90,58,26,0.3)", border: `1px solid ${C.fieldBorder}`,
+                background: "#ccb98f", border: `1px solid ${C.fieldBorder}`,
                 color: C.label, fontFamily: sans, fontSize: 12.5, fontWeight: 600,
                 opacity: duplicating ? 0.7 : 1,
               }}
@@ -809,7 +809,7 @@ const ReviewModal = ({ trip, onSubmit, onClose, submitting }) => {
   return (
     <div style={{
       position: "fixed", inset: 0, zIndex: 200,
-      background: "rgba(0,0,0,0.72)",
+      background: "rgba(61,40,23,0.45)",
       display: "flex", alignItems: "center", justifyContent: "center",
       backdropFilter: "blur(5px)",
       animation: "fadeIn 0.2s ease",
@@ -820,7 +820,7 @@ const ReviewModal = ({ trip, onSubmit, onClose, submitting }) => {
         borderRadius: 18, padding: "28px 30px 24px",
         width: "100%", maxWidth: 460,
         maxHeight: "85vh", overflowY: "auto",
-        boxShadow: "0 32px 80px rgba(0,0,0,0.55)",
+        boxShadow: "0 24px 60px rgba(61,40,23,0.18)",
       }}>
         <h2 style={{ fontFamily: serif, fontSize: 19, color: C.heading, margin: "0 0 4px", fontWeight: 400 }}>
           How was {trip.title}?
@@ -1464,8 +1464,8 @@ export default function TripPlanner() {
                 title={serviceReady === null ? "Checking service…" : serviceReady ? "AI service online" : "AI service offline"}
                 style={{
                   width: 7, height: 7, borderRadius: "50%",
-                  background: serviceReady === null ? C.muted : serviceReady ? "#50c878" : "#e05040",
-                  boxShadow: serviceReady === true ? "0 0 5px #50c878" : "none",
+                  background: serviceReady === null ? C.muted : serviceReady ? "#7a6236" : "#96301f",
+                  boxShadow: serviceReady === true ? "0 0 5px #7a6236" : "none",
                   transition: "all 0.4s",
                 }}
               />
@@ -1603,7 +1603,7 @@ export default function TripPlanner() {
           }}>
             <div style={{ maxWidth: 680, margin: "0 auto", position: "relative" }}>
               <div style={{
-                background: inputBlocked ? "rgba(26,18,8,0.5)" : C.inputBg,
+                background: inputBlocked ? "rgba(162,133,90,0.5)" : C.inputBg,
                 border: `1px solid ${C.inputBorder}`,
                 borderRadius: 18, overflow: "hidden",
                 transition: "border-color 0.15s, background 0.15s",

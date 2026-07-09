@@ -31,3 +31,6 @@ class TokenResponse(BaseModel):
     token_type: str = "bearer"
     user_id: str
     name: str
+    # True only when this login just created the account (Google sign-up), so
+    # the frontend can route to onboarding. Always False for existing logins.
+    is_new: bool = False

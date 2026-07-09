@@ -5,43 +5,78 @@ import "mapbox-gl/dist/mapbox-gl.css";
 
 import FilterBar from "../components/FilterBar";
 import HikeSummaryCard from "../components/HikeSummaryCard";
+import { HikeCardSkeletonList } from "../components/Skeleton";
 import MapLegend from "../components/MapLegend";
 import { useUserLocation } from "../components/UserLocation";
 import { useHikes } from "../context/HikeContext";
+import { palette as P } from "../styles/theme";
 
 mapboxgl.accessToken = import.meta.env.VITE_MAPBOX_TOKEN;
+
+/* ── Field Journal map palette (hikeStyle.md §5) ─────────────────────────────
+   The base tiles come from Mapbox 'light-v11'; applyPaperBase() nudges its land
+   + water toward aged paper. A true sepia/vintage tile set is a Mapbox Studio
+   style (follow-up) — this is the in-code approximation. */
+const MAP = {
+  // Pinned to the rich ochre from before the UI-readability lightening —
+  // the map keeps its deep parchment tone while the surrounding UI is lighter.
+  land:     "#c6a46a",    // rich ochre landmass
+  water:    P.water,      // flat tan "ocean" — same family, no blue
+  trail:    P.ember,      // red route lines (the one accent hue)
+  pin:      P.ember,      // red trail markers
+  pinRing:  P.paper,      // cream stroke around pins
+  cluster:  [P.ember, "#8e3022", "#7a2a1f"], // red cluster bubbles, darkening
+  onEmber:  P.onEmber,    // cream text/stroke on red
+};
+
+/* Best-effort recolor of the light-v11 base layers toward paper. Each layer is
+   guarded — Mapbox renames base layers between style versions, so a missing id
+   is skipped rather than throwing. */
+function applyPaperBase(m) {
+  const setBG = (id, color) => {
+    if (!m.getLayer(id)) return;
+    try { m.setPaintProperty(id, "background-color", color); } catch { /* not a bg layer */ }
+  };
+  const setFill = (id, color) => {
+    if (!m.getLayer(id)) return;
+    try { m.setPaintProperty(id, "fill-color", color); } catch { /* not a fill layer */ }
+  };
+  setBG("background", MAP.land);
+  ["land", "landcover", "landuse", "national-park", "park"].forEach((id) => setFill(id, MAP.land));
+  ["water", "water-shadow"].forEach((id) => setFill(id, MAP.water));
+}
 
 /* ── Tuning constants ────────────────────────────────────────────────────── */
 const RESULT_LIMIT  = 200;  // hard cap sent to backend; sidebar warns when hit
 const CARD_HEIGHT   = 128;  // px – adjust if HikeSummaryCard renders taller/shorter
 const MOVEEND_DELAY = 400;  // ms debounce on map pan / zoom end
 
-/* ── Design tokens (matches Profile & GearSetup) ────────────────────────── */
+/* ── Field Journal tokens (hikeStyle.md) — sidebar chrome ───────────────── */
 const C = {
-  page:        "#0d0a07",
-  card:        "#1c1510",
-  cardBorder:  "#4a3520",
-  fieldBg:     "#241a10",
-  fieldBorder: "#5a3e22",
-  heading:     "#f0e6d0",
-  subtext:     "#a08060",
-  muted:       "#6a4e30",
-  label:       "#b8906a",
-  amber:       "#c17a2e",
-  amberDim:    "rgba(193,122,46,0.12)",
-  amberBorder: "rgba(193,122,46,0.35)",
-  amberText:   "#fff8ee",
-  divider:     "#3a2510",
+  page:        "#dccaa0", // canvas
+  card:        "#ebe0c2", // paper
+  cardBorder:  "#a2855a", // rule
+  fieldBg:     "#ccb98f", // paper-sunk
+  fieldBorder: "#a2855a", // rule
+  heading:     "#3d2817", // ink
+  subtext:     "#5c3a21", // ink-soft
+  muted:       "#6a4a26", // ink-muted
+  label:       "#a83b2c", // ember (accent)
+  amber:       "#a83b2c", // ember
+  amberDim:    "rgba(168,59,44,0.12)",
+  amberBorder: "rgba(168,59,44,0.35)",
+  amberText:   "#ebe0c2", // on-ember
+  divider:     "#a2855a", // rule
 };
-const serif = "Georgia, 'Times New Roman', serif";
-const sans  = "'Trebuchet MS', 'Lucida Sans Unicode', sans-serif";
-const body  = "'Palatino Linotype', Palatino, Georgia, serif";
+const serif = "'Fraunces', Georgia, serif";
+const sans  = "'Work Sans', 'Trebuchet MS', sans-serif";
+const body  = "'Spectral', Georgia, serif";
 
 /* ── Mountain mark ───────────────────────────────────────────────────────── */
 const MountainMark = () => (
   <svg width="28" height="22" viewBox="0 0 40 32" fill="none" style={{ flexShrink: 0 }}>
-    <polygon points="20,2 38,30 2,30"  fill="none"    stroke="#c17a2e" strokeWidth="1.5" strokeLinejoin="round"/>
-    <polygon points="10,30 20,12 30,30" fill="#2a1810" stroke="#8b5e3c" strokeWidth="1"   strokeLinejoin="round"/>
+    <polygon points="20,2 38,30 2,30"  fill="none"    stroke="#a83b2c" strokeWidth="1.5" strokeLinejoin="round"/>
+    <polygon points="10,30 20,12 30,30" fill="#e4cb9e" stroke="#5c3a21" strokeWidth="1"   strokeLinejoin="round"/>
   </svg>
 );
 
@@ -67,8 +102,11 @@ const List = ({ height, itemCount, itemSize, itemData, width, children: Row }) =
     setRange(prev => (prev.start === start && prev.end === end) ? prev : { start, end });
   };
 
+  // Clamp against the current itemCount: `range` is stored state and can lag a
+  // frame behind a shrunken list, which would otherwise render rows off the end.
   const rows = [];
-  for (let i = range.start; i <= range.end; i++) {
+  const lastIndex = Math.min(range.end, itemCount - 1);
+  for (let i = range.start; i <= lastIndex; i++) {
     rows.push(<Row key={i} index={i} top={i * itemSize} rowHeight={itemSize} data={itemData} />);
   }
 
@@ -96,6 +134,10 @@ const List = ({ height, itemCount, itemSize, itemData, width, children: Row }) =
 const HikeRow = memo(function HikeRow({ index, top, rowHeight, data }) {
   const { hikes, onSelect } = data;
   const hike = hikes[index];
+  // The List's visible range can briefly outrun `hikes` after a search returns
+  // fewer results than were shown (range is only re-clamped on scroll), so an
+  // index past the new end yields undefined — skip it rather than crash the card.
+  if (!hike) return null;
   return (
     // box-sizing:border-box keeps padding inside the fixed height set by List
     <div style={{
@@ -115,7 +157,7 @@ const HikeRow = memo(function HikeRow({ index, top, rowHeight, data }) {
         }}
         onMouseEnter={e => {
           e.currentTarget.style.borderColor = C.amber;
-          e.currentTarget.style.boxShadow   = "0 4px 20px rgba(193,122,46,0.1)";
+          e.currentTarget.style.boxShadow   = "0 4px 20px rgba(168,59,44,0.1)";
         }}
         onMouseLeave={e => {
           e.currentTarget.style.borderColor = C.cardBorder;
@@ -149,6 +191,20 @@ function buildGeoJSON(hikes) {
         geometry: hike.geometry,
         properties: { id: hike.id },
       });
+    } else if (hike.geometry.type === "MultiLineString") {
+      // Trails stitched from multiple OSM segments come through as
+      // MultiLineString (~16% of the table). The line layer renders these
+      // natively; the pin sits at the first point of the first segment.
+      points.push({
+        type: "Feature",
+        geometry: { type: "Point", coordinates: hike.geometry.coordinates[0][0] },
+        properties: { id: hike.id, name: hike.name ?? "" },
+      });
+      trails.push({
+        type: "Feature",
+        geometry: hike.geometry,
+        properties: { id: hike.id },
+      });
     } else if (hike.geometry.type === "Point") {
       points.push({
         type: "Feature",
@@ -164,6 +220,83 @@ function buildGeoJSON(hikes) {
   };
 }
 
+/* ── Radial "bloom" reveal ───────────────────────────────────────────────────
+   Feeds features into the two WebGL sources over BLOOM_MS, ordered by distance
+   from `center`, so trails open outward from the middle of the result cluster
+   like a flower blooming. A growing radius threshold reveals both sources in
+   lockstep (a hike's pin + line share the trailhead coord, so they appear
+   together). Returns cancel(), which stops the animation and snaps both sources
+   to their full data. Only ever runs on the first populated load — panning
+   re-runs the search and must snap, not re-bloom, or it fights the camera. */
+const BLOOM_MS = 900;
+const easeInOutCubic = (t) =>
+  (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
+
+function bloomInSources(m, pointsFC, trailsFC, center) {
+  // Re-fetched (not captured) + guarded so a mid-bloom unmount can't throw on a
+  // torn-down style.
+  const setFull = () => {
+    try {
+      m.getSource("hikes-source")?.setData(pointsFC);
+      m.getSource("trails-source")?.setData(trailsFC);
+    } catch { /* map removed mid-bloom */ }
+  };
+
+  const prefersReduced =
+    window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
+  if (prefersReduced || pointsFC.features.length <= 1) {
+    setFull();
+    return () => {};
+  }
+
+  // Squared distance is enough for *ordering*; the cos(lat) term keeps the
+  // reveal roughly circular rather than lng-stretched away from the equator.
+  const cx = center.lng, cy = center.lat;
+  const kx = Math.cos((cy * Math.PI) / 180) || 1;
+  const head = (f) => {
+    if (f.geometry.type === "LineString")      return f.geometry.coordinates[0];
+    if (f.geometry.type === "MultiLineString") return f.geometry.coordinates[0][0];
+    return f.geometry.coordinates; // Point
+  };
+  const dist2 = (f) => {
+    const c = head(f);
+    const dx = (c[0] - cx) * kx, dy = c[1] - cy;
+    return dx * dx + dy * dy;
+  };
+
+  const pts  = pointsFC.features.map((f) => ({ f, d: dist2(f) }));
+  const trls = trailsFC.features.map((f) => ({ f, d: dist2(f) }));
+  const maxD = pts.reduce((m2, x) => Math.max(m2, x.d), 0) || 1;
+
+  let cancelled = false;
+  let raf = 0;
+  const start = performance.now();
+
+  const frame = (now) => {
+    if (cancelled) return;
+    const t = Math.min(1, (now - start) / BLOOM_MS);
+    const threshold = easeInOutCubic(t) * maxD * 1.02;
+    try {
+      m.getSource("hikes-source")?.setData({
+        type: "FeatureCollection",
+        features: pts.filter((x) => x.d <= threshold).map((x) => x.f),
+      });
+      m.getSource("trails-source")?.setData({
+        type: "FeatureCollection",
+        features: trls.filter((x) => x.d <= threshold).map((x) => x.f),
+      });
+    } catch { return; /* map removed mid-bloom */ }
+    if (t < 1) raf = requestAnimationFrame(frame);
+  };
+  raf = requestAnimationFrame(frame);
+
+  return () => {
+    cancelled = true;
+    cancelAnimationFrame(raf);
+    setFull();
+  };
+}
+
 /* ── [1][3] Add all sources + layers once on map 'load' ─────────────────── */
 function setupLayers(m) {
   // ── Trail polylines ──────────────────────────────────────────────────────
@@ -176,7 +309,7 @@ function setupLayers(m) {
     type:   "line",
     source: "trails-source",
     layout: { "line-join": "round", "line-cap": "round" },
-    paint:  { "line-color": "#22c55e", "line-width": 3, "line-opacity": 0.8 },
+    paint:  { "line-color": MAP.trail, "line-width": 2.5, "line-opacity": 0.85 },
   });
 
   // ── Clustered point source ───────────────────────────────────────────────
@@ -195,14 +328,14 @@ function setupLayers(m) {
     paint: {
       "circle-color": [
         "step", ["get", "point_count"],
-        "#c17a2e", 10, "#a06020", 50, "#7a4818",
+        MAP.cluster[0], 10, MAP.cluster[1], 50, MAP.cluster[2],
       ],
       "circle-radius": [
         "step", ["get", "point_count"],
         20, 10, 28, 50, 36,
       ],
       "circle-stroke-width": 2,
-      "circle-stroke-color": "rgba(255,255,255,0.15)",
+      "circle-stroke-color": "rgba(235,224,194,0.7)",
     },
   });
 
@@ -215,7 +348,7 @@ function setupLayers(m) {
       "text-font":  ["DIN Offc Pro Medium", "Arial Unicode MS Bold"],
       "text-size":  12,
     },
-    paint: { "text-color": "#ffffff" },
+    paint: { "text-color": MAP.onEmber },
   });
 
   // Individual (unclustered) pins
@@ -223,10 +356,10 @@ function setupLayers(m) {
     id: "unclustered-point", type: "circle", source: "hikes-source",
     filter: ["!", ["has", "point_count"]],
     paint: {
-      "circle-color":        "#22c55e",
-      "circle-radius":       8,
+      "circle-color":        MAP.pin,
+      "circle-radius":       7,
       "circle-stroke-width": 2,
-      "circle-stroke-color": "rgba(255,255,255,0.6)",
+      "circle-stroke-color": "rgba(235,224,194,0.9)",
     },
   });
 }
@@ -245,6 +378,8 @@ export default function MapPage() {
   const moveTimerRef  = useRef(null);       // moveend debounce handle
   const hasAutoFitted = useRef(false);      // fit-to-results only on first load
   const userMarkerRef = useRef(null);
+  const hasBloomed    = useRef(false);      // radial reveal plays once, on first load
+  const bloomCancelRef = useRef(null);      // stops an in-flight bloom (snaps to full)
 
   // ── Stable function / data refs (prevent stale closures in WebGL callbacks)
   const hikesRef      = useRef([]);
@@ -325,7 +460,7 @@ export default function MapPage() {
 
     map.current = new mapboxgl.Map({
       container: mapContainer.current,
-      style:     "mapbox://styles/mapbox/outdoors-v12",
+      style:     "mapbox://styles/mapbox/light-v11",
       center:    [-98.5795, 39.8283],
       zoom:      4,
     });
@@ -339,6 +474,8 @@ export default function MapPage() {
     });
 
     map.current.on("load", () => {
+      // Nudge the base tiles toward aged paper before adding our own layers
+      applyPaperBase(map.current);
       // [1][3] One-time layer setup
       setupLayers(map.current);
 
@@ -399,6 +536,7 @@ export default function MapPage() {
 
     return () => {
       clearTimeout(moveTimerRef.current);
+      bloomCancelRef.current?.();
       map.current?.remove();
       map.current = null;
     };
@@ -436,9 +574,31 @@ export default function MapPage() {
   // Single setData call per hikes change – no DOM marker creation at all
   useEffect(() => {
     if (!map.current?.loaded()) return;
+
+    // A new result set supersedes any in-flight bloom — cancel it (which snaps
+    // to full data) so a pan landing mid-bloom never leaves a half-revealed map.
+    bloomCancelRef.current?.();
+    bloomCancelRef.current = null;
+
     const { pointsFC, trailsFC } = buildGeoJSON(hikes);
-    map.current.getSource("hikes-source")?.setData(pointsFC);
-    map.current.getSource("trails-source")?.setData(trailsFC);
+
+    // First populated load blooms outward from the centroid of the results;
+    // every later update (pan, zoom, filter change) snaps instantly. Re-blooming
+    // on each moveend would look choppy and fight the camera.
+    if (hikes.length > 0 && !hasBloomed.current) {
+      hasBloomed.current = true;
+      const sum = pointsFC.features.reduce(
+        (a, f) => [a[0] + f.geometry.coordinates[0], a[1] + f.geometry.coordinates[1]],
+        [0, 0],
+      );
+      const n = pointsFC.features.length || 1;
+      bloomCancelRef.current = bloomInSources(
+        map.current, pointsFC, trailsFC, { lng: sum[0] / n, lat: sum[1] / n },
+      );
+    } else {
+      map.current.getSource("hikes-source")?.setData(pointsFC);
+      map.current.getSource("trails-source")?.setData(trailsFC);
+    }
 
     // Auto-fit to results once on first load only; panning after that is the
     // user's choice and shouldn't be interrupted.
@@ -485,7 +645,7 @@ export default function MapPage() {
 
       {/* ── LEFT: Map ─────────────────────────────────────────────────────── */}
       <div style={{ position: "relative", flex: 1 }}>
-        <div ref={mapContainer} style={{ height: "100%", width: "100%" }} />
+        <div ref={mapContainer} style={{ height: "100%", width: "100%", background: MAP.land }} />
 
         {/* Trip Planner button */}
         <button
@@ -493,24 +653,24 @@ export default function MapPage() {
           title="Plan a Trip"
           style={{
             position: "absolute", top: 16, right: 96, zIndex: 10,
-            background: "rgba(13,10,7,0.88)", backdropFilter: "blur(8px)",
+            background: "rgba(235,224,194,0.92)", backdropFilter: "blur(8px)",
             padding: "8px 10px", borderRadius: 8,
-            border: `1px solid ${C.cardBorder}`, cursor: "pointer",
-            boxShadow: "0 2px 12px rgba(0,0,0,0.45)",
+            border: `1px solid ${P.rule}`, cursor: "pointer",
+            boxShadow: `0 2px 10px ${P.shadow}`,
             display: "flex", alignItems: "center", justifyContent: "center",
             transition: "border-color 0.15s, background 0.15s",
           }}
           onMouseEnter={e => {
-            e.currentTarget.style.borderColor = C.amber;
-            e.currentTarget.style.background  = "rgba(28,21,16,0.95)";
+            e.currentTarget.style.borderColor = P.ember;
+            e.currentTarget.style.background  = "rgba(237,222,186,0.98)";
           }}
           onMouseLeave={e => {
-            e.currentTarget.style.borderColor = C.cardBorder;
-            e.currentTarget.style.background  = "rgba(13,10,7,0.88)";
+            e.currentTarget.style.borderColor = P.rule;
+            e.currentTarget.style.background  = "rgba(235,224,194,0.92)";
           }}
         >
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none"
-            stroke={C.label} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            stroke={P.inkSoft} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <path d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7"/>
           </svg>
         </button>
@@ -521,24 +681,24 @@ export default function MapPage() {
           title="Go to Profile"
           style={{
             position: "absolute", top: 16, right: 56, zIndex: 10,
-            background: "rgba(13,10,7,0.88)", backdropFilter: "blur(8px)",
+            background: "rgba(235,224,194,0.92)", backdropFilter: "blur(8px)",
             padding: "8px 10px", borderRadius: 8,
-            border: `1px solid ${C.cardBorder}`, cursor: "pointer",
-            boxShadow: "0 2px 12px rgba(0,0,0,0.45)",
+            border: `1px solid ${P.rule}`, cursor: "pointer",
+            boxShadow: `0 2px 10px ${P.shadow}`,
             display: "flex", alignItems: "center", justifyContent: "center",
             transition: "border-color 0.15s, background 0.15s",
           }}
           onMouseEnter={e => {
-            e.currentTarget.style.borderColor = C.amber;
-            e.currentTarget.style.background  = "rgba(28,21,16,0.95)";
+            e.currentTarget.style.borderColor = P.ember;
+            e.currentTarget.style.background  = "rgba(237,222,186,0.98)";
           }}
           onMouseLeave={e => {
-            e.currentTarget.style.borderColor = C.cardBorder;
-            e.currentTarget.style.background  = "rgba(13,10,7,0.88)";
+            e.currentTarget.style.borderColor = P.rule;
+            e.currentTarget.style.background  = "rgba(235,224,194,0.92)";
           }}
         >
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none"
-            stroke={C.label} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            stroke={P.inkSoft} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/>
             <circle cx="12" cy="7" r="4"/>
           </svg>
@@ -552,16 +712,16 @@ export default function MapPage() {
         width: 320, display: "flex", flexDirection: "column",
         background: C.page,
         borderLeft: `1px solid ${C.divider}`,
-        boxShadow: "-4px 0 32px rgba(0,0,0,0.6)",
+        boxShadow: "-4px 0 24px rgba(61,40,23,0.10)",
         zIndex: 10,
       }}>
 
         {/* Header */}
         <div style={{
           flexShrink: 0,
-          background: "rgba(20,13,7,0.96)", backdropFilter: "blur(12px)",
-          borderBottom: "1px solid rgba(90,58,26,0.5)",
-          boxShadow: "0 4px 24px rgba(0,0,0,0.4)",
+          background: "rgba(235,224,194,0.96)", backdropFilter: "blur(12px)",
+          borderBottom: "1px solid rgba(162,133,90,0.7)",
+          boxShadow: "0 4px 20px rgba(61,40,23,0.08)",
           padding: "14px 20px",
           display: "flex", alignItems: "center", justifyContent: "space-between",
         }}>
@@ -613,7 +773,7 @@ export default function MapPage() {
               </p>
             )}
             {locationError && (
-              <p style={{ fontFamily: sans, fontSize: 10, color: "#c06050", margin: 0 }}>
+              <p style={{ fontFamily: sans, fontSize: 10, color: "#96301f", margin: 0 }}>
                 {locationError}
               </p>
             )}
@@ -624,7 +784,7 @@ export default function MapPage() {
               }}>
                 <span style={{
                   display: "inline-block", width: 5, height: 5,
-                  borderRadius: "50%", background: "#5aaa40", flexShrink: 0,
+                  borderRadius: "50%", background: "#7a6236", flexShrink: 0,
                 }} />
                 Location active
               </p>
@@ -640,22 +800,17 @@ export default function MapPage() {
           {/* Error state */}
           {error && !loading && (
             <p style={{
-              fontFamily: sans, fontSize: 12, color: "#c06050",
+              fontFamily: sans, fontSize: 12, color: "#96301f",
               textAlign: "center", padding: "16px 0", margin: 0,
             }}>
               {error}
             </p>
           )}
 
-          {/* Loading – no results yet */}
+          {/* Loading – no results yet: skeleton cards show the list's shape
+              immediately instead of a bare spinner. */}
           {loading && hikes.length === 0 && (
-            <div style={{ textAlign: "center", padding: "48px 0" }}>
-              <MountainMark />
-              <p style={{ fontFamily: body, fontSize: 13, color: C.muted,
-                fontStyle: "italic", marginTop: 12 }}>
-                Searching trails…
-              </p>
-            </div>
+            <HikeCardSkeletonList count={7} rowHeight={CARD_HEIGHT} />
           )}
 
           {/* Empty state */}

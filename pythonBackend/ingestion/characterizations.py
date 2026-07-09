@@ -13,8 +13,11 @@ SAC_SCALE_MAP = {
 
 # ── Noise fragments ────────────────────────────────────────────────────────────
 
+# "connector" and "access" were removed — they match legitimate trail names
+# (greenway connectors, access spurs) and were dropping real hikes. What remains
+# is unambiguous road/pavement noise.
 SKIP_NAME_FRAGMENTS = {
-    "sidewalk", "crosswalk", "connector", "access", "service",
+    "sidewalk", "crosswalk", "service",
     "driveway", "parking", "road", "street", "avenue", "boulevard",
 }
 
@@ -80,6 +83,60 @@ def compute_metrics(points: list) -> tuple[float, float]:
             if delta > 0:
                 gain += delta
     return distance, gain
+
+
+# ── Trail shape / out-and-back correction ───────────────────────────────────────
+
+# Endpoints closer together than this (great-circle metres) are treated as the
+# same point, so the trail is a closed LOOP whose stored geometry already spans
+# the full walk. Farther apart, the trail is OPEN and — in a regional day-hike
+# dataset whose OSM relations carry no `roundtrip`/`distance` tags — is
+# overwhelmingly an out-and-back, whose geometry OSM stores ONCE (trailhead →
+# turnaround) and which therefore reads at ~half its real round-trip length.
+LOOP_CLOSE_M = 50.0
+
+TRAIL_SHAPE_LOOP         = "loop"
+TRAIL_SHAPE_OUT_AND_BACK = "out_and_back"
+# Assigned by the distance backfill (not by ingest) to a row it can't classify
+# from geometry — a degenerate/empty coordinate list. Stamped rather than left
+# NULL so the row is not re-scanned on every future run; length is left as-is.
+TRAIL_SHAPE_UNKNOWN      = "unknown"
+
+
+def classify_trail_shape(
+    first_lat: float, first_lon: float,
+    last_lat:  float, last_lon:  float,
+) -> str:
+    """
+    Loop vs. out-and-back from the geometry's endpoints alone. Returns
+    TRAIL_SHAPE_LOOP when start ≈ end (within LOOP_CLOSE_M), else
+    TRAIL_SHAPE_OUT_AND_BACK.
+
+    Deliberately no 'point_to_point' class: telling a genuine thru/shuttle hike
+    apart from an out-and-back needs OSM `roundtrip`/`distance` tags the RI/NC
+    relations don't carry. Defaulting every open trail to out-and-back only
+    over-doubles the rare point-to-point — the accepted trade (an easy loop is
+    never overshot; long out-and-backs get fixed).
+    """
+    gap_m = haversine(first_lat, first_lon, last_lat, last_lon)
+    return TRAIL_SHAPE_LOOP if gap_m <= LOOP_CLOSE_M else TRAIL_SHAPE_OUT_AND_BACK
+
+
+# ── Length-bucket tag ────────────────────────────────────────────────────────────
+
+# The single duration tag derive_tags() assigns from length. Isolated here so the
+# distance backfill can swap ONLY this tag when it doubles an out-and-back —
+# without regenerating (and thereby clobbering) the Overpass-enrichment feature
+# tags (waterfall, lake, summit, …) that land on the row post-ingest.
+LENGTH_BUCKET_TAGS = ("short", "half_day", "full_day", "overnight", "multi_day")
+
+
+def length_bucket_tag(length_km: float) -> str:
+    if length_km < 5:    return "short"        # < 5 km   — under 2 hrs
+    if length_km < 10:   return "half_day"     # 5–10 km  — 2–4 hrs
+    if length_km <= 25:  return "full_day"     # 10–25 km — most day hikes
+    if length_km <= 50:  return "overnight"    # 25–50 km — one camp stop
+    return "multi_day"                         # 50+ km   — multiple nights
 
 
 # ── Season ─────────────────────────────────────────────────────────────────────
@@ -170,16 +227,7 @@ def derive_tags(
     tags: set[str] = set()
 
     # ── Duration bucket ────────────────────────────────────────────────────────
-    if length_km < 5:
-        tags.add("short")        # < 5 km  — under 2 hrs
-    elif length_km < 10:
-        tags.add("half_day")     # 5–10 km — 2–4 hrs
-    elif length_km <= 25:
-        tags.add("full_day")     # 10–25 km — most day hikes
-    elif length_km <= 50:
-        tags.add("overnight")    # 25–50 km — one camp stop
-    else:
-        tags.add("multi_day")    # 50+ km   — multiple nights
+    tags.add(length_bucket_tag(length_km))
 
     # ── Elevation gain tier ────────────────────────────────────────────────────
     if elevation_gain_m < 100:

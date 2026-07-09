@@ -60,7 +60,7 @@ from typing import Optional
 from uuid import UUID
 from types import SimpleNamespace
 from fastapi import APIRouter, HTTPException, Depends
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from Auth.authentication        import get_current_user_id
 from rate_limit                 import ai_quota_guard
@@ -253,7 +253,10 @@ FEATURE_KEYWORD_MAP: dict[str, list[str]] = {
 # ── Request / Response schemas ────────────────────────────────────────────────
 
 class ChatRequest(BaseModel):
-    message:    str
+    # Cap the message: a real trip-chat turn is a sentence or two. A hard bound
+    # stops a single request from ballooning the Groq prompt (cost/latency
+    # abuse) and rejects multi-KB junk payloads before they reach the LLM.
+    message:    str             = Field(min_length=1, max_length=2000)
     session_id: Optional[str]   = None
     user_lat:   Optional[float] = None   # frontend sends on every message
     user_lng:   Optional[float] = None

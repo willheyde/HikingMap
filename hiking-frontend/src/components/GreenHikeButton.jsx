@@ -13,10 +13,10 @@ export default function GreenTreeButton({ hikeId, label = "View Hike", disabled 
     <button
       onClick={handleClick}
       disabled={disabled}
-      className={`px-4 py-2 rounded-lg font-semibold transition 
-        ${disabled 
-          ? "bg-gray-400 cursor-not-allowed" 
-          : "bg-green-600 hover:bg-green-700 text-white shadow-md"
+      className={`px-4 py-2 rounded-lg font-semibold transition
+        ${disabled
+          ? "bg-[#a2855a] text-ink-muted cursor-not-allowed"
+          : "bg-sage hover:bg-[#5a6845] text-paper shadow-md"
         }`}
     >
       🌲 {label}
