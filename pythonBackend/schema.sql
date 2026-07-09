@@ -17,7 +17,9 @@
 SET statement_timeout = 0;
 SET lock_timeout = 0;
 SET idle_in_transaction_session_timeout = 0;
-SET transaction_timeout = 0;
+-- NOTE: pg_dump 17 also emits `SET transaction_timeout = 0;` here — that
+-- parameter is Postgres 17-only and errors on older servers (incl. many RDS
+-- versions). Removed for portability; delete it again if you regenerate on PG17.
 SET client_encoding = 'UTF8';
 SET standard_conforming_strings = on;
 SELECT pg_catalog.set_config('search_path', '', false);
