@@ -1117,7 +1117,7 @@ export default function TripPlanner() {
     const lng = userLocation.lng ?? user?.home_location?.lon ?? null;
     try {
       await sendChatMessage(content, lat, lng);
-    } catch {}
+    } catch { /* send errors surface via chat context state */ }
   };
 
   const handleKey = (e) => {

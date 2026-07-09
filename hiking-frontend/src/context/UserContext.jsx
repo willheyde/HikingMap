@@ -1,8 +1,6 @@
 import { createContext, useContext, useState, useEffect, useRef } from "react";
 import * as userService from "../api/usersService";
 
-import axios from "axios";
-
 const UserContext = createContext(null);
 
 export const useUser = () => {
@@ -37,7 +35,7 @@ export const UserProvider = ({ children }) => {
         const parsed = JSON.parse(storedUser);
         setUser(parsed);
         setItems(parsed.items || []);
-      } catch (err) {
+      } catch {
         localStorage.removeItem("hike_user");
         localStorage.removeItem("hike_token");             // add this
         setAuthModalOpen(true);
