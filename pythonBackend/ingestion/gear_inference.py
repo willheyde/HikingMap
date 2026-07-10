@@ -255,11 +255,13 @@ class GearInferenceEngine:
         # ── First aid — always part of the ten essentials ────────────────────
         reqs["first_aid"] = {"importance": IMPORTANCE_REQUIRED}
 
-        # ── Hydration — treatment required on longer/committing days ──────────
-        if is_multiday or length_km > 15:
-            reqs["hydration"] = {"min_level": "filter", "importance": IMPORTANCE_REQUIRED}
-        else:
-            reqs["hydration"] = {"min_level": "carry", "importance": IMPORTANCE_REQUIRED}
+        # ── Hydration — presence-only (see gear_levels.PRESENCE_CATEGORIES) ───
+        # Hydration has no capability scale, so a min_level here can never be
+        # enforced by GearGapAnalyzer — it would only surface a misleading
+        # "needs water filtration" label that then reads as satisfied. Emit
+        # presence-only. (Distinguishing carry vs. treatment on committing days
+        # would require making hydration level-bearing in gear_levels.py first.)
+        reqs["hydration"] = {"importance": IMPORTANCE_REQUIRED}
 
         # ── Overnight system (only when camping is actually on the table) ────
         if is_multiday or can_camp:

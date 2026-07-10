@@ -1,7 +1,7 @@
 export default function MissingGearList({ items }) {
   if (!items || items.length === 0) {
     return (
-      <div className="text-green-600 font-medium">
+      <div className="text-sage font-medium">
         ✅ You have all required gear!
       </div>
     );
@@ -15,7 +15,7 @@ export default function MissingGearList({ items }) {
           <li key={item.id}>
             {item.name}{" "}
             {item.estimated_cost && (
-              <span className="text-gray-500">
+              <span className="text-ink-muted">
                 (${item.estimated_cost})
               </span>
             )}

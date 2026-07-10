@@ -78,10 +78,13 @@ _DIFFICULTY_HINT_TO_ENUM: dict[str, DifficultyLevel] = {
 # if found there, since they can't be satisfied by a single-tag @> query.
 
 CONCEPT_EXPANSIONS: dict[str, list[str]] = {
-    # Water
-    "water_feature": ["river", "lake", "waterfall"],
-    "water":         ["river", "lake", "waterfall"],
-    "waterway":      ["river", "lake"],
+    # Water. `stream` is a distinct tag from `river` (ingestion splits
+    # waterway=stream from waterway=river|canal) — most moving water in the DB is
+    # a stream, so it must be a constituent here or water searches miss the bulk
+    # of near-creek trails.
+    "water_feature": ["river", "stream", "lake", "waterfall"],
+    "water":         ["river", "stream", "lake", "waterfall"],
+    "waterway":      ["river", "stream", "lake"],
     # Views / elevation
     "view":          ["viewpoint", "summit", "ridge"],
     "scenic":        ["viewpoint", "ridge", "lake", "summit", "meadow"],
@@ -124,7 +127,8 @@ TAG_FALLBACKS: dict[str, list[str]] = {
     "historic":    ["montane"],
     "meadow":      ["subalpine", "lowland"],
     "ridge":       ["summit", "viewpoint", "montane"],
-    "river":       ["lake", "waterfall"],
+    "river":       ["stream", "lake", "waterfall"],
+    "stream":      ["river", "waterfall", "lake"],
     "montane":     ["subalpine", "ridge"],
     "subalpine":   ["summit", "ridge", "montane"],
     "lowland":     ["flat", "meadow"],

@@ -1,51 +1,52 @@
-import { useState } from "react";
+import { useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
-import { useUser } from "../context/UserContext";
+import { useUser } from "../context/useUser";
+import GoogleSignInButton from "./GoogleSignInButton";
 
 /* ─── Theme tokens ──────────────────────────────────────────────────────── */
 const C = {
-  backdrop:    "rgba(14, 10, 6, 0.82)",
-  card:        "#1c1510",
-  cardBorder:  "#4a3520",
-  fieldBg:     "#241a10",
-  fieldBorder: "#5a3e22",
-  fieldFocus:  "#c8854a",
-  fieldText:   "#e8d5b8",
-  fieldPh:     "#7a5c3a",
-  heading:     "#f0e6d0",
-  subtext:     "#a08060",
-  muted:       "#6a4e30",
-  label:       "#b8906a",
-  btnBg:       "#8b3a0f",
-  btnHover:    "#a8471a",
-  btnText:     "#fde8d0",
-  btnBorder:   "#c05a2a",
-  link:        "#d4874a",
-  divider:     "#3a2510",
-  errorBg:     "#2a100a",
-  errorBorder: "#8b3020",
-  errorText:   "#f0a090",
+  backdrop:    "rgba(46, 32, 19, 0.45)", // warm scrim
+  card:        "#ebe0c2", // paper
+  cardBorder:  "#a2855a", // rule
+  fieldBg:     "#ccb98f", // paper-sunk
+  fieldBorder: "#a2855a", // rule
+  fieldFocus:  "#a83b2c", // ember
+  fieldText:   "#3d2817", // ink
+  fieldPh:     "#6a4a26", // ink-muted
+  heading:     "#3d2817", // ink
+  subtext:     "#5c3a21", // ink-soft
+  muted:       "#6a4a26", // ink-muted
+  label:       "#a83b2c", // ember
+  btnBg:       "#a83b2c", // ember
+  btnHover:    "#8e3022", // ember-hover
+  btnText:     "#ebe0c2", // on-ember
+  btnBorder:   "#8e3022",
+  link:        "#a83b2c", // ember
+  divider:     "#a2855a", // rule
+  errorBg:     "#e6c29a", // rust-wash
+  errorBorder: "rgba(150,48,31,0.4)",
+  errorText:   "#96301f", // rust
 };
 
-const serif = "Georgia, 'Times New Roman', serif";
-const body  = "'Palatino Linotype', Palatino, Georgia, serif";
-const sans  = "'Trebuchet MS', 'Lucida Sans Unicode', sans-serif";
+const serif = "'Fraunces', Georgia, serif";
+const body  = "'Spectral', Georgia, serif";
+const sans  = "'Work Sans', 'Trebuchet MS', sans-serif";
 
 /* ─── Scenic backdrop ───────────────────────────────────────────────────── */
 const SceneryBg = () => (
   <svg
     aria-hidden="true"
-    style={{ position: "absolute", inset: 0, width: "100%", height: "100%", opacity: 0.18, pointerEvents: "none" }}
+    style={{ position: "absolute", inset: 0, width: "100%", height: "100%", opacity: 0.22, pointerEvents: "none" }}
     viewBox="0 0 800 600"
     preserveAspectRatio="xMidYMid slice"
     xmlns="http://www.w3.org/2000/svg"
   >
-    <path d="M0,380 L80,290 L160,340 L260,220 L370,310 L440,250 L520,300 L620,200 L700,270 L800,240 L800,600 L0,600 Z" fill="#2a1a08" />
-    <path d="M0,440 L60,360 L130,400 L200,330 L300,390 L380,320 L480,380 L560,340 L650,390 L720,350 L800,380 L800,600 L0,600 Z" fill="#361e0a" />
-    <path d="M-20,520 Q120,500 200,518 Q310,538 420,510 Q530,485 640,512 Q730,530 820,508" fill="none" stroke="#1a2e40" strokeWidth="28" opacity="0.7" />
-    <path d="M-20,520 Q120,500 200,518 Q310,538 420,510 Q530,485 640,512 Q730,530 820,508" fill="none" stroke="#243a50" strokeWidth="14" opacity="0.5" />
-    <path d="M0,560 Q200,540 400,555 Q600,572 800,548 L800,600 L0,600 Z" fill="#1a0e06" />
-    <g fill="#1a2810">
+    <path d="M0,380 L80,290 L160,340 L260,220 L370,310 L440,250 L520,300 L620,200 L700,270 L800,240 L800,600 L0,600 Z" fill="#8a7256" />
+    <path d="M0,440 L60,360 L130,400 L200,330 L300,390 L380,320 L480,380 L560,340 L650,390 L720,350 L800,380 L800,600 L0,600 Z" fill="#5c3a21" />
+    <path d="M-20,520 Q120,500 200,518 Q310,538 420,510 Q530,485 640,512 Q730,530 820,508" fill="none" stroke="#a2855a" strokeWidth="28" opacity="0.7" />
+    <path d="M-20,520 Q120,500 200,518 Q310,538 420,510 Q530,485 640,512 Q730,530 820,508" fill="none" stroke="#9ab5b5" strokeWidth="14" opacity="0.5" />
+    <path d="M0,560 Q200,540 400,555 Q600,572 800,548 L800,600 L0,600 Z" fill="#4a3a28" />
+    <g fill="#6e5a2e">
       <polygon points="50,480 62,520 38,520" />
       <polygon points="50,460 65,480 35,480" />
       <polygon points="50,440 67,463 33,463" />
@@ -90,7 +91,7 @@ const Field = ({ label, type = "text", value, onChange, placeholder, minLength }
 
 /* ─── AuthModal ─────────────────────────────────────────────────────────── */
 const AuthModal = () => {
-  const { authModalOpen, setAuthModalOpen, login, createUser, loading, error, items: userItems } = useUser();
+  const { authModalOpen, setAuthModalOpen, login, loginWithGoogle, createUser, loading, error } = useUser();
   const [isLoginView, setIsLoginView] = useState(true);
   const navigate = useNavigate();
 
@@ -98,6 +99,24 @@ const AuthModal = () => {
   const [password,  setPassword]  = useState("");
   const [name,      setName]      = useState("");
   const [formError, setFormError] = useState("");
+
+  // Google returns an ID token; hand it to the backend via the context. A
+  // brand-new account starts onboarding, same as email signup; a returning
+  // user just closes the modal and stays where they were. Defined here (before
+  // the early return below) so the Hooks are called unconditionally every render.
+  const handleGoogleCredential = useCallback(async (credential) => {
+    setFormError("");
+    try {
+      const { isNew } = await loginWithGoogle(credential);
+      if (isNew) navigate("/onboarding");
+    } catch (err) {
+      setFormError(err.message || "Google sign-in failed. Please try again.");
+    }
+  }, [loginWithGoogle, navigate]);
+
+  const handleGoogleError = useCallback(() => {
+    setFormError("Couldn't reach Google sign-in. Check your connection and try again.");
+  }, []);
 
   if (!authModalOpen) return null;
 
@@ -168,16 +187,16 @@ const AuthModal = () => {
         borderRadius: "20px", padding: "2.25rem 2rem 1.75rem",
         width: "100%", maxWidth: "380px",
         position: "relative", zIndex: 2,
-        boxShadow: "0 32px 80px rgba(0,0,0,0.6)",
+        boxShadow: "0 24px 60px rgba(61,40,23,0.20)",
       }}>
 
         {/* Header */}
         <div style={{ textAlign: "center", marginBottom: "2rem" }}>
           <svg width="56" height="30" viewBox="0 0 56 30" style={{ display: "block", margin: "0 auto 16px" }} xmlns="http://www.w3.org/2000/svg">
-            <polygon points="28,2 48,28 8,28" fill="none" stroke="#7a5030" strokeWidth="1.2" strokeLinejoin="round" />
-            <polygon points="14,28 28,8 42,28" fill="#2a1810" stroke="#5a3820" strokeWidth="1" strokeLinejoin="round" />
-            <polygon points="28,2 33,10 23,10" fill="#8a6a50" />
-            <path d="M0,28 Q14,24 28,27 Q42,30 56,26" fill="none" stroke="#1e3048" strokeWidth="2" strokeLinecap="round" />
+            <polygon points="28,2 48,28 8,28" fill="none" stroke="#5c3a21" strokeWidth="1.2" strokeLinejoin="round" />
+            <polygon points="14,28 28,8 42,28" fill="#e4cb9e" stroke="#8a7256" strokeWidth="1" strokeLinejoin="round" />
+            <polygon points="28,2 33,10 23,10" fill="#ebe0c2" />
+            <path d="M0,28 Q14,24 28,27 Q42,30 56,26" fill="none" stroke="#a2855a" strokeWidth="2" strokeLinecap="round" />
           </svg>
 
           <h2 style={{ fontFamily: serif, fontSize: "28px", fontWeight: "normal", color: C.heading, margin: "0 0 6px", letterSpacing: "0.3px" }}>
@@ -207,6 +226,22 @@ const AuthModal = () => {
           </div>
         )}
 
+        {/* Google sign-in — renders only when VITE_GOOGLE_CLIENT_ID is set */}
+        <GoogleSignInButton
+          onCredential={handleGoogleCredential}
+          onError={handleGoogleError}
+        />
+
+        {/* "or" separator (only meaningful alongside the Google button, but
+            harmless if that renders nothing) */}
+        <div style={{ display: "flex", alignItems: "center", gap: "12px", margin: "18px 0" }}>
+          <div style={{ flex: 1, height: "1px", background: C.divider }} />
+          <span style={{ fontFamily: sans, fontSize: "10px", color: C.muted, letterSpacing: "1.5px", textTransform: "uppercase" }}>
+            or
+          </span>
+          <div style={{ flex: 1, height: "1px", background: C.divider }} />
+        </div>
+
         {/* Form */}
         <form onSubmit={handleSubmit}>
           {!isLoginView && (
@@ -226,8 +261,8 @@ const AuthModal = () => {
             type="submit" disabled={loading}
             style={{
               width: "100%",
-              background: loading ? "#4a2810" : C.btnBg,
-              border: `1px solid ${loading ? "#3a1e0a" : C.btnBorder}`,
+              background: loading ? "#ccb98f" : C.btnBg,
+              border: `1px solid ${loading ? "#a2855a" : C.btnBorder}`,
               borderRadius: "10px", padding: "13px 16px",
               color: loading ? C.muted : C.btnText,
               fontFamily: sans, fontSize: "13px", fontWeight: "600",

@@ -1,19 +1,19 @@
 import { memo } from "react";
-/* ─── Design tokens (matches Profile & GearSetup) ──────────────────────── */
+/* ─── Field Journal tokens (hikeStyle.md) ──────────────────────────────── */
 const C = {
-  heading: "#f0e6d0",
-  muted:   "#6a4e30",
-  label:   "#b8906a",
+  heading: "#3d2817", // ink
+  muted:   "#6a4a26", // ink-muted
+  label:   "#5c3a21", // ink-soft (stat text)
 };
-const serif = "Georgia, 'Times New Roman', serif";
-const sans  = "'Trebuchet MS', 'Lucida Sans Unicode', sans-serif";
-const body  = "'Palatino Linotype', Palatino, Georgia, serif";
+const serif = "'Fraunces', Georgia, serif";
+const sans  = "'Work Sans', 'Trebuchet MS', sans-serif";
+const body  = "'Spectral', Georgia, serif";
 const mono  = "'Courier New', Courier, monospace";
 
 const DIFFICULTY = {
-  EASY:     { label: "Easy",     color: "#9dcc85", bg: "rgba(80,140,60,0.15)",  border: "rgba(90,160,60,0.3)"  },
-  MODERATE: { label: "Moderate", color: "#c8a97a", bg: "rgba(193,122,46,0.15)", border: "rgba(193,122,46,0.3)" },
-  HARD:     { label: "Hard",     color: "#e8907a", bg: "rgba(180,60,40,0.15)",  border: "rgba(180,60,40,0.3)"  },
+  EASY:     { label: "Easy",     color: "#6e5a2e", bg: "#d8c48e", border: "rgba(122,98,54,0.4)" },
+  MODERATE: { label: "Moderate", color: "#9a5f1f", bg: "#e4cb9e", border: "rgba(168,59,44,0.45)" },
+  HARD:     { label: "Hard",     color: "#96301f", bg: "#e6c29a", border: "rgba(150,48,31,0.4)" },
 };
 
 function HikeSummaryCard({ hike , onClick }) {
@@ -93,7 +93,7 @@ export default memo(HikeSummaryCard);
 /* ─── Helpers ───────────────────────────────────────────────────────────── */
 const Dot = () => (
   <span style={{ display: "inline-block", width: 3, height: 3, borderRadius: "50%",
-    background: "#4a3520", flexShrink: 0 }} />
+    background: "#6a4a26", flexShrink: 0 }} />
 );
 
 function getMonthName(n) {

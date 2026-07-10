@@ -23,7 +23,7 @@ class HikeRepository(BaseRepository[Hike]):
                         season_start_month, season_end_month,
                         permits_required, nearest_airport_code, parking_coordinates,
                         last_synced_at, tags, can_camp,
-                        lat, lng, gear_requirements
+                        lat, lng, gear_requirements, trail_shape
                     ) VALUES (
                         %(id)s, %(source_id)s, %(name)s, %(geometry)s,
                         %(difficulty)s, %(length_km)s, %(elevation_gain_m)s,
@@ -32,7 +32,7 @@ class HikeRepository(BaseRepository[Hike]):
                         %(season_start_month)s, %(season_end_month)s,
                         %(permits_required)s, %(nearest_airport_code)s, %(parking_coordinates)s,
                         %(last_synced_at)s, %(tags)s, %(can_camp)s,
-                        %(lat)s, %(lng)s, %(gear_requirements)s
+                        %(lat)s, %(lng)s, %(gear_requirements)s, %(trail_shape)s
                     )
                     """,
                     {
@@ -58,6 +58,7 @@ class HikeRepository(BaseRepository[Hike]):
                         "lat":                  hike.lat,
                         "lng":                  hike.lng,
                         "gear_requirements":    json.dumps(hike.gear_requirements or {}),
+                        "trail_shape":          hike.trail_shape,
                     }
                 )
         return hike
@@ -111,7 +112,8 @@ class HikeRepository(BaseRepository[Hike]):
                         can_camp=%(can_camp)s,
                         lat=%(lat)s,
                         lng=%(lng)s,
-                        gear_requirements=%(gear_requirements)s
+                        gear_requirements=%(gear_requirements)s,
+                        trail_shape=%(trail_shape)s
                     WHERE id=%(id)s
                     """,
                     params
@@ -171,6 +173,11 @@ class HikeRepository(BaseRepository[Hike]):
         can_camp: Optional[bool] = None,
         permits_required: Optional[bool] = None,
         max_length_km: Optional[float] = None,
+        bbox_min_lng: Optional[float] = None,
+        bbox_min_lat: Optional[float] = None,
+        bbox_max_lng: Optional[float] = None,
+        bbox_max_lat: Optional[float] = None,
+        limit: Optional[int] = None,
     ):
         with get_connection() as conn:
             with conn.cursor() as cur:
@@ -248,8 +255,28 @@ class HikeRepository(BaseRepository[Hike]):
                     """
                     params["max_distance_km"] = max_distance_km
 
+                # Viewport bounding box — filters on the trailhead lat/lng
+                # columns. Only applied when all four bounds are present; a
+                # partial box is ignored rather than half-filtering. This is
+                # what keeps a map pan from refetching the entire hikes table.
+                if None not in (bbox_min_lng, bbox_min_lat, bbox_max_lng, bbox_max_lat):
+                    query += """
+                        AND lat BETWEEN %(bbox_min_lat)s AND %(bbox_max_lat)s
+                        AND lng BETWEEN %(bbox_min_lng)s AND %(bbox_max_lng)s
+                    """
+                    params["bbox_min_lat"] = bbox_min_lat
+                    params["bbox_max_lat"] = bbox_max_lat
+                    params["bbox_min_lng"] = bbox_min_lng
+                    params["bbox_max_lng"] = bbox_max_lng
+
                 if user_lat is not None:
                     query += " ORDER BY distance_km ASC"
+
+                # Hard cap on rows returned. Without this the map's RESULT_LIMIT
+                # was a no-op and every search streamed the full table.
+                if limit is not None:
+                    query += " LIMIT %(limit)s"
+                    params["limit"] = limit
 
                 cur.execute(query, params)
                 rows = cur.fetchall()

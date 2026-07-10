@@ -1,0 +1,158 @@
+name: CI
+
+# When this runs. `push` covers every branch so you get a green/red mark the
+# moment you push; `pull_request` re-runs against the merge result so a PR shows
+# whether it'll be healthy *after* merging. Trim `push` to `branches: [main]`
+# later if you'd rather only gate main + PRs.
+on:
+  push:
+  pull_request:
+
+# If you push twice quickly, cancel the older in-flight run for the same ref.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ── Backend: boot the real app against throwaway Postgres + Redis and run the
+  #    non-Groq integration suite. No AI quota is spent (see IntegrationTest.py).
+  backend:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: hiking
+        ports:
+          - 5432:5432
+        # Don't start the job's steps until Postgres answers — avoids a race
+        # where the schema step connects before the DB is ready.
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+
+    # These stand in for the values pythonBackend/.env supplies locally. They're
+    # throwaway CI values, not secrets: the DB/Redis are ephemeral service
+    # containers, and HikeKey is a dummy because the integration suite never
+    # calls Groq (it only needs the app to *import* and boot).
+    env:
+      HOST: localhost
+      PORT: 5432
+      DBNAME: hiking
+      DB_USER: postgres
+      PASSWORD: postgres
+      REDIS_URL: redis://localhost:6379/0
+      JWT_SECRET_KEY: ci-only-not-a-real-secret
+      HikeKey: ci-dummy-groq-key-never-called
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # No requirements.txt in this repo (deps are installed by hand), so the
+      # runtime import set is pinned here. Keep in sync with CLAUDE.md's list.
+      - name: Install backend dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install \
+            fastapi "uvicorn[standard]" "psycopg[binary]" psycopg_pool \
+            "pydantic[email]" python-dotenv apscheduler groq redis \
+            "python-jose[cryptography]" bcrypt google-auth requests
+
+      # Fast structural gate: a syntax error fails here in seconds, before we
+      # bother standing up services.
+      - name: Byte-compile backend
+        working-directory: pythonBackend
+        run: python -m compileall -q .
+
+      - name: Create database schema
+        working-directory: pythonBackend
+        env:
+          PGPASSWORD: postgres
+        run: psql -h localhost -U postgres -d hiking -v ON_ERROR_STOP=1 -f schema.sql
+
+      # Varied fixture rows so the read/search assertions have data that filters
+      # must include AND exclude (not a production copy — see ci_seed.sql).
+      - name: Seed fixture data
+        working-directory: pythonBackend
+        env:
+          PGPASSWORD: postgres
+        run: psql -h localhost -U postgres -d hiking -v ON_ERROR_STOP=1 -f ci_seed.sql
+
+      - name: Start API server
+        working-directory: pythonBackend
+        run: |
+          # `python -m uvicorn` (not bare `uvicorn`) so it's found regardless of
+          # console-script PATH. 60s budget: a cold 2-core runner importing groq/
+          # cryptography/psycopg can take well over the old 30s.
+          python -m uvicorn main:app --host 127.0.0.1 --port 8000 > "$GITHUB_WORKSPACE/uvicorn.log" 2>&1 &
+          SERVER_PID=$!
+          echo "Waiting for /health… (pid $SERVER_PID)"
+          for i in $(seq 1 60); do
+            if curl -sf http://127.0.0.1:8000/health > /dev/null; then
+              echo "Server is up after ${i}s."
+              exit 0
+            fi
+            # If uvicorn already died, stop waiting and show why immediately.
+            if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+              echo "uvicorn exited during startup — log:"
+              cat "$GITHUB_WORKSPACE/uvicorn.log"
+              exit 1
+            fi
+            sleep 1
+          done
+          echo "Server did not become healthy in 60s — log:"
+          cat "$GITHUB_WORKSPACE/uvicorn.log"
+          exit 1
+
+      - name: Run integration tests (non-Groq surface)
+        working-directory: pythonBackend
+        run: python IntegrationTest.py --base-url http://127.0.0.1:8000 --register
+
+      # If anything above failed, surface the server log so you can see why
+      # (a boot error, a 500, etc.) without re-running.
+      - name: Dump server log on failure
+        if: failure()
+        run: cat "$GITHUB_WORKSPACE/uvicorn.log" || true
+
+  # ── Frontend: install, lint, and production-build the SPA. Needs no secrets —
+  #    VITE_MAPBOX_TOKEN is only read at runtime, so the build succeeds without it.
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: hiking-frontend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: hiking-frontend
+        run: npm ci
+
+      # Blocking: the error backlog is cleared (0 errors), so lint is now a hard
+      # gate — any new eslint error fails the job. eslint doesn't fail on
+      # warnings; add `--max-warnings 0` here once the 2 remaining exhaustive-deps
+      # warnings are resolved to gate on those too.
+      - name: Lint
+        working-directory: hiking-frontend
+        run: npm run lint
+
+      - name: Build
+        working-directory: hiking-frontend
+        run: npm run build

@@ -43,9 +43,13 @@ from ingestion.seeder import seed_gear
 
 # ── Config ─────────────────────────────────────────────────────────────────────
 
-PBF_FILE = "north-carolina-260622.osm.pbf"
+PBF_FILE = "rhode-island-260101.osm.pbf"  # default; override with command-line arg
 
-VALID_HIGHWAY_TAGS = {"path", "track", "footway"}
+# cycleway/bridleway included because RI's flagship trails (East Bay Bike Path,
+# Blackstone River Greenway, Washington Secondary / Trestle Trail) are mapped as
+# highway=cycleway, and bridleways are shared-use hiking trails. Bike/horse-only
+# paths are still excluded downstream by the foot in {no, private} filter.
+VALID_HIGHWAY_TAGS = {"path", "track", "footway", "cycleway", "bridleway"}
 
 logging.basicConfig(
     level=logging.INFO,
@@ -127,13 +131,22 @@ class HikeHandler(osmium.SimpleHandler):
         if len(nodes) < 2:
             return
 
-        # 3. Distance + elevation — skip early if too short/flat
+        # 3. Distance + elevation.
+        #    length_km is the ONE-WAY path length; out-and-back doubling is NOT
+        #    done here. It is owned solely by ingestion/backfill_trail_distances.py,
+        #    the final pipeline step, which classifies + doubles off the merged
+        #    geometry and stamps trail_shape. See that module's header.
+        #
+        #    NO length/elevation floor at ingest — deliberately. A short OSM way is
+        #    usually a *fragment* of a real trail (road crossing, tagging boundary);
+        #    dropping it here would remove it before merge_duplicates.py can stitch
+        #    it back into the full trail. And an out-and-back stored one-way reads at
+        #    half its real length, so judging it now cuts legitimate trails. The ONLY
+        #    length cut is prune_short_hikes.py — the LAST step — which runs on the
+        #    corrected, merged, round-trip length. (is_valid_hike is no longer used
+        #    on this path.)
         length_km = compute_distance_km(nodes)
         gain_m, min_ele, max_ele, coords_3d = compute_elevation_stats(nodes)
-
-        if not is_valid_hike(length_km * 1000, gain_m):
-            self.skipped += 1
-            return
 
         # 4. Trailhead coordinates — first node is the start of the trail.
         #    Stored in dedicated lat/lng columns for fast distance queries.
@@ -206,6 +219,7 @@ class HikeHandler(osmium.SimpleHandler):
                 last_synced_at     = datetime.utcnow(),
                 lat                = trailhead_lat,
                 lng                = trailhead_lng,
+                # trail_shape left NULL — set by backfill_trail_distances.py.
             )
             created = service.create_hike(hike)
             seed_gear(str(created.id), gear_reqs)

@@ -38,7 +38,7 @@ export default function AmbientHue() {
           transform: "translate(-50%, -50%)",
           width: 520, height: 380,
           borderRadius: "50%",
-          background: "radial-gradient(ellipse at center, rgba(193,122,46,0.22) 0%, rgba(193,122,46,0.08) 45%, transparent 72%)",
+          background: "radial-gradient(ellipse at center, rgba(168,59,44,0.12) 0%, rgba(168,59,44,0.05) 45%, transparent 72%)",
           animation: "huePulse 6s ease-in-out infinite",
         }} />
 
@@ -49,7 +49,7 @@ export default function AmbientHue() {
           transform: "translate(-50%, -50%)",
           width: 820, height: 560,
           borderRadius: "50%",
-          background: "radial-gradient(ellipse at center, rgba(160,80,20,0.10) 0%, rgba(100,40,10,0.05) 50%, transparent 75%)",
+          background: "radial-gradient(ellipse at center, rgba(168,59,44,0.06) 0%, rgba(168,59,44,0.03) 50%, transparent 75%)",
           animation: "hueShift 9s ease-in-out infinite",
         }} />
 
@@ -60,7 +60,7 @@ export default function AmbientHue() {
           transform: "translate(-50%, -50%)",
           width: 600, height: 300,
           borderRadius: "50%",
-          background: "radial-gradient(ellipse at center, rgba(80,20,5,0.18) 0%, transparent 70%)",
+          background: "radial-gradient(ellipse at center, rgba(122,98,54,0.07) 0%, transparent 70%)",
           animation: "huePulse 11s ease-in-out 2s infinite",
         }} />
 
@@ -71,7 +71,7 @@ export default function AmbientHue() {
           transform: "translate(-50%, -50%)",
           width: 260, height: 180,
           borderRadius: "50%",
-          background: "radial-gradient(ellipse at center, rgba(220,150,60,0.09) 0%, transparent 70%)",
+          background: "radial-gradient(ellipse at center, rgba(237,222,186,0.15) 0%, transparent 70%)",
           animation: "hueShift 7s ease-in-out 1s infinite",
         }} />
       </div>

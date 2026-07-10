@@ -34,6 +34,29 @@ class UserService:
     def get_user_by_email(self, email: str):
         return self.user_repository.get_by_email(email)
 
+    # --- Google OAuth ---------------------------------------------------------
+
+    def get_user_by_google_sub(self, google_sub: str) -> Optional[User]:
+        return self.user_repository.get_by_google_sub(google_sub)
+
+    def create_google_user(self, email, name, google_sub, avatar_url=None) -> User:
+        """Create an account from a verified Google identity — no password."""
+        user = User(
+            id=uuid4(),
+            email=email,
+            hashed_password=None,          # OAuth account: no local password
+            name=name,
+            avatar_url=avatar_url,
+            google_sub=google_sub,
+            auth_provider="google",
+            items=[],
+        )
+        return self.user_repository.create(user)
+
+    def link_google_account(self, user_id: UUID, google_sub: str) -> None:
+        """Attach a Google identity to an existing password account."""
+        self.user_repository.link_google_sub(user_id, google_sub)
+
     def list_users(self) -> List[User]:
         return self.user_repository.list_all()
         

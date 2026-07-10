@@ -23,7 +23,11 @@ export default defineConfig([
       },
     },
     rules: {
-      'no-unused-vars': ['error', { varsIgnorePattern: '^[A-Z_]' }],
+      // Ignore unused names that look like components/constants (Uppercase or
+      // _-prefixed). argsIgnorePattern mirrors varsIgnorePattern so a destructured
+      // component arg (e.g. `children: Row`) used only in JSX isn't a false
+      // positive — this config has no JSX-usage awareness to count it otherwise.
+      'no-unused-vars': ['error', { varsIgnorePattern: '^[A-Z_]', argsIgnorePattern: '^[A-Z_]' }],
     },
   },
 ])

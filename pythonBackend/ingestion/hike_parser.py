@@ -39,6 +39,10 @@ def parse_hike(osm_relation: dict) -> tuple[Hike, list[dict]] | None:
     if not is_valid_hike(distance_m, gain_m):
         return None
 
+    # distance_m is the ONE-WAY path length; out-and-back doubling is NOT done
+    # here. It is owned solely by ingestion/backfill_trail_distances.py, the final
+    # pipeline step, which classifies + doubles off the merged geometry and stamps
+    # trail_shape. See that module's header.
     length_km                = round(distance_m / 1000, 2)
     difficulty                = calculate_difficulty(length_km, gain_m, tags)
     season_start, season_end = infer_season(tags)
@@ -87,6 +91,7 @@ def parse_hike(osm_relation: dict) -> tuple[Hike, list[dict]] | None:
         last_synced_at     = datetime.utcnow(),
         lat                = first["lat"],
         lng                = first["lon"],
+        # trail_shape left NULL — set by backfill_trail_distances.py.
     )
 
     return hike, gear_reqs

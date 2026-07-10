@@ -383,6 +383,11 @@ def merge_group(hikes: list) -> tuple:
     primary.tags               = merged_tags
     primary.geometry           = merged_geometry
     primary.last_synced_at     = datetime.now(timezone.utc)
+    # length_km above is the ONE-WAY length of the freshly stitched geometry, so
+    # any prior out-and-back doubling no longer applies. Reset trail_shape to NULL
+    # so backfill_trail_distances.py (the sole doubler, run last) re-classifies and
+    # re-doubles this consolidated record. Never double here.
+    primary.trail_shape        = None
 
     delete_ids = [h.id for h in rest]
     return primary, delete_ids

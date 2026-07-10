@@ -29,12 +29,21 @@ docker compose up -d           # PostgreSQL 15 on :5432
 There is **no `requirements.txt`** — install deps by hand. Runtime imports: `fastapi uvicorn psycopg[binary] pydantic python-dotenv apscheduler groq redis python-jose[cryptography] bcrypt`. The ingestion pipeline additionally needs `requests`/`geopy`. Redis must be reachable (`REDIS_URL`) or the trip-chat endpoints return 503.
 
 ### Tests
-`SystemTest.py` is the only test harness — an HTTP regression runner that replays 10 multi-turn trip-chat conversations against a **running** server. It checks nothing; it just prints/saves transcripts. Requires a live server + a valid JWT:
-```bash
-python SystemTest.py --base-url http://localhost:8000 --token <JWT>
-python SystemTest.py --test 4        # single test
-```
-There is no unit-test framework and no CI.
+Two HTTP integration runners, both hit a **running** server, both plain `requests` (no pytest). Shared harness in `_testkit.py` (Client + a PASS/FAIL/SKIP `Suite` with an exit code: 0 = no failures, 1 = a failure — CI-ready). The guiding rule: assert the **contract** (status codes, JSON shape, documented invariants), never LLM content quality.
+
+- **`IntegrationTest.py`** — the non-Groq surface, so it's **unlimited / CI-safe** (no AI quota spent): health/readiness, security headers, hike reads + the difficulty search filter, a self-cleaning item CRUD cycle, auth gates (incl. `/api/trip/chat` 401ing *before* Groq), and the body-size cap. Run it on every push.
+  ```bash
+  python IntegrationTest.py --base-url http://localhost:8000
+  python IntegrationTest.py --register     # auto-provision + delete a temp user for the authed checks
+  ```
+- **`SystemTest.py`** — replays multi-turn trip-chat conversations against `/api/trip/chat` and asserts the contract per turn (shape, valid phase, stable session, and the **signal-token strip-before-return invariant**). This one **does** hit Groq, so it's the rate-limited path: on a free tier a 429 (quota/burst) or 502 (Groq error) is recorded as **SKIP** (not FAIL) and the run stops calling the LLM. Needs a live server + a valid JWT.
+  ```bash
+  python SystemTest.py --base-url http://localhost:8000 --token <JWT>
+  python SystemTest.py --test 4                    # single conversation
+  python SystemTest.py --conversations mine.json   # bring your own turns
+  ```
+
+There is no unit-test framework and no CI yet (the exit codes above make wiring one up trivial).
 
 ### Database migrations
 Plain SQL files in `pythonBackend/migrations/`, applied by hand (no migration tool). `001_trips_lifecycle.sql`, `002_completion_review.sql`.

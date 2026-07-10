@@ -1,13 +1,6 @@
-import { createContext, useContext, useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef } from "react";
 import * as userService from "../api/usersService";
-
-import axios from "axios";
-
-const UserContext = createContext(null);
-
-export const useUser = () => {
-  return useContext(UserContext);
-};
+import { UserContext } from "./useUser";
 
 export const UserProvider = ({ children }) => {
   const [user, setUser] = useState(null);
@@ -37,7 +30,7 @@ export const UserProvider = ({ children }) => {
         const parsed = JSON.parse(storedUser);
         setUser(parsed);
         setItems(parsed.items || []);
-      } catch (err) {
+      } catch {
         localStorage.removeItem("hike_user");
         localStorage.removeItem("hike_token");             // add this
         setAuthModalOpen(true);
@@ -144,6 +137,33 @@ export const UserProvider = ({ children }) => {
     setLoading(false);
   }
 };
+
+  // "Sign in with Google". Takes the Google ID token (credential) from the GIS
+  // button, exchanges it for our own JWT, then hydrates state exactly like the
+  // password login above. Returns { user, isNew } so the modal can route a
+  // brand-new account into onboarding.
+  const loginWithGoogle = async (credential) => {
+    setLoading(true);
+    setError(null);
+    try {
+      const tokenResponse = await userService.googleAuth(credential);
+      localStorage.setItem("hike_token", tokenResponse.access_token);
+      localStorage.setItem("hike_user_id", tokenResponse.user_id);
+      userService.setAuthHeader(tokenResponse.access_token);
+      const fullUser = await userService.getUserById(tokenResponse.user_id);
+      setUser(fullUser);
+      setItems(fullUser.items || []);
+      localStorage.setItem("hike_user", JSON.stringify(fullUser));
+      setAuthModalOpen(false);
+      return { user: fullUser, isNew: tokenResponse.is_new };
+    } catch (err) {
+      const errorMsg = err.response?.data?.detail || "Google sign-in failed. Please try again.";
+      setError(errorMsg);
+      throw new Error(errorMsg);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const logout = () => {
     setUser(null);
@@ -299,6 +319,7 @@ export const UserProvider = ({ children }) => {
     loadingLocation, // Exported so Profile can use it
     updateLocation,  // Exported so Profile can call it manually
     login,
+    loginWithGoogle,
     logout,
     createUser,
     addItem,

@@ -1,9 +1,6 @@
-import { createContext, useContext, useState, useCallback } from "react";
-import * as itemService from "../api/itemService";
-
-const ItemContext = createContext(null);
-
-export const useItems = () => useContext(ItemContext);
+import { useState, useCallback } from "react";
+import * as itemService from "../api/itemsService";
+import { ItemContext } from "./useItems";
 
 export const ItemProvider = ({ children }) => {
   const [items, setItems]   = useState([]);

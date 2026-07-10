@@ -5,7 +5,7 @@
    ──────────────────────────────────────────────────────────────────────────── */
 
 // Matches C.scrollbar in TripPlanner's design tokens
-const SCROLLBAR_COLOR = "#3a2510";
+const SCROLLBAR_COLOR = "#a2855a";
 
 export default function GlobalStyles() {
   return (

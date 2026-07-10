@@ -40,6 +40,11 @@ class Hike:
     # GearInferenceEngine.infer_gear_levels(); consumed by GearGapAnalyzer for
     # adequacy checks. Empty until backfilled/ingested. See gear_levels.py.
     gear_requirements: Dict[str, Any] = field(default_factory=dict)
+    # Inferred geometry shape: 'loop' | 'out_and_back' | None. None = not yet
+    # classified (existing rows before migration 005 / the distance backfill).
+    # Set at ingest and by ingestion/backfill_trail_distances.py; also the
+    # idempotency gate that stops an out-and-back's length being doubled twice.
+    trail_shape: Optional[str] = None
 
     def __post_init__(self) -> None:
         if not self.name:

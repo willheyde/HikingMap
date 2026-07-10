@@ -198,6 +198,11 @@ def search_hikes(
     user_lon: Optional[float] = None,
     max_dist: Optional[float] = None,
     max_length_km: Optional[float] = None,  # ← NEW
+    bbox_min_lng: Optional[float] = None,   # ← viewport bounding box
+    bbox_min_lat: Optional[float] = None,
+    bbox_max_lng: Optional[float] = None,
+    bbox_max_lat: Optional[float] = None,
+    limit: Optional[int] = None,            # ← hard cap (map sends 200)
 ):
     difficulty_enum = None
     if difficulty:
@@ -217,6 +222,11 @@ def search_hikes(
         user_lon=user_lon,
         max_distance_km=max_dist,
         max_length_km=max_length_km,    # ← NEW
+        bbox_min_lng=bbox_min_lng,      # ← viewport bounding box
+        bbox_min_lat=bbox_min_lat,
+        bbox_max_lng=bbox_max_lng,
+        bbox_max_lat=bbox_max_lat,
+        limit=limit,                    # ← hard cap
     )
 
     return [_to_response(h) for h in hikes]

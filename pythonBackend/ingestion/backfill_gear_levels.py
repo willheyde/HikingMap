@@ -29,7 +29,7 @@ import sys
 # root importable either way (mirrors run_ingestion.py's path shim).
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from DBConnection import get_connection
+from DBConnection import get_connection, close_pool
 from PyObjects.Hike import DifficultyLevel
 from gear_inference import GearInferenceEngine
 
@@ -103,4 +103,11 @@ if __name__ == "__main__":
     ap.add_argument("--dry-run", action="store_true", help="Print what would change; write nothing.")
     ap.add_argument("--only-empty", action="store_true", help="Skip hikes that already have gear_requirements.")
     args = ap.parse_args()
-    backfill(dry_run=args.dry_run, only_empty=args.only_empty)
+    try:
+        backfill(dry_run=args.dry_run, only_empty=args.only_empty)
+    finally:
+        # A one-shot script never triggers the app's shutdown hook, so the lazily
+        # opened psycopg_pool (with its background worker thread) would otherwise
+        # be torn down by the GC at interpreter exit — which is what prints the
+        # "pool was not closed" warning. Close it explicitly. No-op without the pool.
+        close_pool()

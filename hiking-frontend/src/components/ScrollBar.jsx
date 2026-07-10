@@ -8,21 +8,21 @@ const ScrollBar = ({ children, className = "" }) => {
       <style>{`
         .custom-scrollbar {
           scrollbar-width: thin;
-          scrollbar-color: #475569 #0f172a;
+          scrollbar-color: #a2855a #dccaa0;
         }
         .custom-scrollbar::-webkit-scrollbar {
           width: 12px;
         }
         .custom-scrollbar::-webkit-scrollbar-track {
-          background: #0f172a;
+          background: #dccaa0;
         }
         .custom-scrollbar::-webkit-scrollbar-thumb {
-          background: #475569;
+          background: #a2855a;
           border-radius: 6px;
-          border: 3px solid #0f172a;
+          border: 3px solid #dccaa0;
         }
         .custom-scrollbar::-webkit-scrollbar-thumb:hover {
-          background: #64748b;
+          background: #6a4a26;
         }
       `}</style>
     </div>

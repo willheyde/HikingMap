@@ -1,9 +1,6 @@
-import { createContext, useContext, useState, useCallback } from "react";
+import { useState, useCallback } from "react";
 import * as tripService from "../api/tripService";
-
-const TripContext = createContext(null);
-
-export const useTrip = () => useContext(TripContext);
+import { TripContext } from "./useTrip";
 
 // Attaches the current hike option set to the last assistant message so the
 // cards render anchored in place on resume/duplicate (the per-message shape

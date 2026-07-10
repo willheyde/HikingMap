@@ -51,6 +51,11 @@ class HikeService:
         can_camp=None,
         permits_required=None,
         max_length_km=None,
+        bbox_min_lng=None,
+        bbox_min_lat=None,
+        bbox_max_lng=None,
+        bbox_max_lat=None,
+        limit=None,
     ):
         return self.repo.search(
             min_length_km=min_length_km,
@@ -66,4 +71,9 @@ class HikeService:
             can_camp=can_camp,
             permits_required=permits_required,
             max_length_km=max_length_km,
+            bbox_min_lng=bbox_min_lng,
+            bbox_min_lat=bbox_min_lat,
+            bbox_max_lng=bbox_max_lng,
+            bbox_max_lat=bbox_max_lat,
+            limit=limit,
         )

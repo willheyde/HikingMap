@@ -281,7 +281,12 @@ class GearGapAnalyzer:
         for category, spec in sorted(reqs.items(), key=_order):
             gap = self._check_requirement(user_gear, category, spec)
 
-            if "min_level" in spec:
+            # Only surface a min_level as the "required" label when it's a real,
+            # enforceable level (the category is level-bearing). A stray min_level
+            # on a presence-only category — e.g. legacy backfilled hydration data
+            # with min_level "filter" — has level_index -1 and must NOT render, or
+            # it reads as "needs water filtration" while never being checked.
+            if "min_level" in spec and level_index(category, spec["min_level"]) >= 0:
                 required = _display_level(spec["min_level"])
             elif "min_temp_f" in spec:
                 required = f"{int(spec['min_temp_f'])}°F bag"

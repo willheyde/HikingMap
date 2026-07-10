@@ -34,6 +34,14 @@ export const loginUser = async (credentials) => {
   return res.data;
 };
 
+// "Sign in with Google": posts the Google ID token to the backend, which
+// verifies it and returns the same TokenResponse as loginUser (plus is_new,
+// true when this call just created the account).
+export const googleAuth = async (credential) => {
+  const res = await apiClient.post("/users/auth/google", { credential });
+  return res.data;
+};
+
 /**
  * AUTH HEADER HELPERS
  */
