@@ -1,6 +1,7 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import * as tripService from "../api/tripService";
 import { TripContext } from "./useTrip";
+import { useUser } from "./useUser";
 
 // Attaches the current hike option set to the last assistant message so the
 // cards render anchored in place on resume/duplicate (the per-message shape
@@ -51,6 +52,39 @@ export const TripProvider = ({ children }) => {
   // Shared async state
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+
+  // ─── Isolate trip state per user ─────────────────────────────────────────────
+  //
+  // `chat` (and the sidebar/read-only/active state) is in-memory only — nothing
+  // here is persisted to localStorage, and this provider sits above the auth
+  // flow so it never remounts on login/logout (both are SPA state changes, no
+  // page reload). Without this, account A's live conversation would survive a
+  // logout→login into account B's session (the leftover renders in TripPlanner
+  // until the user hits "New trip"). Reset everything whenever the authenticated
+  // user id changes — the null→A→null→B transition covers login, logout, and a
+  // direct account switch. Ref-guarded so we only reset on an actual id change.
+  const { user } = useUser();
+  const prevUserId = useRef(user?.id ?? null);
+  useEffect(() => {
+    const uid = user?.id ?? null;
+    const prev = prevUserId.current;
+    prevUserId.current = uid;
+    // Reset only when a KNOWN user is replaced or cleared — logout (A→null) or a
+    // direct switch (A→B). Deliberately skip the initial null→A transition:
+    // `user` hydrates asynchronously (UserContext starts null, then a mount
+    // effect reads localStorage), so null→A is just this tab catching up, not an
+    // account change — and TripPlanner's own mount effect has already kicked off
+    // loadChatList() by then, which a reset here would race and wipe. Logout
+    // still passes through A→null, so a leaked conversation is always cleared.
+    if (prev !== null && prev !== uid) {
+      setChat(INITIAL_CHAT_STATE);
+      setChatList([]);
+      setReadOnlyChat(null);
+      setSavedTrips([]);
+      setActiveTrip(null);
+      setError(null);
+    }
+  }, [user?.id]);
 
   // ─── Helpers ───────────────────────────────────────────────────────────────
 
@@ -111,6 +145,7 @@ export const TripProvider = ({ children }) => {
               role: "assistant",
               content: data.response,
               hikeOptions: data.hike_options || [],
+              gearPrompts: data.gear_prompts || [],
             },
           ],
         }));
@@ -128,8 +163,47 @@ export const TripProvider = ({ children }) => {
             const msg = err.response?.data?.detail || err.message;
             setError(`Trip save failed: ${msg}`);
           }
+        } else {
+          // Keep the sidebar in sync with the live conversation. A brand-new
+          // active session is created server-side on the first message, but
+          // the sidebar list is otherwise only refetched on save/duplicate/
+          // review — so an in-progress ("Planning") chat would stay invisible
+          // until some later action happened to refresh it (the bug where
+          // trips only appeared *after* saving one start-to-finish). Refetch
+          // after every turn so the entry shows up right away and its
+          // title/phase track the conversation. Background + best-effort so it
+          // never blocks or errors the send itself. Skipped on the save turn,
+          // which does its own post-save refetch above.
+          tripService.getChats().then(setChatList).catch(() => {});
         }
         // Return the raw response so components can inspect advanced / save_confirmed
+        return data;
+      });
+    },
+    [chat.sessionId]
+  );
+
+  /**
+   * Submit an item from the inline gear-review "blip" form. Hits
+   * POST /api/trip/gear/add, which creates the item in the user's global kit,
+   * clears the resolved gap from the session plan, and returns a canned
+   * confirmation. We fold the updated plan into chat state and append the
+   * confirmation as an assistant message so the thread stays coherent (Groq
+   * already "knows" — no LLM call was spent). The caller refreshes the user's
+   * item list (UserContext) so the gear page reflects the add.
+   */
+  const addGearFromChat = useCallback(
+    async (payload) => {
+      return withLoading(async () => {
+        const data = await tripService.addChatGear(chat.sessionId, payload);
+        setChat((prev) => ({
+          ...prev,
+          plan: data.plan,
+          messages: [
+            ...prev.messages,
+            { role: "assistant", content: data.response },
+          ],
+        }));
         return data;
       });
     },
@@ -142,6 +216,11 @@ export const TripProvider = ({ children }) => {
     setReadOnlyChat(null);
     setError(null);
   }, []);
+
+  /** Dismiss the error banner without touching the conversation. Used on
+   *  TripPlanner mount so a stale error (e.g. a rate-limit 429 raised on another
+   *  account before an in-tab switch) can't linger across navigation. */
+  const clearError = useCallback(() => setError(null), []);
 
   /** Load the history sidebar list. statuses omitted = all four states. */
   const loadChatList = useCallback(async (statuses = null) => {
@@ -298,7 +377,9 @@ export const TripProvider = ({ children }) => {
         // Chat state
         chat,               // { sessionId, messages, phase, plan, serviceReady }
         sendMessage,
+        addGearFromChat,
         resetChat,
+        clearError,
         checkServiceHealth,
 
         // Chat history (Planning / Upcoming / Past hikes)

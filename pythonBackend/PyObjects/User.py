@@ -18,6 +18,7 @@ class User:
         created_at: Optional[datetime] = None,
         google_sub: Optional[str] = None,
         auth_provider: str = "password",
+        is_admin: bool = False,
     ):
         if not email:
             raise ValueError("email must not be empty")
@@ -41,6 +42,10 @@ class User:
         self.created_at = created_at or datetime.now()
         self.google_sub = google_sub
         self.auth_provider = auth_provider
+        # DB-backed admin flag. Not exposed to clients (UserController never
+        # serializes it); consulted by Auth.get_current_admin via a direct
+        # query. Defaults False so rows fetched without the column stay safe.
+        self.is_admin = bool(is_admin)
 
     def to_dict(self):
         return {

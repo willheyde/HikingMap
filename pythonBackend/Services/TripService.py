@@ -329,6 +329,7 @@ class TripService:
             "duration_days":     plan.duration_days,
             "hike_id":           plan.hike_id,
             "state":             plan.state,
+            "min_length_km":     plan.min_length_km,
             "max_length_km":     plan.max_length_km,
             "target_length_km":  plan.target_length_km,
             "required_tags":     plan.required_tags,

@@ -62,21 +62,25 @@ jobs:
         with:
           python-version: "3.12"
 
-      # No requirements.txt in this repo (deps are installed by hand), so the
-      # runtime import set is pinned here. Keep in sync with CLAUDE.md's list.
+      # Install the pinned runtime deps so CI tests the same versions prod runs.
       - name: Install backend dependencies
+        working-directory: pythonBackend
         run: |
           python -m pip install --upgrade pip
-          pip install \
-            fastapi "uvicorn[standard]" "psycopg[binary]" psycopg_pool \
-            "pydantic[email]" python-dotenv apscheduler groq redis \
-            "python-jose[cryptography]" bcrypt google-auth requests
+          pip install -r requirements.txt
 
       # Fast structural gate: a syntax error fails here in seconds, before we
       # bother standing up services.
       - name: Byte-compile backend
         working-directory: pythonBackend
         run: python -m compileall -q .
+
+      # Deterministic pure-logic unit tests — no DB/Redis/Groq/HTTP needed, so
+      # they run before we stand up services and catch parser/scoring/gear-level
+      # regressions fast. (See UnitTest.py.)
+      - name: Run unit tests (pure logic)
+        working-directory: pythonBackend
+        run: python UnitTest.py
 
       - name: Create database schema
         working-directory: pythonBackend

@@ -23,7 +23,7 @@ class HikeRepository(BaseRepository[Hike]):
                         season_start_month, season_end_month,
                         permits_required, nearest_airport_code, parking_coordinates,
                         last_synced_at, tags, can_camp,
-                        lat, lng, gear_requirements, trail_shape
+                        lat, lng, gear_requirements, trail_shape, campsites
                     ) VALUES (
                         %(id)s, %(source_id)s, %(name)s, %(geometry)s,
                         %(difficulty)s, %(length_km)s, %(elevation_gain_m)s,
@@ -32,7 +32,7 @@ class HikeRepository(BaseRepository[Hike]):
                         %(season_start_month)s, %(season_end_month)s,
                         %(permits_required)s, %(nearest_airport_code)s, %(parking_coordinates)s,
                         %(last_synced_at)s, %(tags)s, %(can_camp)s,
-                        %(lat)s, %(lng)s, %(gear_requirements)s, %(trail_shape)s
+                        %(lat)s, %(lng)s, %(gear_requirements)s, %(trail_shape)s, %(campsites)s
                     )
                     """,
                     {
@@ -59,6 +59,7 @@ class HikeRepository(BaseRepository[Hike]):
                         "lng":                  hike.lng,
                         "gear_requirements":    json.dumps(hike.gear_requirements or {}),
                         "trail_shape":          hike.trail_shape,
+                        "campsites":            json.dumps(hike.campsites or []),
                     }
                 )
         return hike
@@ -90,6 +91,7 @@ class HikeRepository(BaseRepository[Hike]):
                 params = hike.to_dict()
                 params["geometry"] = json.dumps(params["geometry"])
                 params["gear_requirements"] = json.dumps(params.get("gear_requirements") or {})
+                params["campsites"] = json.dumps(params.get("campsites") or [])
                 cur.execute(
                     """
                     UPDATE hikes SET
@@ -113,7 +115,8 @@ class HikeRepository(BaseRepository[Hike]):
                         lat=%(lat)s,
                         lng=%(lng)s,
                         gear_requirements=%(gear_requirements)s,
-                        trail_shape=%(trail_shape)s
+                        trail_shape=%(trail_shape)s,
+                        campsites=%(campsites)s
                     WHERE id=%(id)s
                     """,
                     params

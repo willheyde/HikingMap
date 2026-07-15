@@ -68,8 +68,10 @@ from Repos.TripRepo             import TripRepository
 from Services.TripService       import TripService
 from AI.TripInputParser import (
     TripInputParser, TripIntent, RefinementIntent, ALL_FEATURE_KEYWORDS,
+    DestinationNotFound,
 )
-from AI.GearGapAnalyzer import GearGapAnalyzer, CATEGORY_TO_ITEM_TYPE, CAT_RAIN_GEAR, CAT_INSULATION
+from AI.GearGapAnalyzer import GearGapAnalyzer
+from AI.rigor import rigor_tier
 from Services.UserService import UserService
 from Repos.UserRepo       import UserRepository
 from AI.ItineraryParser         import ItineraryParser
@@ -79,10 +81,14 @@ from AI.PhaseController         import PhaseController
 from AI.GroqClient              import GroqClient
 from AI.TripSession         import TripSession
 from AI.TripPlan            import GearGap
-from trip_metrics           import estimate_hike_duration, reverse_geocode
-from gear_levels            import resolve_gear_category, resolve_level
+from trip_metrics           import estimate_hike_duration, reverse_geocode, split_days
+from gear_levels            import (
+    resolve_gear_category, resolve_level,
+    GEAR_CATEGORIES, is_valid_level, valid_levels,
+)
 from PyObjects.Trip         import Trip
 from AI.SessionStore import SessionStore, SessionStoreUnavailable
+from AI.feature_honesty import unbacked_feature_claims
 from Repos.ItemRepo             import ItemRepository
 from Services.HikeSearchService import HikeSearchService
 from Services.HikeService       import HikeService
@@ -277,6 +283,12 @@ class ChatResponse(BaseModel):
     # the chat message "N" (1-based, matching `index`) — the same signal a
     # user typing the number would have sent.
     hike_options:   list[dict] = []
+    # Structured gear-entry prompts for the frontend to render as inline "blip"
+    # forms during gear_review, one per GEAR ADD signal Groq emitted this turn.
+    # Each carries the gap's category/gear_category/min_level so the form can
+    # preselect the minimum acceptable level. Non-binding: the user can ignore
+    # them. Submitting one hits POST /gear/add. Empty otherwise.
+    gear_prompts:   list[dict] = []
 
 
 class SaveResponse(BaseModel):
@@ -284,6 +296,24 @@ class SaveResponse(BaseModel):
     title:   str
     stops:   list[dict]
     gear:    list[dict]
+
+
+class GearAddRequest(BaseModel):
+    """Payload from the inline gear-entry form (POST /gear/add)."""
+    category:      str                      # CAT_* gap category to resolve (e.g. "rain_gear")
+    gear_category: str                      # functional gear_levels category for create_user_gear (e.g. "shell")
+    name:          str = ""
+    level:         Optional[str] = None
+    temp_rating_f: Optional[int] = None
+    weight:        Optional[float] = None
+    cost:          Optional[float] = None
+
+
+class GearAddResponse(BaseModel):
+    session_id: str
+    plan:       dict     # updated plan — the resolved gap is gone
+    response:   str      # canned confirmation, to append to the chat thread
+    item:       dict     # the created user-gear item
 
 
 # Chat lifecycle: active (Redis-only) -> saved -> completed -> reviewed
@@ -366,6 +396,17 @@ async def trip_chat(
     except SessionStoreUnavailable as e:
         logger.error("Session service unavailable for user %s: %s", current_user_id, e)
         raise HTTPException(503, "Session service is temporarily unavailable. Please try again in a moment.")
+
+    # Ownership guard: get_or_create loads a session purely by id, so a caller
+    # who supplies someone else's session_id would otherwise resume that user's
+    # live conversation (IDOR). Mirror the check get_chat / save_trip already do.
+    if session.user_id != current_user_id:
+        logger.warning(
+            "Rejected cross-user session access: user=%s tried session=%s owned by %s",
+            current_user_id, session.session_id, session.user_id,
+        )
+        raise HTTPException(403, "Forbidden")
+
     itinerary_prebuilt = bool(session.plan.days)
 
     # ── 2. Fetch user gear from DB ─────────────────────────────────────────
@@ -450,24 +491,52 @@ async def trip_chat(
                 required, preferred, avoid_permits, priority = _parser._extract_tags(
                     text, _parser._extract_activity(text), _parser._extract_difficulty(text)
                 )
-                max_len, target_len = _parser._extract_length_constraints(text)   # ← was _extract_max_length_km
+                min_len, max_len, target_len = _parser._extract_length_constraints(text)   # ← was _extract_max_length_km
                 _merge_accum_tags(
                     session, required, preferred, priority,
                     _parser._extract_difficulty(text),
-                    max_len, target_len,
+                    min_len, max_len, target_len,
                 )
             else:
-                intent = _parse_intent(req)
+                try:
+                    intent = _parse_intent(req)
+                except DestinationNotFound as e:
+                    # A place was named but couldn't be geocoded (a misspelling
+                    # like "Lineville Gorge"). Reply deterministically — no Groq
+                    # chat call, no wasted tokens — asking the user to correct
+                    # it. Accumulated tags are preserved for the retry.
+                    not_found = (
+                        f"I couldn't find a place called “{e.place}”. I might have it "
+                        "under a different spelling — could you double-check it, or give "
+                        "me a nearby town, park, or state to search from?"
+                    )
+                    logger.info(
+                        "Session %s: destination geocode failed — %r",
+                        session.session_id, e.place,
+                    )
+                    session.add_turn(req.message, not_found)
+                    if not _store.save(session):
+                        logger.error("Redis save failed for session %s", session.session_id)
+                    return ChatResponse(
+                        session_id     = session.session_id,
+                        response       = not_found,
+                        phase          = session.phase,
+                        plan           = session.plan.to_dict(),
+                        advanced       = False,
+                        created        = created,
+                        hike_options   = [],
+                    )
                 if intent is not None:
                     _merge_accum_tags(
                         session, intent.required_tags, intent.preferred_tags,
                         intent.priority_tags, intent.difficulty_hint,
-                        intent.max_length_km, intent.target_length_km,
+                        intent.min_length_km, intent.max_length_km, intent.target_length_km,
                     )
                     intent.required_tags    = session.phase_data["accum_required_tags"]
                     intent.preferred_tags   = session.phase_data["accum_preferred_tags"]
                     intent.priority_tags    = session.phase_data["accum_priority_tags"]
                     intent.difficulty_hint  = intent.difficulty_hint or session.phase_data.get("accum_difficulty_hint")
+                    intent.min_length_km    = intent.min_length_km or session.phase_data.get("accum_min_length_km")
                     intent.max_length_km    = intent.max_length_km or session.phase_data.get("accum_max_length_km")
                     intent.target_length_km = intent.target_length_km or session.phase_data.get("accum_target_length_km")
                     _apply_intent_to_plan(
@@ -560,6 +629,17 @@ async def trip_chat(
             )
             hike_context = _search_and_analyse(session, user_gear, new_intent)
 
+    # ── 6c. Relocation ("closer to Asheville") — move the map, keep filters ──
+    # A location change that names a specific new place. Unlike a full reset it
+    # preserves the user's filters; unlike SEARCH_REFINE it actually re-geocodes.
+    relocated = False
+    if not reset and session.phase in ("destination", "gear_review"):
+        relo_context = _try_relocate(session, req, user_gear)
+        if relo_context is not None:
+            hike_context = relo_context
+            relocated    = True
+            advanced     = False
+
     if advanced:
         _handle_phase_entry(session)
 
@@ -619,6 +699,21 @@ async def trip_chat(
             # these as phantom DayPlan objects that showed up in the save summary.
             days = _drop_phantom_days(days)
         if days:
+            # Own the per-day arithmetic in Python instead of trusting the LLM's
+            # estimates: overwrite each day's distance/gain with a deterministic
+            # even split of the trail's real totals, so the days always sum to
+            # the trail-total tiles the frontend shows. The LLM keeps the titles,
+            # notes, and campsite choices. We also rewrite the numbers in the
+            # visible prose so what the user reads matches the split exactly.
+            plan = session.plan
+            if plan.hike_length_km:
+                splits = split_days(
+                    plan.hike_length_km, plan.hike_elevation_gain_m, len(days),
+                )
+                for day, (mi, ft) in zip(days, splits):
+                    day.distance_miles    = mi
+                    day.elevation_gain_ft = ft
+                ai_response = _apply_split_to_prose(ai_response, splits)
             session.plan.days = days
             logger.info(
                 "Session %s: itinerary updated — %d day(s) parsed.",
@@ -638,7 +733,7 @@ async def trip_chat(
     # that Groq emits when it detects an ambiguous destination-change phrase
     # the Python detector in step 6b missed.
     # ── 9. Post-response check ─────────────────────────────────────────────
-    if not reset and "DESTINATION RESET" in ai_response:
+    if not reset and not relocated and "DESTINATION RESET" in ai_response:
         # Guard: if the user was re-selecting a numbered trail option,
         # Groq may have mis-fired DESTINATION RESET on "instead".
         # Don't honor the reset — re-run hike selection instead.
@@ -685,24 +780,19 @@ async def trip_chat(
             )
     # ── 9a. GEAR ADD signal (post-response, gear_review only) ──────────────
     #
-    # Groq emits "GEAR ADD: <category>" on its own line when the user confirms
-    # they'll address a specific gap from the GEAR GAPS list. Items are
-    # pre-computed — this never creates a new item row. Python maps the
-    # category to a catalog item_type (CATEGORY_TO_ITEM_TYPE), looks up an
-    # existing catalog item via ItemService, and links it to the user's gear
-    # via UserService.add_item. The matching gap is removed from
-    # plan.gear_gaps and its item id recorded in plan.gear_selected. The
-    # token is stripped before the response reaches the frontend regardless
-    # of whether the add succeeded.
+    # Groq emits "GEAR ADD: <category>" on its own line when the user signals
+    # they'll address a specific gap. Instead of silently auto-linking a catalog
+    # item (which dropped the user's specific item + level), we surface an inline
+    # gear-entry form for that gap. Each signal becomes a `gear_prompt` the
+    # frontend renders; the gap stays OPEN until the form is submitted
+    # (POST /gear/add). The token is always stripped before the response reaches
+    # the frontend.
+    gear_prompts: list[dict] = []
     if session.phase == "gear_review" and "GEAR ADD:" in ai_response:
         for raw_category in _GEAR_ADD_RE.findall(ai_response):
-            _handle_gear_add(
-                session         = session,
-                raw_category    = raw_category,
-                item_service    = item_service,
-                user_service    = user_service,
-                current_user_id = current_user_id,
-            )
+            gp = _build_gear_prompt(session, raw_category)
+            if gp is not None:
+                gear_prompts.append(gp)
         ai_response = _GEAR_ADD_RE.sub("", ai_response).strip()
 
     # ── 9d. ADVANCE_PHASE signal (post-response, gear_review/itinerary) ────
@@ -718,23 +808,28 @@ async def trip_chat(
     # match one of the hardcoded phrases — the exact "conversation got
     # stuck" symptom. _structural_prerequisites_met() re-uses the same data
     # gate the regex path relies on, so this can't advance a phase early.
-    if not advanced and "ADVANCE_PHASE" in ai_response:
-        old_phase = session.phase
-        if old_phase in ("gear_review", "itinerary") and _structural_prerequisites_met(session, itinerary_prebuilt):
-            session.advance_phase()
-            _handle_phase_entry(session)
-            advanced = True
-            logger.info(
-                "Session %s: ADVANCE_PHASE signal — advancing %s → %s.",
-                session.session_id, old_phase, session.phase,
-            )
-        else:
-            logger.warning(
-                "Session %s: ADVANCE_PHASE emitted but prerequisites not met "
-                "(phase=%s, hike_id=%s, days=%d).",
-                session.session_id, session.phase,
-                session.plan.hike_id, len(session.plan.days),
-            )
+    if "ADVANCE_PHASE" in ai_response:
+        # Only act on the signal when the phase hasn't already advanced this turn,
+        # but ALWAYS strip the token — otherwise it leaks into the visible reply
+        # on a turn that already advanced (e.g. the gear→itinerary turn that also
+        # pre-builds and presents the itinerary, where `advanced` is already True).
+        if not advanced:
+            old_phase = session.phase
+            if old_phase in ("gear_review", "itinerary") and _structural_prerequisites_met(session, itinerary_prebuilt):
+                session.advance_phase()
+                _handle_phase_entry(session)
+                advanced = True
+                logger.info(
+                    "Session %s: ADVANCE_PHASE signal — advancing %s → %s.",
+                    session.session_id, old_phase, session.phase,
+                )
+            else:
+                logger.warning(
+                    "Session %s: ADVANCE_PHASE emitted but prerequisites not met "
+                    "(phase=%s, hike_id=%s, days=%d).",
+                    session.session_id, session.phase,
+                    session.plan.hike_id, len(session.plan.days),
+                )
         ai_response = re.sub(r"\n?ADVANCE_PHASE\n?", "", ai_response).strip()
 
     # ── 9e. SEARCH_REFINE signal ───────────────────────────────────────────
@@ -764,14 +859,14 @@ async def trip_chat(
             "(would have wiped the just-made selection).",
             session.session_id,
         )
-        ai_response = ai_response.replace("SEARCH_REFINE", "").strip()
+        ai_response = _strip_signal(ai_response, "SEARCH_REFINE")
         hike_label = session.plan.hike_name or "that trail"
         ai_response = (
             f"Great choice — {hike_label} it is. "
             "Let me check your gear against this trail before we plan the days."
         )
 
-    if not reset and not just_selected_hike and "SEARCH_REFINE" in ai_response:
+    if not reset and not relocated and not just_selected_hike and "SEARCH_REFINE" in ai_response:
         logger.info(
             "Session %s: SEARCH_REFINE signal — soft-resetting and re-searching.",
             session.session_id,
@@ -783,6 +878,20 @@ async def trip_chat(
         # path discards the extracted tags along with it. parse_refinement()
         # never touches geocoding and never raises.
         refinement = _parser.parse_refinement(req.message)
+
+        # Length constraints (floor/ceiling/approx) can arrive on a turn of
+        # their own ("at least 3 miles") with no feature tags and no difficulty
+        # word — which would otherwise fall through to the `else` branch below
+        # and never get stored. Persist them up front, before refinement_intent
+        # is built, so they apply to THIS turn's re-search rather than lagging a
+        # turn behind. Only overwrite when the new parse actually found a value,
+        # so an unrelated refinement ("make it easier") doesn't clear a floor
+        # the user set earlier.
+        if refinement.min_length_km is not None:
+            session.phase_data["refine_min_length_km"] = refinement.min_length_km
+        if refinement.max_length_km is not None:
+            session.phase_data["refine_max_length_km"]    = refinement.max_length_km
+            session.phase_data["refine_target_length_km"] = refinement.target_length_km
 
         if _looks_like_affirmation(req.message):
             pivot = session.phase_data.pop("pivot_difficulty", None)
@@ -813,6 +922,7 @@ async def trip_chat(
                 preferred_tags    = session.phase_data.get("refine_preferred_tags", []),
                 priority_tags     = session.phase_data.get("refine_priority_tags", []),
                 avoid_permits     = getattr(refinement, "avoid_permits", False),
+                min_length_km     = session.phase_data.get("refine_min_length_km"),      # ← NEW
                 max_length_km     = session.phase_data.get("refine_max_length_km"),      # ← NEW
                 target_length_km  = session.phase_data.get("refine_target_length_km"),   # ← NEW
             ),
@@ -858,6 +968,7 @@ async def trip_chat(
                         preferred_tags    = list(refinement_intent.preferred_tags),
                         priority_tags     = list(refinement_intent.priority_tags),
                         avoid_permits     = refinement_intent.avoid_permits,
+                        min_length_km     = refinement_intent.min_length_km,      # ← NEW
                         max_length_km     = refinement_intent.max_length_km,      # ← NEW
                         target_length_km  = refinement_intent.target_length_km,   # ← NEW
                     ),
@@ -874,9 +985,6 @@ async def trip_chat(
                         f"Do NOT emit SEARCH_REFINE."
                     )
                     break
-        if refinement.max_length_km is not None:
-            session.phase_data["refine_max_length_km"]    = refinement.max_length_km
-            session.phase_data["refine_target_length_km"] = refinement.target_length_km
         # ── Fallback: restore prior options when all searches came back empty ─────
         if not hike_context:
             prev_context = session.phase_data.pop("prev_hike_context", "")
@@ -930,7 +1038,7 @@ async def trip_chat(
 
         # Strip SEARCH_REFINE from the first response, then make the second call
         # with a prompt that includes the search result note.
-        ai_response = ai_response.replace("SEARCH_REFINE", "").strip()
+        ai_response = _strip_signal(ai_response, "SEARCH_REFINE")
         _refine_prompt = build_system_prompt(
             session, user_gear, hike_context=hike_context, refine_note=refine_note
         )
@@ -943,9 +1051,13 @@ async def trip_chat(
                 user_message    = req.message,
                 **PHASE_GROQ_PARAMS["destination"],
             )
-            # Defensive strip — if Groq still emits SEARCH_REFINE despite the note,
-            # prevent it from reaching the user or re-triggering the outer handler.
-            ai_response = ai_response.replace("SEARCH_REFINE", "").strip()
+            # Defensive strip — if Groq still emits SEARCH_REFINE (or a stray
+            # DESTINATION RESET) from the second call, scrub both so neither the
+            # token nor its leading em-dash reaches the user. (Step 9's reset scan
+            # already ran before this second call, so DESTINATION RESET is only
+            # caught here.)
+            ai_response = _strip_signal(ai_response, "SEARCH_REFINE")
+            ai_response = _strip_signal(ai_response, "DESTINATION RESET")
         except Exception as e:
             logger.error(
                 "Session %s: inline re-search after SEARCH_REFINE failed: %s",
@@ -1021,6 +1133,19 @@ async def trip_chat(
         else []
     )
 
+    # ── 9g. Feature-honesty net (belt to PromptBuilder's honesty rule) ─────────
+    # If the prose credits a concrete draw (waterfall/lake/river/…) that appears
+    # on NONE of the presented cards, the model fabricated it despite the prompt.
+    # Logged (not rewritten) — see feature_honesty for why mutation is unsafe.
+    if hike_options:
+        fabricated = unbacked_feature_claims(ai_response, hike_options)
+        if fabricated:
+            logger.warning(
+                "Feature-honesty: session %s prose claims %s with no matching tag "
+                "on any presented card",
+                session.session_id, fabricated,
+            )
+
     # ── 10. Append turn + async summarize if threshold crossed ─────────────
     session.add_turn(req.message, ai_response)
 
@@ -1041,6 +1166,86 @@ async def trip_chat(
         created        = created,
         save_confirmed = save_confirmed,
         hike_options   = hike_options,
+        gear_prompts   = gear_prompts,
+    )
+
+
+# ── Inline gear-add endpoint ──────────────────────────────────────────────────
+
+@router.post("/gear/add", response_model=GearAddResponse)
+def add_gear_from_chat(
+    req:             GearAddRequest,
+    session_id:      str,
+    current_user_id: str          = Depends(get_current_user_id),
+    item_service:    ItemService  = Depends(get_item_service),
+):
+    """
+    Persist an item the user entered via the inline gear-review form and sync it
+    back into the live session — creating a named, leveled item in their global
+    kit (create_user_gear), clearing the resolved gap from the plan, and dropping
+    a canned assistant confirmation into the transcript so Groq's next turn stays
+    coherent and never re-flags the gap. No Groq call is spent.
+
+    session_id is a query param: POST /api/trip/gear/add?session_id=...
+    """
+    session = _store.get(session_id)
+    if not session:
+        raise HTTPException(404, "Session not found or expired.")
+    if session.user_id != current_user_id:
+        raise HTTPException(403, "Forbidden.")
+
+    gear_category = req.gear_category.strip().lower()
+    if gear_category not in GEAR_CATEGORIES:
+        raise HTTPException(
+            400,
+            f"Invalid gear_category '{req.gear_category}'. "
+            f"Must be one of: {', '.join(sorted(GEAR_CATEGORIES))}.",
+        )
+    if not is_valid_level(gear_category, req.level):
+        allowed = valid_levels(gear_category)
+        raise HTTPException(
+            400,
+            f"Invalid level '{req.level}' for {gear_category}. "
+            + (f"Must be one of: {', '.join(allowed)}." if allowed
+               else f"{gear_category} does not take a level."),
+        )
+
+    try:
+        item = item_service.create_user_gear(
+            user_id       = UUID(current_user_id),
+            name          = req.name.strip() or gear_category.replace("_", " ").title(),
+            gear_category = gear_category,
+            level         = req.level,
+            weight        = req.weight,
+            cost          = req.cost,
+            temp_rating_f = req.temp_rating_f,
+        )
+    except Exception:
+        logger.exception("gear/add failed for session %s", session_id)
+        raise HTTPException(400, "Could not add the gear item.")
+
+    # Sync the session: record the selection, drop the resolved gap, and add a
+    # canned assistant confirmation so the next turn's context reflects it.
+    plan = session.plan
+    plan.gear_selected.append(str(item.id))
+    plan.gear_gaps = [g for g in plan.gear_gaps if g.category != req.category]
+
+    lvl_txt   = f" ({req.level.replace('_', ' ')})" if req.level else ""
+    gap_label = req.category.replace("_", " ")
+    confirmation = (
+        f"Added your {item.name}{lvl_txt} to your kit — that covers the {gap_label} gap. "
+        "Anything else you'd like to sort out, or are you good to move on?"
+    )
+    session.add_assistant_note(confirmation)
+
+    if not _store.save(session):
+        logger.error("Redis save failed for session %s after gear/add", session_id)
+
+    return GearAddResponse(
+        session_id = session.session_id,
+        plan       = plan.to_dict(),
+        response   = confirmation,
+        item       = item.to_dict(),
     )
 
 
@@ -1204,7 +1409,7 @@ def _trip_readiness(trip, current_user_id: str, item_service: ItemService) -> li
     except Exception as e:
         logger.warning("readiness: could not load gear for %s: %s", current_user_id, e)
         return []
-    return _analyzer.readiness_for_hike(user_gear, hike)
+    return _analyzer.readiness_for_hike(user_gear, hike, getattr(trip, "duration_days", None) or 1)
 
 
 @router.get("/chats/{chat_id}", response_model=dict)
@@ -1369,6 +1574,7 @@ def duplicate_chat(
     plan.lat               = stop.lat
     plan.lng               = stop.lng
     plan.state              = trail.get("state")
+    plan.min_length_km      = trail.get("min_length_km")
     plan.max_length_km      = trail.get("max_length_km")
     plan.target_length_km   = trail.get("target_length_km")
     plan.activity_type      = trail.get("activity_type") or stop.activity_type
@@ -1396,6 +1602,7 @@ def duplicate_chat(
         avoid_permits     = False,
         region_tag        = None,
         state             = plan.state,
+        min_length_km     = plan.min_length_km,
         max_length_km     = plan.max_length_km,
         target_length_km  = plan.target_length_km,
     )
@@ -1437,6 +1644,60 @@ def _looks_like_affirmation(message: str) -> bool:
         len(msg.split()) <= 3
         and any(p in msg for p in ("yes", "yeah", "yep", "yup", "sure", "ok", "okay"))
     )
+def _try_relocate(session: TripSession, req: "ChatRequest", user_gear: list[dict]) -> Optional[str]:
+    """
+    Deterministically handle a mid-search relocation ("closer to Asheville").
+
+    If the message names a NEW place that geocodes (US-scoped) to somewhere
+    meaningfully different from the current destination, re-center the search
+    there while KEEPING the user's filters (difficulty/length/features/duration),
+    and return the fresh hike_context. Returns None when it isn't a relocation —
+    so the normal refine/response flow proceeds untouched.
+
+    This runs BEFORE the Groq call and overrides Groq's ambiguous SEARCH_REFINE /
+    DESTINATION RESET classification (the belt-and-suspenders pattern used
+    elsewhere in this file), fixing the "closer to Asheville returns Piedmont
+    trails" bug where the refine path kept the old coordinates.
+    """
+    plan = session.plan
+    if plan.lat is None or plan.lng is None:
+        return None                          # no existing search to move
+    place = _parser.extract_relocation_place(req.message)
+    if not place:
+        return None
+    coords = _parser._geocode(place, state=plan.state)
+    if not coords:
+        return None
+    # Must be a real move (~>20 km / 0.2°), else it's just the same area restated.
+    if abs(coords["lat"] - plan.lat) < 0.2 and abs(coords["lng"] - plan.lng) < 0.2:
+        return None
+
+    plan.lat              = coords["lat"]
+    plan.lng              = coords["lng"]
+    plan.destination_full = place.title()
+    plan.state            = coords.get("state") or plan.state
+
+    _soft_reset_hike_selection(session)      # clears selection + search state, keeps filters
+
+    override = SimpleNamespace(
+        activity_type    = plan.activity_type,
+        difficulty_hint  = plan.difficulty,
+        required_tags    = list(plan.required_tags or []),
+        preferred_tags   = list(plan.preferred_tags or []),
+        priority_tags    = list(plan.priority_tags or []),
+        avoid_permits    = False,
+        min_length_km    = plan.min_length_km,
+        max_length_km    = plan.max_length_km,
+        target_length_km = plan.target_length_km,
+    )
+    intent = _intent_from_plan_with_override(plan, override)
+    logger.info(
+        "Session %s: relocated to %r (%.4f, %.4f) — filters preserved.",
+        session.session_id, plan.destination_full, plan.lat, plan.lng,
+    )
+    return _search_and_analyse(session, user_gear, intent)
+
+
 def _soft_reset_hike_selection(session: TripSession) -> None:
     """
     Preserves destination (lat/lng/destination_full/duration_days) but clears
@@ -1483,6 +1744,7 @@ def _intent_from_plan(plan) -> TripIntent:
         duration_days    = plan.duration_days,
         difficulty_hint  = plan.difficulty,
         state            = plan.state,           # ← NEW
+        min_length_km     = plan.min_length_km,       # ← NEW
         max_length_km     = plan.max_length_km,       # ← NEW
         target_length_km  = plan.target_length_km,
     )
@@ -1515,25 +1777,21 @@ def _intent_from_plan_with_override(plan, refinement: "RefinementIntent"):
         priority_tags     = list(refinement.priority_tags or []),
         avoid_permits     = refinement.avoid_permits,
         state             = getattr(plan, "state", None),
+        min_length_km     = getattr(refinement, "min_length_km", None) or plan.min_length_km,        # ← NEW
         max_length_km     = getattr(refinement, "max_length_km", None) or plan.max_length_km,        # ← NEW
         target_length_km  = getattr(refinement, "target_length_km", None) or plan.target_length_km,  # ← NEW
     )
-def _handle_gear_add(
-    session:         TripSession,
-    raw_category:    str,
-    item_service:    ItemService,
-    user_service:    UserService,
-    current_user_id: str,
-) -> None:
+def _build_gear_prompt(session: TripSession, raw_category: str) -> Optional[dict]:
     """
-    Resolves a "GEAR ADD: <category>" signal into a real catalog item and
-    links it to the user's gear.
+    Turn a "GEAR ADD: <category>" signal into a structured `gear_prompt` for the
+    frontend to render as an inline gear-entry "blip" form.
 
-    Items are pre-computed — this NEVER creates a new item row. It only
-    looks up an existing catalog item (via ItemService.list_items) and links
-    it to the user (via UserService.add_item), then updates
-    plan.gear_selected / plan.gear_gaps. Any failure is logged and the
-    signal is dropped silently — the conversation continues unaffected.
+    We deliberately do NOT resolve the gap or link anything here — that would
+    drop the specific item and level the user actually owns. The gap stays OPEN
+    (non-binding: if the user ignores the form and proceeds, the existing
+    proceed-as-is path still advances). The gap is resolved only when the user
+    submits the form (POST /gear/add). Returns None when the category doesn't
+    match a live gap (unknown or already resolved), so no stray form is shown.
     """
     # Normalize: lowercase, collapse any non a-z run (spaces, punctuation)
     # to a single underscore, so "first aid" / "first aid." / "First Aid"
@@ -1542,60 +1800,63 @@ def _handle_gear_add(
 
     gap = next((g for g in session.plan.gear_gaps if g.category == category), None)
     if gap is None:
-        logger.warning(
-            "Session %s: GEAR ADD for unknown/already-resolved category '%s' — ignoring.",
+        logger.info(
+            "Session %s: GEAR ADD for unknown/already-resolved category '%s' — no form shown.",
             session.session_id, category,
         )
-        return
+        return None
 
-    item_type = CATEGORY_TO_ITEM_TYPE.get(category)
-    if item_type is None:
-        logger.warning(
-            "Session %s: no item_type mapping for gear category '%s' — ignoring GEAR ADD.",
-            session.session_id, category,
-        )
-        return
+    return {
+        "category":      gap.category,        # CAT_* — used to resolve the gap on submit
+        "gear_category": gap.gear_category,   # functional gear_levels category (may be None → frontend maps it)
+        "min_level":     gap.min_level,       # preselected minimum; the form won't allow lower
+        "min_temp_f":    gap.min_temp_f,      # sleep only
+        "importance":    gap.importance,
+        "detail":        gap.detail,
+        "suggestion":    gap.suggestion,
+    }
+def _strip_signal(text: str, token: str) -> str:
+    """
+    Remove a leaked control token AND any separator left behind (em/en dash,
+    hyphen, colon) so 'SEARCH_REFINE — sure, shorter trails' becomes
+    'sure, shorter trails' rather than '— sure, …' (bare .strip() leaves the
+    U+2014 em-dash the prompt template puts after the token).
+    """
+    cleaned = re.sub(rf"\s*{re.escape(token)}\s*[—–\-:]*\s*", " ", text)
+    return cleaned.strip()
 
-    try:
-        catalog_items = item_service.list_items(item_type=item_type)
-    except Exception as e:
-        logger.warning(
-            "Session %s: catalog lookup failed for item_type '%s': %s",
-            session.session_id, item_type, e,
-        )
-        return
 
-    # "clothing" backs both insulation and rain_gear — narrow by waterproof.
-    if category == CAT_RAIN_GEAR:
-        catalog_items = [i for i in catalog_items if getattr(i, "waterproof", False)]
-    elif category == CAT_INSULATION:
-        catalog_items = [i for i in catalog_items if not getattr(i, "waterproof", False)]
+def _apply_split_to_prose(text: str, splits: list) -> str:
+    """
+    Rewrite the 'Distance: … | Gain: … ft' lines in the itinerary prose, in
+    order, with the deterministic per-day split — so the numbers the user reads
+    match plan.days exactly (and any literal 'X miles' the model slipped through
+    is replaced with a real figure). Everything else is left untouched.
+    """
+    parts = iter(splits)
 
-    if not catalog_items:
-        logger.warning(
-            "Session %s: no catalog item found for category '%s' (item_type=%s) — ignoring GEAR ADD.",
-            session.session_id, category, item_type,
-        )
-        return
+    def _repl(m):
+        try:
+            mi, ft = next(parts)
+        except StopIteration:
+            return m.group(0)
+        return f"Distance: {mi} miles  |  Gain: {ft} ft"
 
-    chosen = catalog_items[0]
+    return re.sub(r"Distance:[^\n]*?Gain:[^\n]*?\bft\b", _repl, text)
 
-    try:
-        user_service.add_item(UUID(current_user_id), str(chosen.id))
-    except Exception as e:
-        logger.error(
-            "Session %s: failed to link item %s to user %s: %s",
-            session.session_id, chosen.id, current_user_id, e,
-        )
-        return
 
-    session.plan.gear_selected.append(str(chosen.id))
-    session.plan.gear_gaps = [g for g in session.plan.gear_gaps if g.category != category]
+def _anchor_label(plan) -> Optional[str]:
+    """
+    What the option cards' `distance_km` is measured from, for the UI to render
+    "N km from <anchor>". A near-me search is anchored on the user ("you");
+    every other search is anchored on the named/geocoded destination. Returns
+    None when there's no resolved destination yet (UI falls back to "N km away").
+    """
+    if getattr(plan, "destination_raw", None) == "near me":
+        return "you"
+    return getattr(plan, "destination_full", None) or None
 
-    logger.info(
-        "Session %s: linked '%s' (item_type=%s) to user gear, resolving category '%s'.",
-        session.session_id, chosen.name, item_type, category,
-    )
+
 def _parse_intent(req: ChatRequest) -> Optional[TripIntent]:
     """
     Single authoritative parse call — preserves coordinates.
@@ -1607,6 +1868,11 @@ def _parse_intent(req: ChatRequest) -> Optional[TripIntent]:
             user_lat=req.user_lat,
             user_lng=req.user_lng,
         )
+    except DestinationNotFound:
+        # A place was named but wouldn't geocode (misspelling / unresolvable).
+        # Propagate so the caller can surface a deterministic "did you mean…?"
+        # reply instead of silently returning None and dead-ending in Groq.
+        raise
     except ValueError as e:
         logger.info("Parser could not resolve destination: %s", e)
     except Exception as e:
@@ -1640,10 +1906,11 @@ def _search_and_analyse(
     else:
         session.phase_data.pop("pivot_difficulty", None)
 
+    duration_days = session.plan.duration_days or 1
     gear_analyses: dict[str, list[GearGap]] = {}
     for hike, _ in result.scored:
         try:
-            gear_analyses[str(hike.id)] = _analyzer.analyze_for_hike(user_gear, hike)
+            gear_analyses[str(hike.id)] = _analyzer.analyze_for_hike(user_gear, hike, duration_days)
         except Exception as e:
             logger.warning("GearGapAnalyzer failed for hike %s: %s", hike.id, e)
             gear_analyses[str(hike.id)] = []
@@ -1664,7 +1931,8 @@ def _search_and_analyse(
         result.scored, gear_analyses
     )
     session.phase_data["hike_cards"] = _hike_search.to_option_cards(
-        result.scored, gear_analyses
+        result.scored, gear_analyses, duration_days,
+        anchor_label=_anchor_label(session.plan),
     )
     logger.debug("Session %s: hike_context =\n%s", session.session_id, context)
     session.phase_data["hike_context"]           = context
@@ -1812,10 +2080,11 @@ def _resolve_named_hike(query: str):
 def _analyse_and_store_gaps(session: TripSession, user_gear: list[dict], hikes: list) -> dict:
     """Run per-hike gear analysis for `hikes`, cache dict-form gaps in phase_data
     (as _search_and_analyse does), and return {hike_id: [GearGap]}."""
+    duration_days = session.plan.duration_days or 1
     gear_analyses: dict[str, list] = {}
     for hike in hikes:
         try:
-            gear_analyses[str(hike.id)] = _analyzer.analyze_for_hike(user_gear, hike)
+            gear_analyses[str(hike.id)] = _analyzer.analyze_for_hike(user_gear, hike, duration_days)
         except Exception as e:
             logger.warning("GearGapAnalyzer failed for hike %s: %s", hike.id, e)
             gear_analyses[str(hike.id)] = []
@@ -1858,7 +2127,10 @@ def _present_named_candidates(session: TripSession, user_gear: list[dict], candi
     _controller.on_hikes_presented(session, scored)
     context = _hike_search.format_for_context(scored, gear_analyses=gear_analyses)
     session.phase_data["hike_list_display"] = _hike_search.format_hike_list(scored, gear_analyses)
-    session.phase_data["hike_cards"]        = _hike_search.to_option_cards(scored, gear_analyses)
+    session.phase_data["hike_cards"]        = _hike_search.to_option_cards(
+        scored, gear_analyses, session.plan.duration_days or 1,
+        anchor_label=_anchor_label(session.plan),
+    )
     session.phase_data["hike_context"]      = context
     return context
 
@@ -1918,6 +2190,9 @@ def _capture_selected_hike_facts(session: TripSession) -> None:
 
     plan.hike_length_km        = hike.length_km
     plan.hike_elevation_gain_m = hike.elevation_gain_m
+    # Real campsites/shelters near the route (from enrichment) — fed to the
+    # itinerary prompt so day plans name real camps instead of inventing them.
+    plan.campsites             = getattr(hike, "campsites", []) or []
 
     # Real trail difficulty is authoritative for a single-hike trip — the user's
     # difficulty filter was only ever a search hint.
@@ -1928,6 +2203,18 @@ def _capture_selected_hike_facts(session: TripSession) -> None:
 
     _hours, label = estimate_hike_duration(hike.length_km, hike.elevation_gain_m)
     plan.estimated_duration = label
+
+    # Prep-level band for the selected trail at this trip's duration — computed
+    # here with the full hike (altitude + tags) so downstream (gear surfacing,
+    # prompt tone) reuse one authoritative tier instead of re-deriving it.
+    plan.rigor_tier = rigor_tier(
+        length_km     = hike.length_km,
+        gain_m        = hike.elevation_gain_m,
+        max_alt_m     = getattr(hike, "max_altitude_m", 0),
+        difficulty    = hike.difficulty,
+        duration_days = plan.duration_days or 1,
+        tags          = hike.tags,
+    )
 
     # Upgrade a crude / "near me" destination to the trailhead's real place.
     if not plan.destination_full or _CRUDE_DESTINATION_RE.match(plan.destination_full):
@@ -1945,8 +2232,8 @@ def _capture_selected_hike_facts(session: TripSession) -> None:
 # ── Private: general helpers ──────────────────────────────────────────────────
 def _merge_accum_tags(
     session, required, preferred, priority,
-    difficulty_hint=None, max_length_km=None, target_length_km=None,
-) -> None:    
+    difficulty_hint=None, min_length_km=None, max_length_km=None, target_length_km=None,
+) -> None:
     """
     Accumulates feature/priority tags across turns in the destination-gathering
     phase (before is_destination_set()). Needed because each turn is parsed from
@@ -1958,6 +2245,8 @@ def _merge_accum_tags(
     session.phase_data["accum_priority_tags"]  = sorted(set(session.phase_data.get("accum_priority_tags", []))  | set(priority))
     if difficulty_hint:
         session.phase_data["accum_difficulty_hint"] = difficulty_hint
+    if min_length_km is not None:
+        session.phase_data["accum_min_length_km"] = min_length_km
     if max_length_km is not None:
         session.phase_data["accum_max_length_km"] = max_length_km
     if target_length_km is not None:
@@ -1982,11 +2271,19 @@ def _apply_intent_to_plan(
     plan.lat               = intent.lat
     plan.lng               = intent.lng
     plan.state              = intent.state
+    plan.min_length_km      = getattr(intent, "min_length_km", None)      # ← NEW
     plan.max_length_km      = getattr(intent, "max_length_km", None)      # ← NEW
     plan.target_length_km   = getattr(intent, "target_length_km", None)   # ← NEW
     plan.activity_type      = intent.activity_type
     plan.duration_days      = intent.duration_days
     plan.difficulty         = intent.difficulty_hint or plan.difficulty
+    # Overnight implied but no explicit day count — duration_days is a guess, so
+    # flag it for the destination phase to confirm the trip length with the user
+    # (stash the assumed value so the prompt can name it). Cleared once known.
+    if getattr(intent, "duration_ambiguous", False):
+        session.phase_data["duration_assumed"] = intent.duration_days
+    else:
+        session.phase_data.pop("duration_assumed", None)
     # Persisted (not left in phase_data, which is wiped on every phase
     # transition) so it survives to save time for trail_data / Go Again.
     plan.required_tags      = list(getattr(intent, "required_tags", None) or [])
@@ -2138,10 +2435,20 @@ def _has_no_destination(message: str) -> bool:
     True when the message mentions a feature/activity/difficulty word but
     has zero location signal — the case where TripInputParser.parse() has
     nothing to geocode and will fail regardless of how it's parsed.
+
+    Guards against a bare proper-noun place whose name embeds a feature word:
+    "Sorry Linville Gorge" has "gorge" (the `canyon` keyword) but no preposition,
+    so has_location_signal() misses it. has_possible_place_token() catches the
+    leftover "linville" and we DON'T short-circuit — letting parse() geocode it
+    rather than stranding the destination in the tag-accumulate branch.
     """
     text = message.lower()
     has_feature = any(kw in text for kw in _NO_LOCATION_FEATURE_KEYWORDS)
-    return has_feature and not _parser.has_location_signal(message)
+    if not has_feature:
+        return False
+    if _parser.has_location_signal(message):
+        return False
+    return not _parser.has_possible_place_token(message)
 def _handle_phase_entry(session: TripSession) -> None:
     """
     Called exactly once when the session advances to a new phase.
@@ -2170,6 +2477,7 @@ def _reset_destination(session: TripSession) -> None:
     plan.lat                = None
     plan.lng                = None
     plan.state              = None
+    plan.min_length_km      = None      # ← NEW
     plan.max_length_km      = None      # ← NEW
     plan.target_length_km   = None      # ← NEW
     plan.activity_type      = None

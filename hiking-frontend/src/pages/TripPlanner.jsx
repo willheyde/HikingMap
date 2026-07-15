@@ -5,6 +5,7 @@ import AmbientHue     from "../components/Ambienthue";
 import { useTrip }    from "../context/useTrip";
 import { useUser } from "../context/useUser";
 import { createUserGear } from "../api/usersService";
+import { GEAR_SECTION_BY_KEY, levelLabelFor } from "../data/gearCategories";
 
 // Gap categories (GearGapAnalyzer) → functional gear_category the
 // POST /users/:id/gear endpoint expects. Most already match; these don't.
@@ -336,11 +337,22 @@ const GearSuggestionModal = ({ suggestions, onConfirm, onDismiss, adding }) => {
 
 /* ─── Suggestion chips ───────────────────────────────────────────────── */
 const suggestions = [
-  { icon: "🏔️", text: "Plan a 3-day Smoky Mountains trip" },
-  { icon: "🌲", text: "Best gear for winter camping" },
-  { icon: "🗺️", text: "Build a Pacific Crest Trail section" },
-  { icon: "🎒", text: "What's missing from my gear list?" },
+  { icon: "🥾", text: "Plan a weekend of hikes" },
+  { icon: "🌊", text: "Find an easy trail with a water feature" },
+  { icon: "🏞️", text: "Show me a moderate hike under 5 miles" },
+  { icon: "🌲", text: "Find a scenic forest trail near me" },
 ];
+
+/* ─── Rigor (prep-level) badge metadata ──────────────────────────────────── */
+// Ordinal prep tier from the backend (rigor.RIGOR_TIERS). The badge tells the
+// user at a glance how much a trip demands — casual = "just go", expedition =
+// "full kit + consumables" — reinforcing the "easier than a map" goal.
+const RIGOR_META = {
+  casual:     { label: "Casual",     color: C.successText },
+  standard:   { label: "Standard",   color: C.muted },
+  serious:    { label: "Serious",    color: C.amber },
+  expedition: { label: "Expedition", color: C.errorText },
+};
 
 /* ─── Message bubble ─────────────────────────────────────────────────── */
 const Message = ({ msg }) => {
@@ -404,6 +416,142 @@ const Message = ({ msg }) => {
   );
 };
 
+/* ─── Inline gear-entry "blip" form (gear_review) ─────────────────────────── */
+// Styled as a margin note in the field journal, not an app form: a left ink
+// rule, fill-in-the-blank underline inputs in the reading serif, ink-tag chips,
+// and an understated "add it" link.
+const serifBody = "'Spectral', Georgia, serif";
+
+const GearLevelChip = ({ label, selected, disabled, onClick }) => (
+  <button onClick={disabled ? undefined : onClick} disabled={disabled}
+    title={disabled ? "Below what this trail calls for" : undefined}
+    style={{
+      padding: "5px 11px", borderRadius: 5,
+      cursor: disabled ? "not-allowed" : "pointer",
+      fontFamily: sans, fontSize: 11.5, fontWeight: selected ? 600 : 400,
+      background: selected ? C.amberDim : "transparent",
+      border: `1px solid ${selected ? C.amber : C.fieldBorder}`,
+      color: disabled ? C.muted : (selected ? C.amber : C.subtext),
+      opacity: disabled ? 0.45 : 1, transition: "all 0.15s",
+    }}>
+    {label}
+  </button>
+);
+
+// Underline "fill-in-the-blank" input — writing on a ruled line.
+const journalLineStyle = {
+  background: "transparent", border: "none", borderRadius: 0,
+  borderBottom: `1.5px solid ${C.fieldBorder}`, padding: "5px 2px",
+  color: C.heading, fontFamily: serifBody, fontSize: 13.5, outline: "none",
+  boxSizing: "border-box",
+};
+const lineFocus = (e) => { e.target.style.borderBottomColor = C.amber; };
+const lineBlur  = (e) => { e.target.style.borderBottomColor = C.fieldBorder; };
+
+// Rendered under an assistant message when Groq emitted a GEAR ADD signal.
+// Reuses the gear-page vocabulary (GEAR_SECTIONS): a level-chip row with the
+// minimum acceptable level preselected and lower levels disabled ("do more,
+// never less"), an optional temp input for sleep, and a name field. Non-binding
+// — the user can ignore it and keep chatting. On submit it persists to their
+// global kit and syncs the session so the AI won't re-flag the gap.
+const GearPromptForm = ({ prompt, onAdd }) => {
+  const gearCategory = prompt.gear_category || toGearCategory(prompt.category);
+  const section = GEAR_SECTION_BY_KEY[gearCategory];
+  const levels  = Array.isArray(section?.levels) ? section.levels : null;
+  const minIdx  = levels && prompt.min_level
+    ? levels.findIndex(l => l.value === prompt.min_level)
+    : -1;
+
+  // Preselect the minimum acceptable level (the user may go higher, not lower).
+  const [level, setLevel] = useState(minIdx >= 0 ? levels[minIdx].value : null);
+  const [name,  setName]  = useState("");
+  const [temp,  setTemp]  = useState(prompt.min_temp_f != null ? String(prompt.min_temp_f) : "");
+  const [busy,  setBusy]  = useState(false);
+  const [error, setError] = useState(null);
+
+  // Unmappable category (e.g. trekking_poles → misc, not a create_user_gear
+  // category): render nothing rather than a form that would fail to submit.
+  if (!section) return null;
+  const isSleep = !!section.sleepTemp;
+  const canAdd  = !busy && (!levels || level !== null);
+
+  const submit = async () => {
+    if (!canAdd) return;
+    const payload = {
+      category:      prompt.category,
+      gear_category: gearCategory,
+      name:          name.trim(),
+      level:         levels ? level : null,
+    };
+    if (isSleep && temp !== "") {
+      const t = Number(temp);
+      if (!Number.isNaN(t)) payload.temp_rating_f = t;
+    }
+    setBusy(true); setError(null);
+    try {
+      await onAdd(payload);   // on success chat.plan drops the gap → this form un-renders
+    } catch (e) {
+      setError(e.response?.data?.detail || e.message);
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div style={{ margin: "2px 0 16px 44px", maxWidth: 440,
+      padding: "8px 0 10px 14px", borderLeft: `2px solid ${C.amberBorder}` }}>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 7, marginBottom: 8 }}>
+        <span style={{ fontSize: 14 }}>{section.icon}</span>
+        <span style={{ fontFamily: serifBody, fontStyle: "italic", fontSize: 13.5, color: C.subtext }}>
+          {section.label.toLowerCase()}
+        </span>
+      </div>
+
+      {levels && (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: minIdx > 0 ? 6 : 10 }}>
+          {levels.map((l, i) => (
+            <GearLevelChip key={l.value} label={l.label}
+              selected={level === l.value}
+              disabled={minIdx >= 0 && i < minIdx}
+              onClick={() => setLevel(l.value)} />
+          ))}
+        </div>
+      )}
+      {minIdx > 0 && (
+        <div style={{ fontFamily: serifBody, fontStyle: "italic", fontSize: 11.5, color: C.muted, marginBottom: 10 }}>
+          at least {levelLabelFor(gearCategory, prompt.min_level)} for this one.
+        </div>
+      )}
+
+      {isSleep && (
+        <input type="number" value={temp} onChange={e => setTemp(e.target.value)}
+          onFocus={lineFocus} onBlur={lineBlur}
+          placeholder="temp rating °F"
+          style={{ ...journalLineStyle, width: 150, marginBottom: 10 }} />
+      )}
+
+      <div style={{ display: "flex", alignItems: "flex-end", gap: 14 }}>
+        <input value={name} onChange={e => setName(e.target.value)}
+          onKeyDown={e => { if (e.key === "Enter") submit(); }}
+          onFocus={lineFocus} onBlur={lineBlur}
+          placeholder="name it, if you like"
+          style={{ ...journalLineStyle, flex: 1, minWidth: 0 }} />
+        <button onClick={submit} disabled={!canAdd}
+          style={{ background: "transparent", border: "none", padding: "4px 2px", flexShrink: 0,
+            color: canAdd ? C.amber : C.muted, fontFamily: sans, fontSize: 12.5, fontWeight: 600,
+            letterSpacing: "0.03em", textDecoration: "underline", textUnderlineOffset: 3,
+            cursor: canAdd ? "pointer" : "default" }}>
+          {busy ? "adding…" : "add it"}
+        </button>
+      </div>
+      {error && (
+        <div style={{ fontFamily: serifBody, fontStyle: "italic", fontSize: 11.5, color: C.errorText, marginTop: 7 }}>
+          {error}
+        </div>
+      )}
+    </div>
+  );
+};
+
 /* ─── Hike option cards ───────────────────────────────────────────────── */
 // Renders the structured hike options (ChatResponse.hike_options) as
 // clickable cards instead of the old plain-text numbered list. Clicking a
@@ -446,10 +594,24 @@ const HikeOptionCards = ({ options, onPick }) => {
               opt.elevation_gain_m != null ? `${Math.round(opt.elevation_gain_m)} m gain` : null,
             ].filter(Boolean).join(" · ")}
           </div>
+          {RIGOR_META[opt.rigor_tier] && (
+            <div>
+              <span style={{
+                fontFamily: sans, fontSize: 10, fontWeight: 600, letterSpacing: 0.4,
+                textTransform: "uppercase", color: RIGOR_META[opt.rigor_tier].color,
+                background: C.amberDim, border: `1px solid ${C.amberBorder}`,
+                borderRadius: 999, padding: "2px 8px",
+              }}>
+                {RIGOR_META[opt.rigor_tier].label} prep
+              </span>
+            </div>
+          )}
           {(opt.distance_km != null || opt.state) && (
             <div style={{ fontFamily: sans, fontSize: 11, color: C.muted }}>
               {[
-                opt.distance_km != null ? `${opt.distance_km.toFixed(0)} km away` : null,
+                opt.distance_km != null
+                  ? `${opt.distance_km.toFixed(0)} km ${opt.distance_anchor ? `from ${opt.distance_anchor}` : "away"}`
+                  : null,
                 opt.state || null,
               ].filter(Boolean).join(", ")}
             </div>
@@ -470,7 +632,9 @@ const HikeOptionCards = ({ options, onPick }) => {
           {opt.gear_summary && (
             <div style={{
               fontFamily: sans, fontSize: 11, marginTop: 2,
-              color: opt.gear_summary === "kit looks solid" ? C.successText : C.errorText,
+              // Red only for an actual gap ("missing:" / "worth noting:"); the
+              // casual nudge and "kit looks solid" read as reassurance, not alarm.
+              color: /^(missing|worth noting):/.test(opt.gear_summary) ? C.errorText : C.successText,
             }}>
               {opt.gear_summary}
             </div>
@@ -492,12 +656,12 @@ const CHAT_STATUS_META = {
   reviewed:  { label: "Reviewed",        icon: "✓", color: "#7a6236" },
 };
 
-const StatusBadge = ({ status, size = 11 }) => {
+const StatusBadge = ({ status, size = 11, color }) => {
   const meta = CHAT_STATUS_META[status] || CHAT_STATUS_META.saved;
   return (
     <span style={{
       display: "inline-flex", alignItems: "center", gap: 4,
-      fontFamily: sans, fontSize: size, color: meta.color, fontWeight: 600,
+      fontFamily: sans, fontSize: size, color: color || meta.color, fontWeight: 600,
     }}>
       <span aria-hidden="true">{meta.icon}</span>
       <span>{meta.label}</span>
@@ -1022,7 +1186,9 @@ export default function TripPlanner() {
   const {
     chat,
     sendMessage:  sendChatMessage,
+    addGearFromChat,
     resetChat,
+    clearError,
     checkServiceHealth,
     activeTrip,
     loading,
@@ -1038,15 +1204,25 @@ export default function TripPlanner() {
   } = useTrip();
 
   const { messages, phase, serviceReady } = chat;
-  const { user } = useUser();
+  const { user, refreshItems } = useUser();
+
+  // Persist an item from an inline gear-review form, then re-pull the user's kit
+  // so the gear page reflects it. addGearFromChat also clears the resolved gap
+  // from chat.plan (which un-renders the form) and appends the AI's confirmation.
+  const handleGearAdd = async (payload) => {
+    const data = await addGearFromChat(payload);
+    if (user?.id) { try { await refreshItems(user.id); } catch { /* best-effort */ } }
+    return data;
+  };
   const location = useLocation();
   const navigate = useNavigate();
   // ── Local UI state ────────────────────────────────────────────────────────
   const [input,          setInput]          = useState("");
   const [sidebarOpen,    setSidebarOpen]    = useState(true);
-  const [userLocation,   setUserLocation]   = useState({ lat: null, lng: null });
-  const [locLabel,       setLocLabel]       = useState(null);
   const [savedToast,     setSavedToast]     = useState(false);
+  // Best-effort browser GPS, used to resolve "near me" chat queries. Populated
+  // silently on mount; falls back to the user's saved home_location on send.
+  const [userLocation,   setUserLocation]   = useState({ lat: null, lng: null });
   // Mark-as-done / review questionnaire state
   const [marking,          setMarking]          = useState(false);
   const [cancelling,       setCancelling]       = useState(false);
@@ -1069,9 +1245,10 @@ export default function TripPlanner() {
 
   // ── On mount: health check + chat history ─────────────────────────────────
   useEffect(() => {
+    clearError();          // drop any stale error banner (e.g. a 429 from a prior account)
     checkServiceHealth();
     loadChatList();
-  }, [checkServiceHealth, loadChatList]);
+  }, [clearError, checkServiceHealth, loadChatList]);
 
   // ── Trip saved — show toast and gear modal if suggestions exist ───────────
   //
@@ -1154,16 +1331,16 @@ export default function TripPlanner() {
   }, []);
 
   // ── Location ──────────────────────────────────────────────────────────────
-  const requestLocation = () => {
+  // Best-effort, silent: grab the browser's GPS once on mount so "near me"
+  // chat queries can be resolved. If denied/unavailable we simply fall back to
+  // the user's saved home_location in sendMessage.
+  useEffect(() => {
     if (!navigator.geolocation) return;
     navigator.geolocation.getCurrentPosition(
-      ({ coords }) => {
-        setUserLocation({ lat: coords.latitude, lng: coords.longitude });
-        setLocLabel("📍 On");
-      },
-      () => setLocLabel(null),
+      ({ coords }) => setUserLocation({ lat: coords.latitude, lng: coords.longitude }),
+      () => {},
     );
-  };
+  }, []);
 
   // ── Gear suggestion handlers ──────────────────────────────────────────────
 
@@ -1364,24 +1541,27 @@ export default function TripPlanner() {
                     {group.label}
                   </span>
                 </div>
-                {group.items.map(h => (
+                {group.items.map(h => {
+                  const isActive = activeChatId === h.id;
+                  return (
                   <button key={h.id} onClick={() => handleOpenChat(h.id)}
                     style={{
                       width: "100%", padding: "9px 10px",
-                      background: activeChatId === h.id ? C.amberDim : "none",
-                      border: `1px solid ${activeChatId === h.id ? C.amberBorder : "transparent"}`,
+                      background: isActive ? C.amber : "none",
+                      border: `1px solid ${isActive ? C.amber : "transparent"}`,
                       borderRadius: 8, cursor: "pointer", textAlign: "left",
                       marginBottom: 3, transition: "all 0.15s",
                     }}
-                    onMouseEnter={e => { if (activeChatId !== h.id) e.currentTarget.style.background = C.fieldBg; }}
-                    onMouseLeave={e => { if (activeChatId !== h.id) e.currentTarget.style.background = "none"; }}
+                    onMouseEnter={e => { if (!isActive) e.currentTarget.style.background = C.fieldBg; }}
+                    onMouseLeave={e => { if (!isActive) e.currentTarget.style.background = "none"; }}
                   >
-                    <div style={{ fontSize: 12.5, color: activeChatId === h.id ? C.amberText : C.label, marginBottom: 3, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                    <div style={{ fontSize: 12.5, color: isActive ? C.amberText : C.label, marginBottom: 3, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
                       {h.title}
                     </div>
-                    <StatusBadge status={h.status} />
+                    <StatusBadge status={h.status} color={isActive ? C.amberText : undefined} />
                   </button>
-                ))}
+                  );
+                })}
               </div>
             ))}
           </div>
@@ -1572,6 +1752,25 @@ export default function TripPlanner() {
                   );
                 })}
 
+                {/* Proactive gear tray — while reviewing gear, every identified
+                    gap gets the same select-your-own UI as the profile gear page,
+                    preselected to the minimum this trail needs. Sourced from the
+                    live plan, so a form disappears the moment its gap is resolved
+                    and the whole tray hides once the kit is set. */}
+                {phase === "gear_review" && chat.plan?.gear_gaps?.length > 0 && (
+                  <div style={{ marginBottom: 24 }}>
+                    <div style={{
+                      fontFamily: serifBody, fontStyle: "italic", fontSize: 13, color: C.subtext,
+                      margin: "0 0 10px 44px",
+                    }}>
+                      Jot down what you're carrying:
+                    </div>
+                    {chat.plan.gear_gaps.map((gap, gi) => (
+                      <GearPromptForm key={(gap.category || "") + gi} prompt={gap} onAdd={handleGearAdd} />
+                    ))}
+                  </div>
+                )}
+
                 {loading && (
                   <div style={{ display: "flex", gap: 12, marginBottom: 24, animation: "fadeIn 0.2s ease" }}>
                     <div style={{
@@ -1605,7 +1804,7 @@ export default function TripPlanner() {
               <div style={{
                 background: inputBlocked ? "rgba(162,133,90,0.5)" : C.inputBg,
                 border: `1px solid ${C.inputBorder}`,
-                borderRadius: 18, overflow: "hidden",
+                borderRadius: 18, overflow: "hidden", position: "relative",
                 transition: "border-color 0.15s, background 0.15s",
                 opacity: inputBlocked && serviceReady === false ? 0.6 : 1,
               }}
@@ -1642,59 +1841,25 @@ export default function TripPlanner() {
                   }}
                 />
 
-                <div style={{
-                  display: "flex", alignItems: "center", justifyContent: "space-between",
-                  padding: "8px 12px", borderTop: `1px solid ${C.inputBorder}`,
-                }}>
-                  <div style={{ display: "flex", gap: 4 }}>
-                    <button title="Attach"
-                      style={{ background:"none", border:"none", cursor:"pointer", padding:"4px 8px", borderRadius:8, color:C.muted, fontSize:13, fontFamily:sans, display:"flex", alignItems:"center", gap:5, transition:"color 0.15s" }}
-                      onMouseEnter={e => e.currentTarget.style.color = C.label}
-                      onMouseLeave={e => e.currentTarget.style.color = C.muted}
-                    ><span>＋</span><span style={{ fontSize:11 }}>Attach</span></button>
-
-                    <button title="Share my location" onClick={requestLocation}
-                      style={{
-                        background: userLocation.lat ? C.amberDim : "none",
-                        border: userLocation.lat ? `1px solid ${C.amberBorder}` : "none",
-                        cursor:"pointer", padding:"4px 8px", borderRadius:8,
-                        color: userLocation.lat ? C.amber : C.muted,
-                        fontSize:13, fontFamily:sans,
-                        display:"flex", alignItems:"center", gap:5, transition:"all 0.15s",
-                      }}
-                      onMouseEnter={e => { if (!userLocation.lat) e.currentTarget.style.color = C.label; }}
-                      onMouseLeave={e => { if (!userLocation.lat) e.currentTarget.style.color = C.muted; }}
-                    >
-                      <span>📍</span>
-                      <span style={{ fontSize:11 }}>{locLabel || "Location"}</span>
-                    </button>
-
-                    <button title="My gear"
-                      style={{ background:"none", border:"none", cursor:"pointer", padding:"4px 8px", borderRadius:8, color:C.muted, fontSize:13, fontFamily:sans, display:"flex", alignItems:"center", gap:5, transition:"color 0.15s" }}
-                      onMouseEnter={e => e.currentTarget.style.color = C.label}
-                      onMouseLeave={e => e.currentTarget.style.color = C.muted}
-                    ><span>🎒</span><span style={{ fontSize:11 }}>My gear</span></button>
-                  </div>
-
-                  <button
-                    onClick={() => sendMessage()}
-                    disabled={!input.trim() || inputBlocked}
-                    style={{
-                      background: input.trim() && !inputBlocked ? C.amber : C.fieldBg,
-                      border: `1px solid ${input.trim() && !inputBlocked ? C.amber : C.fieldBorder}`,
-                      borderRadius: 10, width: 34, height: 34,
-                      cursor: input.trim() && !inputBlocked ? "pointer" : "default",
-                      display: "flex", alignItems: "center", justifyContent: "center",
-                      transition: "all 0.15s", flexShrink: 0,
-                    }}
-                  >
-                    <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-                      <path d="M7 1L7 13M7 1L2 6M7 1L12 6"
-                        stroke={input.trim() && !inputBlocked ? C.amberText : C.muted}
-                        strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
-                    </svg>
-                  </button>
-                </div>
+                <button
+                  onClick={() => sendMessage()}
+                  disabled={!input.trim() || inputBlocked}
+                  style={{
+                    position: "absolute", right: 12, bottom: 11,
+                    background: input.trim() && !inputBlocked ? C.amber : C.fieldBg,
+                    border: `1px solid ${input.trim() && !inputBlocked ? C.amber : C.fieldBorder}`,
+                    borderRadius: 10, width: 34, height: 34,
+                    cursor: input.trim() && !inputBlocked ? "pointer" : "default",
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                    transition: "all 0.15s", flexShrink: 0,
+                  }}
+                >
+                  <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                    <path d="M7 1L7 13M7 1L2 6M7 1L12 6"
+                      stroke={input.trim() && !inputBlocked ? C.amberText : C.muted}
+                      strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
+                  </svg>
+                </button>
               </div>
 
               <div style={{ textAlign: "center", marginTop: 8 }}>

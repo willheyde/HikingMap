@@ -1,0 +1,23 @@
+# Never bake secrets or local state into the image.
+.env
+.env.*
+*.env
+
+# Python caches / build artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+
+# Large ingestion data that isn't part of the web server
+ingestion/worldcover/
+*.tif
+*.tiff
+
+# VCS / editor
+.git/
+.gitignore
+.vscode/
+.idea/

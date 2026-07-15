@@ -139,6 +139,24 @@ def length_bucket_tag(length_km: float) -> str:
     return "multi_day"                         # 50+ km   — multiple nights
 
 
+# ── Elevation-gain-tier tag ───────────────────────────────────────────────────
+
+# The single gain-tier tag derive_tags() assigns from elevation gain. Isolated
+# here (like LENGTH_BUCKET_TAGS) so the elevation/difficulty backfills can swap
+# ONLY this tag when gain is corrected — without regenerating and thereby
+# clobbering the Overpass-enrichment feature tags (waterfall, lake, summit, …)
+# or provenance markers (overpass_enriched, dem_elevation) on the row.
+GAIN_TIER_TAGS = ("flat", "gentle_gain", "moderate_gain", "high_gain", "very_high_gain")
+
+
+def gain_tier_tag(elevation_gain_m: float) -> str:
+    if elevation_gain_m < 100:   return "flat"
+    if elevation_gain_m < 400:   return "gentle_gain"
+    if elevation_gain_m < 800:   return "moderate_gain"
+    if elevation_gain_m < 1500:  return "high_gain"
+    return "very_high_gain"
+
+
 # ── Season ─────────────────────────────────────────────────────────────────────
 
 def infer_season(tags: dict) -> tuple[int, int]:
@@ -230,16 +248,7 @@ def derive_tags(
     tags.add(length_bucket_tag(length_km))
 
     # ── Elevation gain tier ────────────────────────────────────────────────────
-    if elevation_gain_m < 100:
-        tags.add("flat")
-    elif elevation_gain_m < 400:
-        tags.add("gentle_gain")
-    elif elevation_gain_m < 800:
-        tags.add("moderate_gain")
-    elif elevation_gain_m < 1500:
-        tags.add("high_gain")
-    else:
-        tags.add("very_high_gain")
+    tags.add(gain_tier_tag(elevation_gain_m))
 
     # ── Altitude / terrain tier ────────────────────────────────────────────────
     if max_altitude_m < 500:

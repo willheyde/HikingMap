@@ -11,9 +11,12 @@ const body  = "'Spectral', Georgia, serif";
 const mono  = "'Courier New', Courier, monospace";
 
 const DIFFICULTY = {
-  EASY:     { label: "Easy",     color: "#6e5a2e", bg: "#d8c48e", border: "rgba(122,98,54,0.4)" },
-  MODERATE: { label: "Moderate", color: "#9a5f1f", bg: "#e4cb9e", border: "rgba(168,59,44,0.45)" },
-  HARD:     { label: "Hard",     color: "#96301f", bg: "#e6c29a", border: "rgba(150,48,31,0.4)" },
+  EASY:      { label: "Easy",      color: "#6e5a2e", bg: "#d8c48e", border: "rgba(122,98,54,0.4)" },
+  MODERATE:  { label: "Moderate",  color: "#9a5f1f", bg: "#e4cb9e", border: "rgba(168,59,44,0.45)" },
+  // DB difficulty tiers are EASY/MODERATE/DIFFICULT/EXPERT (PyObjects/Hike.py).
+  DIFFICULT: { label: "Difficult", color: "#96301f", bg: "#e6c29a", border: "rgba(150,48,31,0.4)" },
+  EXPERT:    { label: "Expert",    color: "#7a1f14", bg: "#e0b48c", border: "rgba(122,31,20,0.5)" },
+  HARD:      { label: "Hard",      color: "#96301f", bg: "#e6c29a", border: "rgba(150,48,31,0.4)" }, // legacy alias
 };
 
 function HikeSummaryCard({ hike , onClick }) {

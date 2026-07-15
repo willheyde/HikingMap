@@ -33,6 +33,23 @@ _MILE_APPROX_RE = re.compile(
     r"(?:around|about|roughly|approximately)\s*(\d+(?:\.\d+)?)\s*mi(?:les?)?\b",
     re.IGNORECASE,
 )
+# ← NEW: length FLOOR ("at least 3 miles", "minimum 3mi", "over 3 miles",
+# "longer than 3 miles"). Must be checked BEFORE _MILE_SINGLE_RE, since the
+# bare-number pattern also matches the "3 miles" inside "at least 3 miles" and
+# would otherwise treat a MINIMUM as a MAXIMUM — silently inverting the request
+# and hard-excluding the very trails that satisfy it.
+_MILE_FLOOR_RE = re.compile(
+    r"\b(?:at least|no less than|no fewer than|min(?:imum)?(?:\s+of)?|"
+    # "(?<!no )more than" so the ceiling phrase "no more than" (at most) is NOT
+    # swallowed here — text reaching this is already lowercased by the caller.
+    r"(?<!no )more than|over|longer than|greater than)\s*"
+    r"(\d+(?:\.\d+)?)\s*mi(?:les?)?\b",
+    re.IGNORECASE,
+)
+# The trailing-plus floor form: "3+ miles", "5+ mi".
+_MILE_FLOOR_PLUS_RE = re.compile(
+    r"(\d+(?:\.\d+)?)\s*\+\s*mi(?:les?)?\b", re.IGNORECASE
+)
 _NEGATED_DIFFICULTY_RE = re.compile(
     r"\b(?:no|not|nothing|without|avoid)\b(?:\s+\w+){0,6}\s+"
     r"\b(?:strenuous|difficult|hard|challeng\w*)\b"
@@ -45,16 +62,74 @@ ACTIVITY_KEYWORDS = {
     "mountaineering": ["glacier", "summit", "mountaineer", "ice axe", "crampon", "alpine"],
 }
 
+# Activities that imply a night out. If one of these is detected but no explicit
+# day count was given, duration_days is only an assumption → duration_ambiguous.
+OVERNIGHT_ACTIVITIES = frozenset({"backpacking", "extended", "overnight", "mountaineering"})
+
+# When the user asks for an overnight/backpacking trip but names no explicit
+# length, a trail's own km is the only distance signal we have — and without a
+# floor the search just returns the nearest *short* day-hikes (a 4 km "half day"
+# loop for a "backpacking" ask). Derive a duration-scaled minimum so day-length
+# trails drop out. Deliberately conservative (10 km/day, not 15) so real regions
+# still return candidates; find_hikes_with_fallback discloses honestly when a
+# sparse area has nothing long enough rather than silently serving day hikes.
+OVERNIGHT_MIN_KM_PER_DAY = 10.0
+
+
+def _effective_min_length(min_length_km, max_length_km, target_length_km, activity, duration_days,
+                          is_specific_place=False):
+    """Length floor for the search. An explicit "at least N mi" always wins; an
+    overnight activity with NO stated length at all gets a duration-scaled floor;
+    a plain day-hike gets none.
+
+    Critically, if the user gave a ceiling or an approximate length ("around 8
+    miles", "under 5 miles") we impose NO floor — their number is the intent, and
+    a duration floor above their ceiling would make min > max and return zero
+    hikes for a perfectly reasonable request.
+
+    `is_specific_place`: when the user named a specific destination point (e.g.
+    "Linville Gorge") rather than a broad region or "near me", the auto overnight
+    floor is skipped. A named wilderness's real backpacking trails are often short
+    segments stitched into loops (Conley Cove 3.6 km, Spence Ridge 4.6 km, …); a
+    20 km floor would hard-exclude the entire network and fall back to long
+    through-trails that only pass nearby. Proximity + tag ranking carries relevance
+    for a specific place. The floor still applies to region/near-me searches, where
+    it stops a vague "backpacking" ask from returning a 3 km greenway."""
+    if min_length_km is not None:
+        return min_length_km
+    if max_length_km is not None or target_length_km is not None:
+        return None
+    if activity in OVERNIGHT_ACTIVITIES and not is_specific_place:
+        return OVERNIGHT_MIN_KM_PER_DAY * max(1, int(duration_days or 1))
+    return None
+
 DURATION_PATTERNS = [
-    (r"(\d+)\s*night",    lambda m: int(m.group(1)) + 1),
-    (r"(\d+)\s*day",      lambda m: int(m.group(1))),
-    (r"a\s+night",        lambda m: 2),
-    (r"a\s+weekend",      lambda m: 3),
-    (r"a\s+week",         lambda m: 7),
-    (r"a\s+few\s+days",   lambda m: 3),
+    (r"(\d+)\s*night",              lambda m: int(m.group(1)) + 1),
+    (r"(\d+)\s*day",               lambda m: int(m.group(1))),
+    (r"a\s+night",                 lambda m: 2),
+    (r"a\s+couple\s+(?:of\s+)?days", lambda m: 2),
+    (r"long\s+weekend",            lambda m: 3),
+    (r"a\s+weekend",               lambda m: 3),
+    (r"a\s+week",                  lambda m: 7),
+    (r"a\s+few\s+days",            lambda m: 3),
+    (r"several\s+days",            lambda m: 3),
+    (r"multi[\s-]?day",            lambda m: 3),
 ]
 
 DESTINATION_PREPS = r"(?:in|near|at|around|through|across)\s+(?:the\s+)?(.+?)(?:\s+for|\s+this|\s+and|\.|$)"
+
+# Relocation cues — a mid-search "move the map" ("closer to Asheville", "how
+# about Boone", "over near Brevard"). Broader than DESTINATION_PREPS because
+# "closer to"/"how about" aren't destination prepositions, so the normal
+# destination parse never catches them. Deliberately omits bare "in"/"at" (too
+# noisy mid-sentence); the caller geocode-confirms the candidate and checks it's
+# actually a different place, so a stray capture just no-ops.
+_RELOCATION_PREPS = re.compile(
+    r"(?:closer to|nearer(?:\s+to)?|over\s+(?:near|by)|how about(?:\s+near)?|"
+    r"what about(?:\s+near)?|towards?|around|near)\s+(?:the\s+)?(.+?)"
+    r"(?:\s+for\b|\s+this\b|\s+and\b|\s+instead\b|[.,?!]|$)",
+    re.IGNORECASE,
+)
 
 # ── Tag derivation maps ────────────────────────────────────────────────────────
 
@@ -134,6 +209,68 @@ _LOCATION_CANDIDATE_FILLER_WORDS: frozenset[str] = frozenset({
     "a", "an", "the", "some", "any", "really", "very",
     "nice", "good", "great", "beautiful", "pretty",
     "small", "big", "little",
+})
+
+# Conversational / grammatical words that are NOT place names. Used by
+# has_possible_place_token() to decide whether a message that named no
+# recognized location nonetheless contains a bare proper-noun place ("Linville
+# Gorge") — anything left after removing these plus feature/filler words is
+# treated as a candidate place. Deliberately broad on the safe side: a false
+# positive here just costs one wasted parse/geocode cycle (the parser fails safe
+# to None), while a false negative strands a real destination the user typed.
+_PLACE_SCAN_STOPWORDS: frozenset[str] = frozenset({
+    # difficulty / activity / trip-shape / length
+    "easy", "moderate", "hard", "challenging", "difficult", "strenuous", "tough",
+    "gentle", "short", "long", "longer", "shorter", "quick", "flat", "steep",
+    "hike", "hiking", "hikes", "trail", "trails", "walk", "walking", "trek",
+    "backpacking", "backpack", "camping", "camp", "overnight", "trip", "trips",
+    "adventure", "outing", "day", "days", "night", "nights", "week", "weekend",
+    "mile", "miles", "mi", "km", "kilometer", "kilometers", "hour", "hours",
+    # pronouns / auxiliaries
+    "i", "me", "my", "mine", "we", "us", "our", "you", "your", "it", "its",
+    "am", "is", "are", "was", "were", "be", "been", "being", "do", "does", "did",
+    "doing", "have", "has", "had", "having", "will", "would", "could", "should",
+    "can", "may", "might", "must", "shall",
+    # common verbs
+    "want", "wanna", "like", "love", "looking", "look", "go", "going", "get",
+    "getting", "find", "take", "see", "plan", "planning", "think", "thinking",
+    "hope", "hoping", "prefer", "need", "try", "trying", "explore",
+    # articles / conjunctions / prepositions
+    "and", "or", "but", "so", "then", "with", "without", "for", "to", "of",
+    "in", "on", "at", "by", "from", "as", "that", "this", "these", "those",
+    "near", "close", "closer", "around", "about", "over", "under", "up", "down",
+    "out", "into", "than", "too", "if", "there",
+    # politeness / discourse markers
+    "sorry", "please", "thanks", "thank", "ok", "okay", "yeah", "yes", "no",
+    "nope", "yep", "sure", "maybe", "actually", "just", "really", "kinda",
+    "kind", "bit", "well", "lets", "let", "also", "still", "again", "hey",
+    # generic nouns / quantifiers
+    "something", "anything", "somewhere", "anywhere", "place", "spot", "options",
+    "option", "one", "ones", "more", "less", "few", "couple", "some", "any",
+    "nothing", "everything", "stuff", "things", "thing",
+})
+
+# Words that, alongside a state code/name, mean the user just named a STATE
+# ("anywhere in NC is fine") rather than a specific place. Used to route such
+# messages to a state-scoped search instead of geocoding the literal filler.
+_STATE_ONLY_FILLER: frozenset[str] = frozenset({
+    "anywhere", "somewhere", "everywhere", "around", "is", "are", "fine",
+    "works", "work", "good", "great", "okay", "ok", "sure", "cool", "area",
+    "region", "state", "place", "somewhere", "anyplace", "please", "thanks",
+    "in", "of", "within", "throughout",
+})
+
+# Words that mean a message is a difficulty/length/generic REFINEMENT, not a
+# place — so "how about something easier" / "closer to a shorter one" don't get
+# mistaken for a relocation. None of these ever appear in a real place name.
+_NON_PLACE_WORDS: frozenset[str] = frozenset({
+    "easy", "easier", "moderate", "hard", "harder", "difficult", "difficulty",
+    "challenging", "strenuous", "tough", "tougher", "gentle", "gentler", "mild",
+    "shorter", "longer", "bigger", "smaller", "steeper", "flatter", "closer",
+    "nearer", "farther", "further", "short", "long", "flat", "steep", "hilly",
+    "something", "anything", "somewhere", "anywhere", "one", "another", "it",
+    "that", "this", "those", "these", "trail", "trails", "hike", "hikes",
+    "route", "routes", "option", "options", "different", "else",
 })
 
 CAMPING_ACTIVITIES  = {"overnight", "backpacking", "extended"}
@@ -283,6 +420,45 @@ def _find_state_abbreviation(source: str) -> Optional[str]:
     return None
 
 
+def _is_state_only_candidate(candidate: str, state_abbr: str) -> bool:
+    """
+    True when the destination candidate is essentially just a state name/code
+    plus filler ("nc is fine", "anywhere in north carolina") — i.e. the user
+    named a STATE, not a specific place. Such messages should search the state,
+    not geocode the literal filler string (which matched a Minnesota town).
+    """
+    state_full = _STATE_ABBR_TO_NAME.get(state_abbr.upper(), "")
+    text = candidate.lower()
+    if state_full:
+        text = text.replace(state_full, " ")
+    leftovers = [
+        w for w in re.split(r"[^a-z]+", text)
+        if w and w != state_abbr.lower()
+        and w not in _STATE_ONLY_FILLER
+        and w not in _LOCATION_CANDIDATE_FILLER_WORDS
+    ]
+    return not leftovers
+
+
+# ── Exceptions ─────────────────────────────────────────────────────────────────
+
+
+class DestinationNotFound(ValueError):
+    """
+    Raised by parse() when a place was named but could not be geocoded (a
+    misspelling, or somewhere we simply can't resolve). Subclasses ValueError so
+    every existing `except ValueError` keeps catching it, while callers that want
+    to surface a specific "did you mean…?" reply can catch it by type.
+
+    Carries the attempted display string so the caller can name it back to the
+    user without re-deriving it.
+    """
+
+    def __init__(self, place: str):
+        self.place = place
+        super().__init__(f"Could not locate '{place}' — try being more specific.")
+
+
 # ── TripIntent dataclass ───────────────────────────────────────────────────────
 
 @dataclass
@@ -302,8 +478,13 @@ class TripIntent:
     destination_type: str  = "point"
     region_tag:       Optional[str] = None
     state:            Optional[str] = None    # ← NEW: matches hikes.state column
+    min_length_km:    Optional[float] = None  # ← NEW: length FLOOR ("at least N mi")
     max_length_km:    Optional[float] = None
     target_length_km: Optional[float] = None
+    # True when the request implies an overnight (backpacking/extended/etc.) but
+    # gave no explicit day count, so duration_days below is only an assumption.
+    # The destination phase uses this to confirm trip length rather than guess.
+    duration_ambiguous: bool = False
 
 
 @dataclass
@@ -319,6 +500,7 @@ class RefinementIntent:
     preferred_tags:  list[str]
     priority_tags:   list[str]
     avoid_permits:   bool
+    min_length_km:    Optional[float] = None   # ← NEW: length FLOOR ("at least N mi")
     max_length_km:    Optional[float] = None   # ← NEW
     target_length_km: Optional[float] = None
 
@@ -350,7 +532,7 @@ class TripInputParser:
         user_lng:   Optional[float] = None,
     ) -> TripIntent:
         text = user_input.lower().strip()
-        max_length_km, target_length_km = self._extract_length_constraints(text)   # ← renamed
+        min_length_km, max_length_km, target_length_km = self._extract_length_constraints(text)   # ← renamed
 
         if any(re.search(p, text) for p in NEAR_ME_PATTERNS):
             if user_lat is None or user_lng is None:
@@ -378,9 +560,13 @@ class TripInputParser:
                 preferred_tags   = preferred,
                 priority_tags    = priority,
                 avoid_permits    = avoid_permits,
+                duration_ambiguous = duration is None and activity in OVERNIGHT_ACTIVITIES,
                 destination_type = "point",
                 region_tag       = region_tag,
                 state            = state,
+                # near-me keeps the overnight floor: a "backpacking near me" ask
+                # should still mean real trails, not a 3 km loop by the user's house.
+                min_length_km    = _effective_min_length(min_length_km, max_length_km, target_length_km, activity or "day_hike", duration or 1, is_specific_place=False),
                 max_length_km    = max_length_km,
                 target_length_km = target_length_km,   # ← NEW
             )
@@ -394,10 +580,18 @@ class TripInputParser:
         state = regex_state   # ← Bug 1 fix: seed state so the LLM-fallback path below always has a value
 
         if destination_raw:
-            destination_full = self.national_parks.get(destination_raw, destination_raw.title())
-            coords = self._geocode(destination_full)
+            # "Anywhere in NC is fine" captures the filler "nc is fine" — search
+            # the STATE, not that literal string (which geocoded to Minnesota).
+            if regex_state and _is_state_only_candidate(destination_raw, regex_state):
+                destination_full = _STATE_ABBR_TO_NAME[regex_state].title()
+                dest_type        = "region"
+            else:
+                destination_full = self.national_parks.get(destination_raw, destination_raw.title())
+            coords = self._geocode(destination_full, state=regex_state)
             if coords:
-                state = coords.get("state") or regex_state
+                # An explicitly-typed state wins over a low-confidence geocode
+                # match's state, so a stray worldwide hit can't relabel NC as MN.
+                state = regex_state or coords.get("state")
                 return TripIntent(
                     destination_raw  = destination_raw,
                     destination_full = destination_full,
@@ -411,19 +605,33 @@ class TripInputParser:
                     preferred_tags   = preferred,
                     priority_tags    = priority,
                     avoid_permits    = avoid_permits,
+                    duration_ambiguous = duration is None and activity in OVERNIGHT_ACTIVITIES,
                     destination_type = dest_type,
                     region_tag       = region_tag,
                     state            = state,
+                    # A specific named point ("Linville Gorge") skips the auto
+                    # overnight floor — trust proximity/tag ranking. A region
+                    # ("NC") keeps it.
+                    min_length_km    = _effective_min_length(min_length_km, max_length_km, target_length_km, activity or "day_hike", duration or (1 if activity == "day_hike" else 2), is_specific_place=(dest_type == "point")),
                     max_length_km    = max_length_km,
                     target_length_km = target_length_km,   # ← NEW
                 )
+            # The regex confidently captured a place, but it wouldn't geocode.
+            # Re-running the LLM extractor on the same words would burn a Groq
+            # call only to extract the identical (still-unresolvable) string —
+            # so fail fast here and let the caller surface a "did you mean…?"
+            # reply. The _llm_extract fallback below is reserved for messages
+            # where the regex found NO destination candidate at all.
+            raise DestinationNotFound(destination_full)
 
         extracted = self._llm_extract(user_input)
         dest = extracted.get("destination") or ""
         destination_full = self.national_parks.get(dest.lower(), dest)
-        coords = self._geocode(destination_full)
+        coords = self._geocode(destination_full, state=regex_state)
         if not coords:
-            raise ValueError(f"Could not locate '{destination_full}' — try being more specific.")
+            raise DestinationNotFound(destination_full)
+        # Explicit state wins; else adopt the (now US-scoped) geocoded state.
+        state = regex_state or coords.get("state")
 
         llm_features = extracted.get("features", [])
         preferred = sorted(set(preferred) | {f for f in llm_features if f in FEATURE_KEYWORD_MAP})
@@ -441,9 +649,16 @@ class TripInputParser:
             preferred_tags   = preferred,
             priority_tags    = priority,
             avoid_permits    = avoid_permits,
+            duration_ambiguous = (
+                (extracted.get("duration_days") or duration) is None
+                and (extracted.get("activity_type") or activity) in OVERNIGHT_ACTIVITIES
+            ),
             destination_type = dest_type,
             region_tag       = region_tag,
             state            = state,
+            # Same rule as the regex path: a specific named point skips the auto
+            # overnight floor; a region keeps it.
+            min_length_km    = _effective_min_length(min_length_km, max_length_km, target_length_km, extracted.get("activity_type") or activity or "day_hike", extracted.get("duration_days") or duration or 1, is_specific_place=(dest_type == "point")),
             max_length_km    = max_length_km,
             target_length_km = target_length_km,   # ← NEW
     )
@@ -454,7 +669,7 @@ class TripInputParser:
         duration   = self._extract_duration(text)
         difficulty = self._extract_difficulty(text)
         required, preferred, avoid_permits, priority = self._extract_tags(text, activity, difficulty)
-        max_length_km, target_length_km = self._extract_length_constraints(text)   # ← NEW
+        min_length_km, max_length_km, target_length_km = self._extract_length_constraints(text)   # ← NEW
         return RefinementIntent(
             activity_type    = activity,
             duration_days    = duration,
@@ -463,15 +678,23 @@ class TripInputParser:
             preferred_tags   = preferred,
             priority_tags    = priority,
             avoid_permits    = avoid_permits,
+            min_length_km    = min_length_km,       # ← NEW
             max_length_km    = max_length_km,       # ← NEW
             target_length_km = target_length_km,    # ← NEW
         )
-    def _extract_length_constraints(self, text: str) -> tuple[Optional[float], Optional[float]]:
+    def _extract_length_constraints(
+        self, text: str
+    ) -> tuple[Optional[float], Optional[float], Optional[float]]:
         """
-        Returns (max_length_km, target_length_km).
+        Returns (min_length_km, max_length_km, target_length_km).
 
-        max_length_km is the hard ceiling forwarded to HikeService.search_hikes()
-        -> HikeRepository.search() as `length_km <= ...`.
+        min_length_km is a hard FLOOR forwarded to HikeService.search_hikes()
+        -> HikeRepository.search() as `length_km >= ...`. Set for "at least N
+        miles", "minimum N", "over N", "longer than N", and the "N+ miles" form.
+
+        max_length_km is the hard ceiling forwarded as `length_km <= ...`.
+
+        A range ("3 to 5 miles") sets BOTH bounds.
 
         target_length_km is set ONLY for approximate phrasing ("around 3 miles")
         and is never passed to the DB — HikeSearchService's length-proximity
@@ -485,22 +708,29 @@ class TripInputParser:
         """
         m = _MILE_RANGE_RE.search(text)
         if m:
-            return round(max(float(m.group(1)), float(m.group(2))) * KM_PER_MILE, 1), None
+            lo, hi = sorted((float(m.group(1)), float(m.group(2))))
+            return round(lo * KM_PER_MILE, 1), round(hi * KM_PER_MILE, 1), None
+
+        # FLOOR before the bare-number ceiling — "at least 3 miles" must not be
+        # read as "at most 3 miles" (see _MILE_FLOOR_RE comment).
+        m = _MILE_FLOOR_RE.search(text) or _MILE_FLOOR_PLUS_RE.search(text)
+        if m:
+            return round(float(m.group(1)) * KM_PER_MILE, 1), None, None
 
         m = _MILE_CEILING_RE.search(text)
         if m:
-            return round(float(m.group(1)) * KM_PER_MILE, 1), None
+            return None, round(float(m.group(1)) * KM_PER_MILE, 1), None
 
         m = _MILE_APPROX_RE.search(text)
         if m:
             target_km = round(float(m.group(1)) * KM_PER_MILE, 1)
-            return round(target_km * 1.2, 1), target_km
+            return None, round(target_km * 1.2, 1), target_km
 
         m = _MILE_SINGLE_RE.search(text)
         if m:
-            return round(float(m.group(1)) * KM_PER_MILE, 1), None
+            return None, round(float(m.group(1)) * KM_PER_MILE, 1), None
 
-        return self._extract_time_budget_km(text), None
+        return None, self._extract_time_budget_km(text), None
     def _extract_time_budget_km(self, text: str) -> Optional[float]:
         """
         Converts a stated single-hike time budget into an approximate
@@ -656,6 +886,63 @@ class TripInputParser:
                 return True
 
         return False
+
+    def has_possible_place_token(self, message: str) -> bool:
+        """
+        True if the message contains a word that could be a place name — a token
+        that is not a known feature/filler/conversational word.
+
+        Complements has_location_signal(): that only recognizes places via a
+        preposition phrase or a lookup hit, so a bare proper-noun reply
+        ("Linville Gorge", typed when we asked "where to?") registers as NO
+        location signal — and because "gorge" is itself the `canyon` feature
+        keyword, trip_chat's no-destination short-circuit would then strand it in
+        the tag-accumulate branch and never geocode. Consulting this lets such a
+        message fall through to a real parse/geocode attempt.
+
+        Errs toward True on purpose: a false positive costs one wasted
+        parse/geocode cycle (parse() fails safe to None), while a false negative
+        loses a destination the user actually named.
+        """
+        for w in re.findall(r"[a-z']+", (message or "").lower()):
+            if (
+                w in _LOCATION_CANDIDATE_FILLER_WORDS
+                or w in ALL_FEATURE_KEYWORDS
+                or w in _PLACE_SCAN_STOPWORDS
+            ):
+                continue
+            return True
+        return False
+
+    def extract_relocation_place(self, text: str) -> Optional[str]:
+        """
+        A place named as a MID-SEARCH MOVE — "closer to Asheville", "how about
+        Boone", "over near Brevard". Returns the candidate place string, or None
+        when there's no relocation cue or the candidate is only trail-feature
+        words ("closer to a lake") or a length ("around 5 miles").
+
+        The refine handler geocode-confirms this (US-scoped) and only relocates
+        when it resolves to coordinates meaningfully different from the current
+        destination — so a loose capture here safely no-ops.
+        """
+        if not text or not text.strip():
+            return None
+        m = _RELOCATION_PREPS.search(text.strip())
+        if not m:
+            return None
+        candidate = m.group(1).strip().rstrip(".,?! ")
+        if not candidate or any(ch.isdigit() for ch in candidate):
+            return None   # "around 5 miles" is a length refinement, not a place
+        words = [w for w in candidate.lower().split()
+                 if w not in _LOCATION_CANDIDATE_FILLER_WORDS]
+        if not words:
+            return None
+        if all(w in ALL_FEATURE_KEYWORDS for w in words):
+            return None   # "a lake" / "a waterfall" — a feature, not a place
+        if any(w in _NON_PLACE_WORDS for w in words):
+            return None   # "something easier", "a shorter one" — a refinement, not a place
+        return candidate
+
     def _extract_activity(self, text: str) -> Optional[str]:
         for activity, keywords in ACTIVITY_KEYWORDS.items():
             if any(kw in text for kw in keywords):
@@ -771,11 +1058,21 @@ class TripInputParser:
 
     # ── Geocoding ──────────────────────────────────────────────────────────────
 
-    def _geocode(self, place: str) -> Optional[dict]:
+    def _geocode(self, place: str, state: Optional[str] = None) -> Optional[dict]:
+        # Scope to the US so a bare/odd query can't match a same-named town
+        # abroad, and bias to the named state when known ("Anywhere in NC" must
+        # not resolve to a locality in Minnesota). Nominatim ignores structured
+        # params alongside `q`, so we fold the state into the freeform query.
+        q = place
+        if state:
+            state_full = _STATE_ABBR_TO_NAME.get(state.upper())
+            if state_full and state_full.lower() not in place.lower():
+                q = f"{place}, {state_full.title()}"
         try:
             r = httpx.get(
                 "https://nominatim.openstreetmap.org/search",
-                params={"q": place, "format": "json", "limit": 1, "addressdetails": 1},  # ← NEW
+                params={"q": q, "format": "json", "limit": 1,
+                        "addressdetails": 1, "countrycodes": "us"},
                 headers={"User-Agent": "HikeBuilder/1.0"},
                 timeout=5.0,
             )

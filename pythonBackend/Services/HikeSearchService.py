@@ -48,6 +48,7 @@ from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, List, Optional, Tuple
 
+from AI.rigor import rigor_tier, TIER_BLURB
 from PyObjects.Hike import DifficultyLevel, Hike
 from Services.HikeService import HikeService
 
@@ -58,8 +59,36 @@ if TYPE_CHECKING:
 # instead of the tags[] array.  Strip these before building the @> query.
 _COLUMN_TAGS: frozenset[str] = frozenset({"can_camp"})
 
+# Preferred tags that are INFERRED trail descriptors (length bucket, gain tier,
+# altitude/terrain tier, season) rather than user-requested FEATURES. They ride
+# into preferred_tags from the activity/difficulty defaults — e.g. a bare "hikes
+# near me" injects short/half_day/full_day via the day_hike default, and a
+# difficulty hint injects gain tiers. A returned set that doesn't happen to
+# include one of these is NOT a data gap worth disclosing: surfacing "no
+# full_day trails" as the reason for a "wooded" search made the model answer a
+# question nobody asked and drop the real request. Excluded from
+# unmatched_preferred_tags so only genuine feature gaps get a DATA NOTE.
+_NON_FEATURE_PREFERRED_TAGS: frozenset[str] = frozenset({
+    # length buckets
+    "short", "half_day", "full_day", "overnight", "multi_day",
+    # elevation-gain tiers
+    "flat", "gentle_gain", "moderate_gain", "high_gain", "very_high_gain",
+    # altitude / terrain tiers
+    "lowland", "montane", "subalpine", "alpine",
+    # season windows + permits
+    "year_round", "summer_only", "spring_fall", "seasonal", "permits_required",
+})
+
 DEFAULT_RADIUS_KM: float = 150.0
 EXPANDED_RADIUS_KM: float = 350.0
+# Distance (km) at which the point-search proximity bonus decays to zero. Kept
+# much tighter than the *search* radius (DEFAULT_RADIUS_KM) on purpose: when the
+# user names a specific place ("Linville Gorge"), a trail 2 km away should rank
+# decisively above one 34 km away. Normalizing the bonus over the full 150 km
+# search radius made 2 km vs 34 km nearly indistinguishable (0.95 vs 0.77 of the
+# weight), so tag-rich long trails that merely pass nearby still won. The search
+# still *returns* trails out to DEFAULT_RADIUS_KM — this only shapes ranking.
+POINT_PROXIMITY_FALLOFF_KM: float = 30.0
 _DIFFICULTY_HINT_TO_ENUM: dict[str, DifficultyLevel] = {
     "easy":     DifficultyLevel.EASY,
     "moderate": DifficultyLevel.MODERATE,
@@ -219,6 +248,7 @@ class HikeSearchService:
             user_lat=intent.lat,
             user_lon=intent.lng,
             max_distance_km=max_distance_km,
+            min_length_km=getattr(intent, "min_length_km", None),   # ← NEW: floor
             max_length_km=getattr(intent, "max_length_km", None),
             can_camp=can_camp,
             permits_required=permits_required,
@@ -238,16 +268,20 @@ class HikeSearchService:
         # queries (a whole state/mountain range) keep the original light-touch
         # weighting, since "close to the state centroid" isn't a meaningful
         # signal there.
-        proximity_weight = (
-            3.0 if getattr(intent, "destination_type", "point") == "point" else 0.3
-        )
+        is_point = getattr(intent, "destination_type", "point") == "point"
+        proximity_weight = 3.0 if is_point else 0.3
+        # Normalize the point-search bonus over a tight radius so a trail right at
+        # the named place decisively outranks one 30+ km away; region searches
+        # keep decaying over the full search radius (centroid-closeness is weak
+        # signal there). See POINT_PROXIMITY_FALLOFF_KM.
+        proximity_falloff = POINT_PROXIMITY_FALLOFF_KM if is_point else max_distance_km
 
         scored: List[Tuple[Hike, float]] = [
             (
                 hike,
                 _tag_match_score(set(hike.tags or []), preferred_expanded)
                 + _difficulty_score(hike, intent.difficulty_hint)
-                + _proximity_bonus(hike, max_distance_km, weight=proximity_weight)
+                + _proximity_bonus(hike, proximity_falloff, weight=proximity_weight)
                 + _length_proximity_bonus(hike, getattr(intent, "target_length_km", None)),   # ← NEW
             )
             for hike in candidates
@@ -399,6 +433,7 @@ class HikeSearchService:
             preferred_tags    = list(getattr(intent, "preferred_tags", None) or []) + substitute_tags,
             priority_tags     = list(getattr(intent, "priority_tags", None) or []),
             difficulty_hint   = intent.difficulty_hint,
+            min_length_km     = getattr(intent, "min_length_km", None),      # ← NEW: floor
             max_length_km     = getattr(intent, "max_length_km", None),
             target_length_km  = getattr(intent, "target_length_km", None),   # ← NEW
             avoid_permits     = intent.avoid_permits,
@@ -486,6 +521,8 @@ class HikeSearchService:
         self,
         scored: List[Tuple[Hike, float]],
         gear_analyses: Optional[dict] = None,
+        duration_days: int = 1,
+        anchor_label: Optional[str] = None,
     ) -> List[dict]:
         """
         Structured, JSON-serialisable equivalent of format_hike_list(), for the
@@ -493,6 +530,15 @@ class HikeSearchService:
         plain-text list. `index` is 1-based and matches the number
         PhaseController.extract_hike_selection() expects when the frontend
         sends the user's click back as a chat message (e.g. "2").
+
+        `rigor_tier` (casual/standard/serious/expedition) is stamped on each card
+        so the UI can render a prep-level badge; it reflects the requested
+        duration, so an overnight request lifts every card to expedition.
+
+        `anchor_label` names what `distance_km` is measured from (the searched
+        place, e.g. "Linville Gorge", or "you" for a near-me search) so the UI
+        can render "8 km from Linville Gorge" instead of an ambiguous "8 km
+        away". Passed straight through as `distance_anchor`; None omits it.
         """
         cards: List[dict] = []
         for i, (hike, _score) in enumerate(scored, start=1):
@@ -501,6 +547,14 @@ class HikeSearchService:
                 if hasattr(hike.difficulty, "name")
                 else str(hike.difficulty).title()
             )
+            tier = rigor_tier(
+                length_km     = hike.length_km,
+                gain_m        = hike.elevation_gain_m,
+                max_alt_m     = getattr(hike, "max_altitude_m", 0),
+                difficulty    = hike.difficulty,
+                duration_days = duration_days,
+                tags          = hike.tags,
+            )
             cards.append({
                 "index":             i,
                 "name":              hike.name,
@@ -508,11 +562,13 @@ class HikeSearchService:
                 "difficulty":        difficulty_str,
                 "elevation_gain_m":  hike.elevation_gain_m,
                 "distance_km":       getattr(hike, "distance_km", None),
+                "distance_anchor":   anchor_label,
                 "state":             self._format_state_label(hike.state),
                 "can_camp":          bool(hike.can_camp),
                 "permits_required":  bool(hike.permits_required),
                 "tags":              list(hike.tags or []),
-                "gear_summary":      _summarise_gaps((gear_analyses or {}).get(str(hike.id), [])),
+                "rigor_tier":        tier,
+                "gear_summary":      _summarise_gaps((gear_analyses or {}).get(str(hike.id), []), tier),
             })
         return cards
     def format_for_context(
@@ -659,13 +715,17 @@ def _expand_concept_tags(
 
 # ── Module-level scoring helpers ──────────────────────────────────────────────
 
-def _summarise_gaps(gaps: list) -> str:
+def _summarise_gaps(gaps: list, tier: str = "standard") -> str:
     """
     Convert a list of GearGap objects (or plain dicts) into a short
     human-readable string for embedding under a hike option.
+
+    On a casual trip with nothing flagged, return the friendly one-liner nudge
+    instead of the bare "kit looks solid" — the whole point of the casual tier
+    is a reassuring "you're set" rather than a checklist.
     """
     if not gaps:
-        return "kit looks solid"
+        return TIER_BLURB["casual"] if tier == "casual" else "kit looks solid"
 
     def _get(item, key):
         return item[key] if isinstance(item, dict) else getattr(item, key, None)
@@ -732,19 +792,27 @@ def _get_unmatched_preferred_tags(
     for hike, _ in scored:
         all_result_tags.update(hike.tags or [])
 
-    db_preferred = [t for t in (preferred_tags or []) if t not in concept_tags]
+    db_preferred = [
+        t for t in (preferred_tags or [])
+        if t not in concept_tags and t not in _NON_FEATURE_PREFERRED_TAGS
+    ]
     return [t for t in db_preferred if t not in all_result_tags]
 
-def _proximity_bonus(hike: Hike, max_distance_km: float, weight: float = 0.3) -> float:
+def _proximity_bonus(hike: Hike, falloff_km: float, weight: float = 0.3) -> float:
     """
     Linear proximity bonus so distance has a real role in ranking, not just
     a tiebreaker. `weight` is the bonus given to the closest possible hike
-    (dist=0); it decays linearly to 0 at max_distance_km.
+    (dist=0); it decays linearly to 0 at `falloff_km`.
+
+    `falloff_km` is the ranking normalization radius, NOT the search radius —
+    for a point search it's deliberately tight (POINT_PROXIMITY_FALLOFF_KM) so
+    "actually here" trails win; for a region search it's the full search radius,
+    where closeness to a state centroid isn't a meaningful signal anyway.
     """
     dist = getattr(hike, "distance_km", None)
     if dist is None:
         return 0.0
-    return weight * max(0.0, 1.0 - dist / max_distance_km)
+    return weight * max(0.0, 1.0 - dist / falloff_km)
 
 
 DIFFICULTY_SCORE = {"easy": 0, "moderate": 1, "hard": 2, "difficult": 2, "expert": 3}

@@ -48,6 +48,21 @@ export const sendChatMessage = async (message, sessionId, userLat = null, userLn
 };
 
 /**
+ * Add a gear item the user entered via the inline gear-review form. Creates a
+ * named, leveled item in their global kit, resolves the gap in the live session,
+ * and returns { session_id, plan, response, item }. session_id is a query param.
+ *
+ * @param {string} sessionId
+ * @param {{category: string, gear_category: string, name?: string, level?: string|null, temp_rating_f?: number, weight?: number, cost?: number}} payload
+ */
+export const addChatGear = async (sessionId, payload) => {
+  const res = await apiClient.post("/api/trip/gear/add", payload, {
+    params: { session_id: sessionId },
+  });
+  return res.data;
+};
+
+/**
  * Persist the trip after the AI returns save_confirmed === true.
  * The session_id goes as a query param; no request body needed.
  *

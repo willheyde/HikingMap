@@ -32,6 +32,39 @@ def m_to_feet(m):
     return round(m * FT_PER_M) if m is not None else None
 
 
+def split_days(total_km, total_gain_m, duration_days):
+    """
+    Deterministically split a trail's real total distance/gain into per-day
+    figures. Returns a list of (distance_miles: float, elevation_gain_ft: int),
+    one tuple per day.
+
+    The LLM used to invent these per-day numbers; they drifted and rarely summed
+    to the trail total. Here we own them in Python instead: an even split, with
+    rounding done on the *cumulative* value and differenced back out, so the
+    per-day parts always sum to the displayed total (km_to_miles / m_to_feet of
+    the whole trail) with no remainder left on the table. The LLM keeps the day
+    titles, notes, and campsite choices — just not the arithmetic.
+
+    Splits whatever total it's handed (the app's authoritative
+    plan.hike_length_km / hike_elevation_gain_m), so the itinerary always agrees
+    with the trail-total tiles the frontend shows.
+    """
+    days = max(1, int(duration_days or 1))
+    miles_total = (total_km or 0) / KM_PER_MILE
+    gain_total_ft = (total_gain_m or 0) * FT_PER_M
+
+    out = []
+    prev_cum_mi = 0.0
+    prev_cum_ft = 0
+    for i in range(1, days + 1):
+        cum_mi = round(miles_total * i / days, 1)
+        cum_ft = round(gain_total_ft * i / days)
+        out.append((round(cum_mi - prev_cum_mi, 1), cum_ft - prev_cum_ft))
+        prev_cum_mi = cum_mi
+        prev_cum_ft = cum_ft
+    return out
+
+
 def estimate_hike_duration(length_km, gain_m):
     """
     Estimate on-trail time via Naismith's rule: ~5 km/h on the flat plus ~1 hour

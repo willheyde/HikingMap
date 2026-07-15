@@ -102,7 +102,8 @@ CREATE TABLE public.hikes (
     lng double precision,
     state character varying(50),
     gear_requirements jsonb DEFAULT '{}'::jsonb NOT NULL,
-    trail_shape text
+    trail_shape text,
+    campsites jsonb DEFAULT '[]'::jsonb NOT NULL
 );
 
 
@@ -207,7 +208,8 @@ CREATE TABLE public.users (
     timezone character varying,
     created_at timestamp without time zone,
     google_sub text,
-    auth_provider text DEFAULT 'password'::text NOT NULL
+    auth_provider text DEFAULT 'password'::text NOT NULL,
+    is_admin boolean DEFAULT false NOT NULL
 );
 
 

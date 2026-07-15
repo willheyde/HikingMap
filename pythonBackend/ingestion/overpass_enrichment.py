@@ -308,6 +308,12 @@ DETECTORS: list[tuple[str, Predicate]] = [
 # only a real matching feature should keep the tag. `_can_camp` is excluded;
 # it maps to a boolean column, not a tag.
 VERIFIABLE_TAGS = frozenset(feature for feature, _ in DETECTORS if not feature.startswith("_"))
+# NOTE: `forest` is intentionally NOT a detector here. It's a land-cover
+# CONTAINMENT question (does the trail run through tree canopy?), not a nearby
+# point feature, and is assigned by ingestion/backfill_forest.py from the ESA
+# WorldCover raster. Keeping it out of DETECTORS/VERIFIABLE_TAGS means an
+# enrichment run PRESERVES it rather than stripping it as "unconfirmed." Do not
+# add a forest detector here without moving ownership of the tag accordingly.
 # ── Overpass query template ────────────────────────────────────────────────────
 #
 # Every OSM key/value referenced in a DETECTOR predicate above must have a
@@ -351,7 +357,10 @@ _QUERY_TEMPLATE = """\
   way["boundary"="protected_area"]({bbox});
   way["leisure"="nature_reserve"]({bbox});
 );
-out tags;"""
+out tags center;"""
+# `center` gives ways a representative lat/lon (their bounding-box centroid) so
+# campsite/shelter ways yield usable coordinates, not just nodes. Node elements
+# already carry lat/lon; `center` is ignored for them.
 
 # ── Geometry helpers ───────────────────────────────────────────────────────────
 
@@ -521,13 +530,97 @@ def _detect_features(data: dict) -> tuple[set[str], bool]:
     return new_tags, can_camp
 
 
+# ── Campsite / shelter capture ────────────────────────────────────────────────
+#
+# The same camp_site / wilderness_hut / shelter elements that flip `can_camp`
+# also carry a name + location the AI itinerary needs to name real camps instead
+# of inventing them. `_detect_features` discards those; here we keep them
+# structurally (name, coords, type, rough distance off-trail).
+
+def _is_shelter(t: ElementTags) -> bool:
+    return t.get("tourism") == "wilderness_hut" or t.get("amenity") == "shelter"
+
+
+def _is_campsite(t: ElementTags) -> bool:
+    return (
+        t.get("tourism") in {"camp_site", "caravan_site"}
+        or t.get("leisure") == "camp_site"
+        or t.get("amenity") == "camping"
+    )
+
+
+def _element_latlon(element: dict) -> Optional[tuple[float, float]]:
+    """(lat, lon) for a node (direct) or a way (its `out center` centroid)."""
+    if element.get("lat") is not None and element.get("lon") is not None:
+        return element["lat"], element["lon"]
+    c = element.get("center")
+    if isinstance(c, dict) and c.get("lat") is not None and c.get("lon") is not None:
+        return c["lat"], c["lon"]
+    return None
+
+
+def _min_dist_to_trail_m(lat: float, lon: float,
+                         trail_points: list[tuple[float, float]]) -> Optional[float]:
+    """Rough metres from a point to the nearest trail vertex (equirectangular)."""
+    if not trail_points:
+        return None
+    m_per_deg_lat = 111_320.0
+    m_per_deg_lon = 111_320.0 * math.cos(math.radians(trail_points[0][0]))
+    best = None
+    for tla, tlo in trail_points:
+        dx = (lon - tlo) * m_per_deg_lon
+        dy = (lat - tla) * m_per_deg_lat
+        d = math.hypot(dx, dy)
+        if best is None or d < best:
+            best = d
+    return best
+
+
+def _detect_campsites(data: dict,
+                      trail_points: list[tuple[float, float]]) -> list[dict]:
+    """
+    Structured campsite/shelter records near the route. Each:
+      {name, lat, lng, type: "shelter"|"camp_site", dist_off_trail_m}
+    Named sites first, nearest first; capped so the itinerary prompt stays lean.
+    """
+    out: list[dict] = []
+    seen: set = set()
+    for element in data.get("elements", []):
+        etags = element.get("tags") or {}
+        if _is_shelter(etags):
+            ctype = "shelter"
+        elif _is_campsite(etags):
+            ctype = "camp_site"
+        else:
+            continue
+        loc = _element_latlon(element)
+        if loc is None:
+            continue
+        lat, lon = loc
+        name = etags.get("name")
+        key = (name or "", round(lat, 5), round(lon, 5))
+        if key in seen:
+            continue
+        seen.add(key)
+        dist = _min_dist_to_trail_m(lat, lon, trail_points)
+        out.append({
+            "name":             name,
+            "lat":              round(lat, 6),
+            "lng":              round(lon, 6),
+            "type":             ctype,
+            "dist_off_trail_m": round(dist) if dist is not None else None,
+        })
+    out.sort(key=lambda c: (c["name"] is None, c["dist_off_trail_m"] if c["dist_off_trail_m"] is not None else 9999))
+    return out[:12]
+
+
 # ── Per-hike enrichment (called from worker threads) ──────────────────────────
 
 # new
-def enrich_one(hike, limiter: "_RateLimiter") -> tuple[set[str], bool, str]:
+def enrich_one(hike, limiter: "_RateLimiter") -> tuple[set[str], bool, list[dict], str]:
     """
     Runs Overpass enrichment for a single hike.  Does NOT mutate the hike.
-    Returns (new_tags, can_camp, status), where status is one of:
+    Returns (new_tags, can_camp, campsites, status), where status is one of:
 
       "success"          — Overpass was queried successfully (possibly with
                             zero features found — that's a real, useful
@@ -545,15 +638,16 @@ def enrich_one(hike, limiter: "_RateLimiter") -> tuple[set[str], bool, str]:
     coords = _trail_coords_string(hike.geometry)
     if bbox is None or coords is None:
         log.warning(f"  [{hike.name}] Missing or malformed geometry — skipped")
-        return set(), False, "invalid_geometry"
+        return set(), False, [], "invalid_geometry"
 
     data = _post_overpass(_build_query(bbox, coords), limiter)
     if data is None:
         log.error(f"  [{hike.name}] Overpass failed after {MAX_RETRIES} attempts")
-        return set(), False, "api_failure"
+        return set(), False, [], "api_failure"
 
     new_tags, can_camp = _detect_features(data)
-    return new_tags, can_camp, "success"
+    campsites = _detect_campsites(data, _flatten_points(hike.geometry))
+    return new_tags, can_camp, campsites, "success"
 
 
 # ── Worker function ────────────────────────────────────────────────────────────
@@ -568,7 +662,7 @@ def _enrich_worker(
     Returns (added_tags, removed_tags, camp_upgraded, status).
     status is "success" | "invalid_geometry" | "api_failure" — see enrich_one.
     """
-    new_tags, camp_found, status = enrich_one(hike, limiter)
+    new_tags, camp_found, campsites, status = enrich_one(hike, limiter)
 
     if status in ("api_failure", "invalid_geometry"):
         # Neither is written to the DB. api_failure is transient — retry
@@ -590,9 +684,16 @@ def _enrich_worker(
     merged_tags   = sorted((existing_tags - removed_tags) | new_tags | {MARKER_TAG})
     camp_upgraded = camp_found and not hike.can_camp
 
+    if campsites:
+        log.info(f"  [{hike.name}] {len(campsites)} campsite(s)/shelter(s) nearby: "
+                 + ", ".join((c["name"] or c["type"]) for c in campsites[:5]))
+
     if not dry_run:
         hike.tags            = merged_tags
         hike.can_camp        = hike.can_camp or camp_found
+        # Overpass is authoritative for campsites too — overwrite (not merge) so a
+        # re-run reflects the current OSM picture rather than accreting stale rows.
+        hike.campsites       = campsites
         hike.last_synced_at  = datetime.now(timezone.utc)
         _thread_service().update_hike(hike)
 

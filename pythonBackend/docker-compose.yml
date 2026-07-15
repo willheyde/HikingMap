@@ -1,10 +1,18 @@
+# Local dev Postgres. Credentials come from the environment (or your local
+# pythonBackend/.env, which docker-compose auto-loads) with harmless defaults so
+# nothing secret is committed. Set POSTGRES_USER / POSTGRES_PASSWORD / POSTGRES_DB
+# to match your .env DB vars, e.g.:
+#   POSTGRES_USER=hike POSTGRES_PASSWORD=$(openssl rand -hex 16) docker compose up -d
+#
+# SECURITY: an earlier revision of this file committed a real password. Treat that
+# value as permanently compromised — do NOT reuse it for the RDS master user.
 services:
   db:
     image: postgres:15
     environment:
-      POSTGRES_USER: WillH
-      POSTGRES_PASSWORD: wolf*ware8
-      POSTGRES_DB: hikingapp
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-hikingapp}
     ports:
       - "5432:5432"
     volumes:

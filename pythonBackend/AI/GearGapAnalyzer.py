@@ -27,6 +27,7 @@ from typing import Set
 
 from PyObjects.Items import ItemType
 from .TripPlan import GearGap
+from .rigor import rigor_tier, CASUAL_SUPPRESSED
 from gear_levels import meets, sleep_meets, level_index
 
 logger = logging.getLogger(__name__)
@@ -225,7 +226,8 @@ class GearGapAnalyzer:
     def analyze_for_hike(
         self,
         user_gear: list[dict],
-        hike,               # PyObjects.Hike instance
+        hike,                       # PyObjects.Hike instance
+        duration_days: int = 1,
     ) -> list[GearGap]:
         """
         Returns a list of GearGap objects for this hike / gear combination.
@@ -236,15 +238,47 @@ class GearGapAnalyzer:
         trail actually demands and can flag inadequate gear, not just absent
         gear. Falls back to the legacy hardcoded checks for any hike that
         predates the backfill (empty gear_requirements).
+
+        `duration_days` scales the rigor: a casual (short/flat/easy, single-day)
+        trip suppresses the ten-essentials nag, while any overnight escalates the
+        shelter/sleep checks even on a trail that isn't itself flagged can_camp.
         """
+        tier = self._tier_for(hike, duration_days)
         reqs = getattr(hike, "gear_requirements", None) or {}
         if reqs:
-            return self._analyze_from_requirements(user_gear, reqs)
-        return self._legacy_analyze(user_gear, hike)
+            gaps = self._analyze_from_requirements(user_gear, reqs, tier)
+        else:
+            gaps = self._legacy_analyze(user_gear, hike, tier)
+
+        # Multi-day escalation: a requested overnight needs shelter + sleep even
+        # if the trail itself isn't a designated camp spot. Dedupe against gaps
+        # the base path already emitted (a can_camp trail supplies these too).
+        if duration_days > 1:
+            have = {g.category for g in gaps}
+            gaps.extend(self._overnight_gaps(user_gear, have))
+        return gaps
+
+    def _tier_for(self, hike, duration_days: int) -> str:
+        """The rigor tier for this hike at the requested duration."""
+        return rigor_tier(
+            length_km     = getattr(hike, "length_km", 0),
+            gain_m        = getattr(hike, "elevation_gain_m", 0),
+            max_alt_m     = getattr(hike, "max_altitude_m", 0),
+            difficulty    = getattr(hike, "difficulty", None),
+            duration_days = duration_days,
+            tags          = getattr(hike, "tags", None),
+        )
+
+    def _suppressed(self, tier: str, category: str) -> bool:
+        """Casual trips demote the ten-essentials baseline — a flat 2-miler
+        shouldn't nag about a first-aid kit the way a 10-mile climb does."""
+        return tier == "casual" and category in CASUAL_SUPPRESSED
 
     # ── Requirement-driven analysis (preferred) ───────────────────────────────
 
-    def _analyze_from_requirements(self, user_gear: list[dict], reqs: dict) -> list[GearGap]:
+    def _analyze_from_requirements(
+        self, user_gear: list[dict], reqs: dict, tier: str = "standard"
+    ) -> list[GearGap]:
         """Walk the hike's required categories, emitting a gap for each one the
         user is missing or under-equipped for. Required items are surfaced
         before recommended ones."""
@@ -254,12 +288,12 @@ class GearGapAnalyzer:
 
         gaps: list[GearGap] = []
         for category, spec in sorted(reqs.items(), key=_order):
-            gap = self._check_requirement(user_gear, category, spec)
+            gap = self._check_requirement(user_gear, category, spec, tier)
             if gap:
                 gaps.append(gap)
         return gaps
 
-    def readiness_for_hike(self, user_gear: list[dict], hike) -> list[dict]:
+    def readiness_for_hike(self, user_gear: list[dict], hike, duration_days: int = 1) -> list[dict]:
         """
         Full per-trail readiness for the 'double-check before you go' checklist:
         EVERY required category with a status, not just the gaps. Reuses the same
@@ -272,6 +306,7 @@ class GearGapAnalyzer:
           status "flag"    → amber ⚠ (recommended-but-absent, or under-spec)
         """
         reqs = getattr(hike, "gear_requirements", None) or {}
+        tier = self._tier_for(hike, duration_days)
 
         def _order(kv):
             _cat, spec = kv
@@ -279,7 +314,7 @@ class GearGapAnalyzer:
 
         rows: list[dict] = []
         for category, spec in sorted(reqs.items(), key=_order):
-            gap = self._check_requirement(user_gear, category, spec)
+            gap = self._check_requirement(user_gear, category, spec, tier)
 
             # Only surface a min_level as the "required" label when it's a real,
             # enforceable level (the category is level-bearing). A stray min_level
@@ -310,10 +345,27 @@ class GearGapAnalyzer:
             })
         return rows
 
-    def _check_requirement(self, user_gear: list[dict], req_category: str, spec: dict):
+    def _check_requirement(self, user_gear: list[dict], req_category: str, spec: dict,
+                           tier: str = "standard"):
+        # Casual trips demote the ten-essentials baseline: don't emit a gap for a
+        # first-aid kit / map / headlamp on a flat 2-miler. Committing categories
+        # (footwear, shelter, sleep, traction) are never suppressed.
+        if self._suppressed(tier, req_category):
+            return None
+
         importance = spec.get("importance", "required")
         required   = importance == "required"
         gap_cat    = _REQ_TO_CAT.get(req_category, req_category)
+
+        # A+ metadata carried on every gap this path emits, so the inline
+        # gear-entry form can preselect the minimum acceptable level (and never
+        # let the user go below it) and write straight to create_user_gear.
+        gap_meta = {
+            "gear_category": req_category,
+            "min_level":     spec.get("min_level"),
+            "min_temp_f":    spec.get("min_temp_f"),
+            "importance":    importance,
+        }
 
         # ── Presence ─────────────────────────────────────────────────────────
         if req_category == "traction":
@@ -329,6 +381,7 @@ class GearGapAnalyzer:
                 issue      = "missing" if required else "marginal",
                 detail     = self._missing_detail(req_category, spec, required),
                 suggestion = _REQ_SUGGESTION.get(req_category),
+                **gap_meta,
             )
 
         # ── Adequacy — sleep is numeric (temperature), not an ordinal level ──
@@ -340,6 +393,7 @@ class GearGapAnalyzer:
                     category = gap_cat, issue = "marginal",
                     detail   = ("Sleep system found but no temperature rating is stored — "
                                 "confirm it's warm enough for the overnight low."),
+                    **gap_meta,
                 )
             if not sleep_meets(have_temp, need_temp):
                 return GearGap(
@@ -347,6 +401,7 @@ class GearGapAnalyzer:
                     detail     = (f"Your warmest bag is rated {int(have_temp)}°F, but this trip's "
                                   f"overnight low calls for about {int(need_temp)}°F."),
                     suggestion = _REQ_SUGGESTION.get("sleep"),
+                    **gap_meta,
                 )
             return None
 
@@ -361,6 +416,7 @@ class GearGapAnalyzer:
                 detail     = (f"You have {_display_level(have_level)}, but this trail calls for "
                               f"{_display_level(need_level)}."),
                 suggestion = _REQ_SUGGESTION.get(req_category),
+                **gap_meta,
             )
         return None
 
@@ -386,12 +442,57 @@ class GearGapAnalyzer:
             return _user_traction_level(user_gear)
         return None
 
+    def _overnight_gaps(self, user_gear: list[dict], existing: Set[str]) -> list[GearGap]:
+        """Shelter + sleep-system checks for a night out. Shared by the legacy
+        can_camp branch and the multi-day (duration_days > 1) escalation; skips
+        any category the caller already emitted so the two never double-up."""
+        gaps: list[GearGap] = []
+
+        if CAT_SHELTER not in existing and not _user_owns_category(user_gear, CAT_SHELTER):
+            gaps.append(GearGap(
+                category   = CAT_SHELTER,
+                issue      = "missing",
+                detail     = "This is an overnight trip but no shelter is on record.",
+                suggestion = "Big Agnes Copper Spur HV UL2 or a bivy for solo use",
+                gear_category = "shelter", importance = "required",
+            ))
+
+        if CAT_SLEEP_SYSTEM not in existing:
+            if not _user_owns_category(user_gear, CAT_SLEEP_SYSTEM):
+                gaps.append(GearGap(
+                    category   = CAT_SLEEP_SYSTEM,
+                    issue      = "missing",
+                    detail     = "No sleeping bag or quilt on record for an overnight hike.",
+                    suggestion = "Sleeping bag rated at least 10 °F below expected overnight low",
+                    gear_category = "sleep", importance = "required",
+                ))
+            else:
+                # Sleep system exists — check whether it has a temperature rating stored
+                sleep_item_type = CATEGORY_TO_ITEM_TYPE[CAT_SLEEP_SYSTEM]
+                rated = [
+                    item for item in user_gear
+                    if item.get("category", "").lower().strip() == sleep_item_type
+                    and item.get("temp_rating_f") is not None
+                ]
+                if not rated:
+                    gaps.append(GearGap(
+                        category = CAT_SLEEP_SYSTEM,
+                        issue    = "marginal",
+                        detail   = (
+                            "Sleep system found but no temperature rating is stored — "
+                            "worth confirming it is adequate for overnight conditions."
+                        ),
+                        gear_category = "sleep", importance = "required",
+                    ))
+        return gaps
+
     # ── Legacy hardcoded analysis (fallback for un-backfilled hikes) ──────────
 
     def _legacy_analyze(
         self,
         user_gear: list[dict],
         hike,               # PyObjects.Hike instance
+        tier: str = "standard",
     ) -> list[GearGap]:
         # Name lookup for sub-category checks (traction devices, etc.)
         owned_names: Set[str] = {
@@ -411,9 +512,10 @@ class GearGapAnalyzer:
 
         gaps: list[GearGap] = []
 
-        # ── Ten-essentials baseline (applies to every hike) ───────────────────
+        # ── Ten-essentials baseline (suppressed on a casual trip) ─────────────
 
-        if not _user_owns_category(user_gear, CAT_NAVIGATION):
+        if (not self._suppressed(tier, CAT_NAVIGATION)
+                and not _user_owns_category(user_gear, CAT_NAVIGATION)):
             gaps.append(GearGap(
                 category   = CAT_NAVIGATION,
                 issue      = "missing",
@@ -421,7 +523,8 @@ class GearGapAnalyzer:
                 suggestion = "Gaia GPS (free tier) or a paper topo + compass",
             ))
 
-        if not _user_owns_category(user_gear, CAT_ILLUMINATION):
+        if (not self._suppressed(tier, CAT_ILLUMINATION)
+                and not _user_owns_category(user_gear, CAT_ILLUMINATION)):
             gaps.append(GearGap(
                 category   = CAT_ILLUMINATION,
                 issue      = "missing",
@@ -429,7 +532,8 @@ class GearGapAnalyzer:
                 suggestion = "Black Diamond Spot 400",
             ))
 
-        if not _user_owns_category(user_gear, CAT_FIRST_AID):
+        if (not self._suppressed(tier, CAT_FIRST_AID)
+                and not _user_owns_category(user_gear, CAT_FIRST_AID)):
             gaps.append(GearGap(
                 category   = CAT_FIRST_AID,
                 issue      = "missing",
@@ -437,7 +541,8 @@ class GearGapAnalyzer:
                 suggestion = "Adventure Medical Kits Ultralight .7",
             ))
 
-        if not _user_owns_category(user_gear, CAT_HYDRATION):
+        if (not self._suppressed(tier, CAT_HYDRATION)
+                and not _user_owns_category(user_gear, CAT_HYDRATION)):
             gaps.append(GearGap(
                 category   = CAT_HYDRATION,
                 issue      = "missing",
@@ -445,7 +550,8 @@ class GearGapAnalyzer:
                 suggestion = "Sawyer Squeeze + two 1 L soft flasks",
             ))
 
-        if not _user_owns_category(user_gear, CAT_INSULATION):
+        if (not self._suppressed(tier, CAT_INSULATION)
+                and not _user_owns_category(user_gear, CAT_INSULATION)):
             gaps.append(GearGap(
                 category   = CAT_INSULATION,
                 issue      = "marginal",
@@ -456,38 +562,7 @@ class GearGapAnalyzer:
         # ── Overnight / camping extras ────────────────────────────────────────
 
         if is_overnight:
-            if not _user_owns_category(user_gear, CAT_SHELTER):
-                gaps.append(GearGap(
-                    category   = CAT_SHELTER,
-                    issue      = "missing",
-                    detail     = "Camping is available on this trail but no shelter is on record.",
-                    suggestion = "Big Agnes Copper Spur HV UL2 or a bivy for solo use",
-                ))
-
-            if not _user_owns_category(user_gear, CAT_SLEEP_SYSTEM):
-                gaps.append(GearGap(
-                    category   = CAT_SLEEP_SYSTEM,
-                    issue      = "missing",
-                    detail     = "No sleeping bag or quilt on record for an overnight hike.",
-                    suggestion = "Sleeping bag rated at least 10 °F below expected overnight low",
-                ))
-            else:
-                # Sleep system exists — check whether it has a temperature rating stored
-                sleep_item_type = CATEGORY_TO_ITEM_TYPE[CAT_SLEEP_SYSTEM]
-                rated = [
-                    item for item in user_gear
-                    if item.get("category", "").lower().strip() == sleep_item_type
-                    and item.get("temp_rating_f") is not None
-                ]
-                if not rated:
-                    gaps.append(GearGap(
-                        category = CAT_SLEEP_SYSTEM,
-                        issue    = "marginal",
-                        detail   = (
-                            "Sleep system found but no temperature rating is stored — "
-                            "worth confirming it is adequate for overnight conditions on this trail."
-                        ),
-                    ))
+            gaps.extend(self._overnight_gaps(user_gear, {g.category for g in gaps}))
 
         # ── Difficulty-based extras ───────────────────────────────────────────
 

@@ -23,10 +23,12 @@ npm run lint       # eslint (flat config in eslint.config.js)
 
 ### Backend (`pythonBackend/`)
 ```bash
-uvicorn main:app --reload      # serves on :8000 (frontend + tests assume this port)
-docker compose up -d           # PostgreSQL 15 on :5432
+pip install -r requirements.txt    # pinned runtime deps
+uvicorn main:app --reload          # dev: serves on :8000 (frontend + tests assume this port)
+docker compose up -d               # local PostgreSQL on :5432 (creds via env — see .env)
+docker build -t hikebuilder-api .  # prod image: single uvicorn worker, no --reload (see Dockerfile)
 ```
-There is **no `requirements.txt`** — install deps by hand. Runtime imports: `fastapi uvicorn psycopg[binary] pydantic python-dotenv apscheduler groq redis python-jose[cryptography] bcrypt`. The ingestion pipeline additionally needs `requests`/`geopy`. Redis must be reachable (`REDIS_URL`) or the trip-chat endpoints return 503.
+Deps are pinned in `requirements.txt` (fastapi, uvicorn, psycopg[binary], psycopg-pool, pydantic[email], python-dotenv, apscheduler, groq, redis, python-jose[cryptography], bcrypt, httpx, google-auth; the ingestion pipeline adds `requests`/`geopy`). Redis must be reachable (`REDIS_URL`) or the trip-chat endpoints return 503.
 
 ### Tests
 Two HTTP integration runners, both hit a **running** server, both plain `requests` (no pytest). Shared harness in `_testkit.py` (Client + a PASS/FAIL/SKIP `Suite` with an exit code: 0 = no failures, 1 = a failure — CI-ready). The guiding rule: assert the **contract** (status codes, JSON shape, documented invariants), never LLM content quality.
@@ -43,18 +45,31 @@ Two HTTP integration runners, both hit a **running** server, both plain `request
   python SystemTest.py --conversations mine.json   # bring your own turns
   ```
 
-There is no unit-test framework and no CI yet (the exit codes above make wiring one up trivial).
+- **`UnitTest.py`** — deterministic unit tests for the bug-prone **pure** logic, needing **no server / DB / Redis / Groq / HTTP**: NL distance/difficulty parsing precedence, phase-transition signal banks, hike-selection parser, tag scoring/concept expansion, gear-adequacy levels, and the signal-token strip patterns. Reuses `_testkit.Suite` for the same exit-code contract.
+  ```bash
+  python UnitTest.py
+  ```
+
+**CI** (`.github/workflows/ci.yml`, runs on every push + PR): a **backend** job (installs `requirements.txt`, byte-compiles, runs `UnitTest.py`, then boots the app against throwaway Postgres+Redis service containers and runs `IntegrationTest.py --register`) and a **frontend** job (`npm ci` → lint → build). `SystemTest.py` is deliberately **not** in CI — it spends Groq quota.
 
 ### Database migrations
-Plain SQL files in `pythonBackend/migrations/`, applied by hand (no migration tool). `001_trips_lifecycle.sql`, `002_completion_review.sql`.
+Numbered SQL files in `pythonBackend/migrations/` (currently through `008_admin_flag.sql`), applied by the `migrate.py` runner, which tracks applied versions in a `schema_migrations` table:
+```bash
+python migrate.py status     # applied vs pending
+python migrate.py up         # apply pending migrations
+python migrate.py baseline   # stamp all current .sql as applied WITHOUT running them
+```
+`schema.sql` is the full from-scratch schema for a brand-new empty DB (CI applies it, then `migrate.py up`). **Adopting the runner on a DB already hand-migrated: run `baseline` ONCE first** — otherwise `up` re-runs non-idempotent early migrations (e.g. 001's `ADD CONSTRAINT`) and errors. `.py` data migrations (e.g. `004_purge_legacy_gear.py`) are **not** run by the tool — run them separately.
 
 ## Environment variables
 
-Backend reads a `pythonBackend/.env` (via `python-dotenv`). Required keys:
-- DB (psycopg): `HOST`, `PORT`, `DBNAME`, `USER`, `PASSWORD` — note `USER` collides with a shell-provided var on some systems; the `.env` value must win.
+Backend reads a `pythonBackend/.env` (via `python-dotenv` with `override=True`, so `.env` wins over exported vars — resolved relative to the source file, not the CWD; on AWS there's no `.env`, so injected env vars are used as-is). Required keys:
+- DB (psycopg): `HOST`, `PORT`, `DBNAME`, `PASSWORD`, and `DB_USER` (preferred) or `USER` — `DBConnection` reads `DB_USER` first so injected credentials never collide with the shell's `USER`.
 - `HikeKey` — Groq API key (`GroqClient` reads `os.environ["HikeKey"]`).
 - `REDIS_URL` — defaults to `redis://localhost:6379/0`.
 - `JWT_SECRET_KEY` — HS256 signing key for auth.
+- `GOOGLE_CLIENT_ID` — verifies "Sign in with Google" ID tokens (`UserController`).
+- Prod hardening (env-tunable): `APP_ENV=production` + `ALLOWED_ORIGINS` (CORS — the app **refuses to boot** in production on an unset/localhost origin), `ENABLE_HSTS=true`, `MAX_BODY_BYTES`, `TRUSTED_PROXY_HOPS`, `DB_POOL_MIN`/`DB_POOL_MAX`.
 
 Frontend (Vite, `import.meta.env`): `VITE_MAPBOX_TOKEN` (required for the map to render), `VITE_API_BASE_URL` (defaults to `http://localhost:8000`).
 
@@ -68,15 +83,15 @@ Layered, wired up in `main.py`:
 - `Repos/` — raw SQL via `psycopg` v3. All DB access goes through `DBConnection.get_connection()`, a context manager that yields a `dict_row` connection and commits/rolls-back automatically. `Repos/RepositoryBase.py` defines the abstract CRUD interface.
 - `PyObjects/` — domain models (`Hike`, `User`, `Trip`, `Item`) with `to_dict`/`from_dict`.
 
-**Gotcha:** `Routers/UserRouter.py` is legacy/unused — `main.py` wires `Controllers/UserController.py` instead. Prefer `Controllers/` when editing; confirm what `main.py` actually includes before touching a router.
+**Note:** all routers are wired in `main.py` from `Controllers/` — there is no separate `Routers/` package (the old legacy `Routers/UserRouter.py` has been deleted). Each controller instantiates its own service+repo as module-level singletons.
 
-Auth: JWT bearer tokens. `Auth/authentication.py` exposes `get_current_user_id` — the FastAPI dependency to gate any protected route. Passwords hashed with bcrypt.
+Auth: JWT bearer tokens. `Auth/authentication.py` exposes `get_current_user_id` (gate any protected route) and `get_current_admin` (admin-only — reads `users.is_admin` live from the DB, so a demotion takes effect immediately). Passwords hashed with bcrypt. **Catalog writes are gated:** hike create/update/delete are **admin-only**; item writes require **any authenticated user** (items are user-customizable); reads on both stay public.
 
 `main.py` also starts an APScheduler background job (every 6h) that flips `trips.needs_review` for trips completed more than `NEEDS_REVIEW_AFTER_DAYS` ago.
 
 ## AI trip-planner (`pythonBackend/AI/`)
 
-This is the most intricate part of the codebase. `AI/TripChat.py` (~1900 lines) is a single FastAPI router mounted at `/api/trip` that orchestrates the whole conversation. Read its module docstring (steps 1–12) before changing it.
+This is the most intricate part of the codebase. `AI/TripChat.py` (~2300 lines) is a single FastAPI router mounted at `/api/trip` that orchestrates the whole conversation. Read its module docstring (steps 1–12) before changing it.
 
 Key concepts:
 - **Phase state machine** (`TripSession.PHASES`): `destination → gear_review → itinerary → finalize`. `PhaseController` decides transitions.

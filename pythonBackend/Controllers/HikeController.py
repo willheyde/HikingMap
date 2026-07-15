@@ -1,4 +1,6 @@
-from fastapi import APIRouter, HTTPException
+import logging
+
+from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 from uuid import UUID, uuid4
@@ -7,6 +9,9 @@ from datetime import datetime
 from PyObjects.Hike import Hike, DifficultyLevel
 from Repos.HikeRepo import HikeRepository
 from Services.HikeService import HikeService
+from Auth.authentication import get_current_admin
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["Hikes"])
 
@@ -110,7 +115,8 @@ def _to_response(h: Hike, **extra) -> HikeResponseSchema:
 # Endpoints
 # =========================
 
-@router.post("/create", response_model=HikeResponseSchema)
+@router.post("/create", response_model=HikeResponseSchema,
+             dependencies=[Depends(get_current_admin)])
 def create_hike(payload: HikeCreateSchema):
     try:
         difficulty_enum = DifficultyLevel[payload.difficulty.upper()]
@@ -142,8 +148,11 @@ def create_hike(payload: HikeCreateSchema):
         created = hike_service.create_hike(hike)
         _create_gear_requirements(created.id, payload.gear_requirements)
         return _to_response(created)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Failed to create hike: {str(e)}")
+    except Exception:
+        # Don't leak raw exception text (DB errors, constraint names) to the
+        # client — log it server-side and return a generic message.
+        logger.exception("create_hike failed")
+        raise HTTPException(status_code=400, detail="Could not create hike.")
 
 
 @router.get("/get/{hike_id}", response_model=HikeResponseSchema)
@@ -159,7 +168,8 @@ def list_hikes():
     return [_to_response(h) for h in hike_service.list_hikes()]
 
 
-@router.put("/update/{hike_id}", response_model=HikeResponseSchema)
+@router.put("/update/{hike_id}", response_model=HikeResponseSchema,
+            dependencies=[Depends(get_current_admin)])
 def update_hike(hike_id: UUID, payload: HikeUpdateSchema):
     existing = hike_service.get_hike(hike_id)
     if not existing:
@@ -181,7 +191,8 @@ def update_hike(hike_id: UUID, payload: HikeUpdateSchema):
     return _to_response(hike_service.update_hike(existing))
 
 
-@router.delete("/delete/{hike_id}", status_code=204)
+@router.delete("/delete/{hike_id}", status_code=204,
+               dependencies=[Depends(get_current_admin)])
 def delete_hike(hike_id: UUID):
     hike_service.delete_hike(hike_id)
 

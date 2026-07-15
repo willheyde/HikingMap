@@ -132,6 +132,22 @@ def check_hikes(c: Client, s: Suite) -> None:
             over = [h.get("length_km") for h in data if (h.get("length_km") or 0) > 5]
             s.check("every max_length_km=5 result is <= 5km", not over, f"over-length returned: {over[:5]}")
 
+    # The upper two DB tiers must be queryable too — this is what the frontend
+    # filter fix now sends (it previously sent "HARD", which the DB never stores,
+    # so the filter 400'd and Expert/Difficult trails were unreachable).
+    for tier in ("DIFFICULT", "EXPERT"):
+        r = c.get("/hikes/search", params={"difficulty": tier})
+        if s.expect_status(r, 200, f"GET /hikes/search?difficulty={tier} → 200"):
+            ok, data = s.expect_json(r, f"{tier} search returns JSON")
+            if ok and isinstance(data, list):
+                bad = [h.get("difficulty") for h in data if h.get("difficulty") != tier]
+                s.check(f"every searched hike is {tier}", not bad, f"off-tier returned: {set(bad)}")
+
+    # "HARD" is NOT a valid tier (DB stores DIFFICULT/EXPERT) — must 400, which is
+    # exactly why the frontend was changed to stop sending it.
+    r = c.get("/hikes/search", params={"difficulty": "HARD"})
+    s.expect_status(r, 400, "GET /hikes/search?difficulty=HARD → 400 (not a DB tier)")
+
     r = c.get("/hikes/search", params={"difficulty": "NOT_A_LEVEL"})
     s.expect_status(r, 400, "GET /hikes/search?difficulty=NOT_A_LEVEL → 400")
 
@@ -164,8 +180,10 @@ def check_items(c: Client, s: Suite) -> None:
 
 
 def check_item_crud(c: Client, s: Suite) -> None:
-    """Create → read → patch image → delete → confirm 404. Item create routes
-    need no auth, and this removes what it makes, so it's repeatable + clean."""
+    """Create → read → patch image → delete → confirm 404. Item write routes now
+    require an authenticated user (any logged-in user — items are user-editable),
+    so `c` must carry a token. It removes what it makes, so it's repeatable +
+    clean. Doubles as proof that a normal (non-admin) user CAN write items."""
     print("\n[item CRUD cycle]")
     item_id = None
     try:
@@ -229,6 +247,22 @@ def check_auth_gates(c: Client, s: Suite) -> None:
     r = anon.post("/api/trip/chat", json={"message": "hi"})
     s.expect_status(r, 401, "POST /api/trip/chat without token → 401 (gated before Groq)")
 
+    # The inline gear-add endpoint writes to the user's kit — must be authed.
+    r = anon.post("/api/trip/gear/add", params={"session_id": "nope"}, json={
+        "category": "rain_gear", "gear_category": "shell", "name": "x", "level": "hardshell",
+    })
+    s.expect_status(r, 401, "POST /api/trip/gear/add without token → 401")
+
+    # Catalog writes are no longer world-open. Item writes require *any* logged-in
+    # user; hike writes require an admin — but both reject an anonymous caller.
+    r = anon.post("/items/backpacks", json={
+        "name": "anon-should-fail", "weight": 1, "cost": 1, "capacity_liters": 10,
+    })
+    s.expect_status(r, 401, "POST /items/backpacks without token → 401")
+
+    r = anon.delete(f"/hikes/delete/{RANDOM_UUID}")
+    s.expect_status(r, 401, "DELETE /hikes/delete/<id> without token → 401 (admin-gated)")
+
 
 # ── Request body size cap ──────────────────────────────────────────────────
 
@@ -274,6 +308,64 @@ def check_authed(c: Client, s: Suite, user_id: str | None) -> None:
     else:
         s.skip("self-user checks skipped", "no --user-id (and not auto-registered)")
 
+    # A normal (non-admin) token must NOT be able to mutate the hike catalog —
+    # that's the admin gate. 403 (authenticated but forbidden), not 401.
+    r = c.delete(f"/hikes/delete/{RANDOM_UUID}")
+    s.expect_status(r, 403, "DELETE /hikes/delete/<id> with non-admin token → 403")
+
+
+# ── Admin-only hike writes (needs the seeded CI admin) ─────────────────────
+
+VALID_HIKE_PAYLOAD = {
+    "source_id": "itest-admin-hike",
+    "name": "ITest Admin Hike",
+    "geometry": {"type": "LineString", "coordinates": [[-82.0, 35.0], [-82.01, 35.01]]},
+    "difficulty": "EASY",
+    "length_km": 2.0,
+    "elevation_gain_m": 100,
+    "min_altitude_m": 200,
+    "max_altitude_m": 300,
+    "region": "Integration Test Region",
+    "season_start_month": 1,
+    "season_end_month": 12,
+    "permits_required": False,
+    "gear_requirements": [],
+}
+
+
+def check_admin_writes(base_url: str, s: Suite, admin_email: str, admin_pw: str) -> None:
+    """Positive path: an admin CAN create + delete a hike. Self-cleaning (creates
+    then deletes its own hike, never touching seed rows). SKIPs when the admin
+    can't log in — e.g. running locally against a DB where the CI admin wasn't
+    seeded — so it's only asserted where the seed ran."""
+    print("\n[admin hike writes]")
+    anon = Client(base_url, token=None)
+    r = anon.post("/users/login", json={"email": admin_email, "password": admin_pw})
+    if r.status_code != 200:
+        s.skip("admin-write checks skipped", f"admin login → {r.status_code} (seed the CI admin to run these)")
+        return
+    admin = Client(base_url, token=r.json().get("access_token"))
+
+    created_id = None
+    try:
+        r = admin.post("/hikes/create", json=VALID_HIKE_PAYLOAD)
+        if not s.expect_status(r, 200, "POST /hikes/create with admin token → 200"):
+            return
+        ok, data = s.expect_json(r, "admin hike create returns JSON")
+        if ok:
+            created_id = data.get("id")
+            s.check("created hike has an id", bool(created_id))
+        if created_id:
+            r = admin.delete(f"/hikes/delete/{created_id}")
+            s.expect_status(r, 204, "DELETE /hikes/delete/<id> with admin token → 204")
+            created_id = None
+    finally:
+        if created_id:
+            try:
+                admin.delete(f"/hikes/delete/{created_id}")
+            except requests.RequestException:
+                pass
+
 
 # ── Optional throwaway account provisioning ────────────────────────────────
 
@@ -313,6 +405,10 @@ def main() -> None:
     ap.add_argument("--register", action="store_true",
                     help="Auto-create a throwaway user for the authed checks, then delete it")
     ap.add_argument("--skip-write", action="store_true", help="Skip the item CRUD cycle and body-cap POST")
+    ap.add_argument("--admin-email", default="ci-admin@example.com",
+                    help="Seeded admin email for the admin-write checks (default: the ci_seed.sql admin)")
+    ap.add_argument("--admin-password", default="ci-admin-pw-12345",
+                    help="Seeded admin password (default: the ci_seed.sql admin)")
     args = ap.parse_args()
 
     c = Client(args.base_url)
@@ -325,24 +421,34 @@ def main() -> None:
     check_health(c, s)
     check_hikes(c, s)
     check_items(c, s)
-    if not args.skip_write:
-        check_item_crud(c, s)
-        check_body_cap(c, s)
-    check_auth_gates(c, s)
 
-    # Authenticated surface.
+    # Resolve a token up front — item writes are now auth-gated, so the item CRUD
+    # cycle needs one (it used to run anonymously).
     token, user_id = args.token or None, args.user_id
     temp = None
     if not token and args.register:
         token, user_id = provision_temp_user(args.base_url, s)
         if token:
             temp = (token, user_id)
+    authed = Client(args.base_url, token=token) if token else None
 
     try:
-        if token:
-            check_authed(Client(args.base_url, token=token), s, user_id)
+        if not args.skip_write:
+            if authed:
+                check_item_crud(authed, s)
+            else:
+                s.skip("item CRUD cycle skipped", "item writes now need a token — pass --token or --register")
+            check_body_cap(c, s)  # anonymous: 413 fires in middleware before auth
+
+        check_auth_gates(c, s)
+
+        if authed:
+            check_authed(authed, s, user_id)
         else:
             s.skip("authenticated-read checks skipped", "pass --token or --register to run them")
+
+        if not args.skip_write:
+            check_admin_writes(args.base_url, s, args.admin_email, args.admin_password)
     finally:
         # Always remove an auto-provisioned user, even if a check above raised —
         # otherwise a mid-run error would leak a throwaway account each time.

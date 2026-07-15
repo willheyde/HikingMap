@@ -40,3 +40,26 @@ def decode_token(token: str) -> str:
 def get_current_user_id(token: str = Depends(oauth2_scheme)) -> str:
     """FastAPI dependency — use this on any protected route."""
     return decode_token(token)
+
+
+def get_current_admin(user_id: str = Depends(get_current_user_id)) -> str:
+    """FastAPI dependency — gate a route to admin users only.
+
+    Builds on get_current_user_id (a valid, unexpired JWT) and then checks the
+    is_admin flag for that user. The token itself carries only `sub`, so admin
+    status is read live from the DB — this means demoting a user takes effect
+    immediately without waiting for their token to expire.
+    """
+    # Imported lazily so this auth module has no import-time DB dependency
+    # (keeps it importable in contexts — e.g. token unit tests — with no DB).
+    from DBConnection import get_connection
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT is_admin FROM users WHERE id = %s", (user_id,))
+                row = cur.fetchone()
+    except Exception:
+        raise HTTPException(status_code=503, detail="Could not verify admin status.")
+    if not row or not row.get("is_admin"):
+        raise HTTPException(status_code=403, detail="Admin privileges required.")
+    return user_id

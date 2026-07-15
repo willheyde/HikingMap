@@ -45,6 +45,12 @@ class Hike:
     # Set at ingest and by ingestion/backfill_trail_distances.py; also the
     # idempotency gate that stops an out-and-back's length being doubled twice.
     trail_shape: Optional[str] = None
+    # Known campsites/shelters near this route, captured from OSM by
+    # ingestion/overpass_enrichment.py. Each: {name, lat, lng, type
+    # ('shelter' | 'camp_site'), dist_off_trail_m}. Fed to the AI itinerary
+    # prompt so day plans name real camps instead of inventing them. Empty until
+    # a (re-)enrichment run populates it.
+    campsites: List[Dict[str, Any]] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         if not self.name:
@@ -100,7 +106,7 @@ class Hike:
 
         # 3. Handle JSON Fields
         _dict_defaults = {"geometry", "gear_requirements"}
-        for field_name in ["geometry", "required_gear_tags", "parking_coordinates", "gear_requirements"]:
+        for field_name in ["geometry", "required_gear_tags", "parking_coordinates", "gear_requirements", "campsites"]:
             val = data_copy.get(field_name)
             if isinstance(val, str):
                 try:

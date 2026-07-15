@@ -76,8 +76,11 @@ class Item:
         return cls(
             id=data["id"] if isinstance(data["id"], UUID) else UUID(str(data["id"])),
             name=data["name"],
-            weight=float(data["weight"]),
-            cost=float(data["cost"]),
+            # Tolerate NULL weight/cost in the DB (legacy rows, or gear created
+            # before create_user_gear floored them) — a null must not crash every
+            # read of the user's kit.
+            weight=float(data.get("weight") or 0),
+            cost=float(data.get("cost") or 0),
             item_type=data.get("item_type", ItemType.MISC.value),
             image_url=data.get("image_url"),
             attributes=data.get("attributes") or {},

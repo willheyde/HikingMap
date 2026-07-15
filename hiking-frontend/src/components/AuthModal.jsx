@@ -128,7 +128,7 @@ const AuthModal = () => {
   };
   const validatePassword = (v) => {
     if (!v) return "Password is required.";
-    if (v.length < 6) return "Password must be at least 6 characters.";
+    if (v.length < 8) return "Password must be at least 8 characters.";
     return null;
   };
 
@@ -249,10 +249,10 @@ const AuthModal = () => {
           )}
           <Field label="Email" value={email} onChange={e => setEmail(e.target.value)} placeholder="you@example.com" />
           <div>
-            <Field label="Password" type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder="••••••••" minLength={6} />
+            <Field label="Password" type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder="••••••••" minLength={8} />
             {!isLoginView && (
               <p style={{ marginTop: "-10px", marginBottom: "18px", fontFamily: sans, fontSize: "11px", color: C.muted }}>
-                Minimum 6 characters
+                Minimum 8 characters
               </p>
             )}
           </div>

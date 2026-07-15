@@ -1,9 +1,9 @@
--- ci_seed.sql — small, VARIED fixture data for CI (and local smoke runs).
+-- ci_seed.sql ï¿½ small, VARIED fixture data for CI (and local smoke runs).
 --
 -- Not a copy of production: the point is to span every dimension the
 -- integration tests filter on (difficulty, state, length, tags) so a broken
--- filter has rows it must *exclude* — that's what makes the assertions bite.
--- Idempotent: ON CONFLICT DO NOTHING, and all ids use the 5eed…/17e0… ranges
+-- filter has rows it must *exclude* ï¿½ that's what makes the assertions bite.
+-- Idempotent: ON CONFLICT DO NOTHING, and all ids use the 5eedï¿½/17e0ï¿½ ranges
 -- so re-running never clobbers real data.
 
 INSERT INTO hikes (id, source_id, name, geometry, difficulty, length_km, elevation_gain_m, min_altitude_m, max_altitude_m, region, state, season_start_month, season_end_month, permits_required, last_synced_at, tags, can_camp, lat, lng) VALUES
@@ -31,6 +31,15 @@ INSERT INTO hikes (id, source_id, name, geometry, difficulty, length_km, elevati
   ('5eed0000-0000-4000-8000-000000000015', 'seed-021', 'Storm Peak Route', '{"type":"LineString","coordinates":[[-82.53,35.62],[-82.52,35.629999999999995]]}', 'MODERATE', 20.4, 420, 260, 680, 'Blue Ridge', 'NC', 4, 10, false, now(), ARRAY['river','wildflowers','meadow']::text[], false, 35.62, -82.53),
   ('5eed0000-0000-4000-8000-000000000016', 'seed-022', 'Aspen Meadow Trail', '{"type":"LineString","coordinates":[[-84.06,34.74],[-84.05,34.75]]}', 'DIFFICULT', 21.3, 855, 320, 1175, 'Chattahoochee Forest', 'GA', 4, 10, false, now(), ARRAY['forest','loop']::text[], true, 34.74, -84.06),
   ('5eed0000-0000-4000-8000-000000000017', 'seed-023', 'Devils Staircase', '{"type":"LineString","coordinates":[[-119.53,37.81],[-119.52,37.82]]}', 'EXPERT', 22.2, 1290, 380, 1670, 'Yosemite', 'CA', 6, 9, false, now(), ARRAY['summit','ridge','exposed']::text[], false, 37.81, -119.53)
+ON CONFLICT (id) DO NOTHING;
+
+-- A seeded ADMIN account so the integration suite can exercise the admin-gated
+-- hike write routes (create/update/delete). Password is 'ci-admin-pw-12345'
+-- (bcrypt hash below). CI-only fixture â€” never a real credential.
+INSERT INTO users (id, email, hashed_password, name, created_at, auth_provider, is_admin) VALUES
+  ('ad310000-0000-4000-8000-000000000001', 'ci-admin@example.com',
+   '$2b$12$aE2bHZrI3qWj00eLrZ6gL.zf.WgOV7vLpm7UrzRK3ugG/wKJcAXWi',
+   'CI Admin', now(), 'password', true)
 ON CONFLICT (id) DO NOTHING;
 
 INSERT INTO items (id, name, weight, cost, item_type, attributes) VALUES

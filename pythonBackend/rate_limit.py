@@ -48,15 +48,16 @@ def _env_int(name: str, default: int) -> int:
 
 # ── Tunables (env-overridable) ────────────────────────────────────────────────
 #
-# AI quota: one full trip-planning session is ~15-25 chat turns, so 40 messages
-# per 24h comfortably covers ~2 hikes. Set AI_QUOTA_WINDOW_SEC=18000 for a 5h
-# cycle instead, or raise AI_QUOTA_LIMIT to loosen.
-AI_QUOTA_LIMIT      = _env_int("AI_QUOTA_LIMIT", 40)          # messages per window
+# AI quota: each chat message fans out to 2-4 Groq calls (chat + structured
+# extraction + sometimes a refine second call), so a "message" is a coarse proxy
+# for real cost. 20/24h keeps a lid on it while still covering a full planning
+# session. Raise AI_QUOTA_LIMIT (or shorten AI_QUOTA_WINDOW_SEC) to loosen.
+AI_QUOTA_LIMIT      = _env_int("AI_QUOTA_LIMIT", 20)          # messages per window
 AI_QUOTA_WINDOW_SEC = _env_int("AI_QUOTA_WINDOW_SEC", 86400)  # 24h
 
 # Burst: stops scripted rapid-fire within the daily budget. Humans never exceed
 # this (each turn waits on a multi-second Groq response).
-AI_BURST_LIMIT      = _env_int("AI_BURST_LIMIT", 10)
+AI_BURST_LIMIT      = _env_int("AI_BURST_LIMIT", 6)
 AI_BURST_WINDOW_SEC = _env_int("AI_BURST_WINDOW_SEC", 60)
 
 # Auth: per-IP cap on login/registration to blunt credential stuffing.

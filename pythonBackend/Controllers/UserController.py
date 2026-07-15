@@ -238,11 +238,24 @@ def update_user(
         timezone=payload.timezone or existing.timezone,
         items=[Item.from_dict(i) for i in payload.items] if payload.items is not None else existing.items,
         created_at=existing.created_at,
+        # Carry non-editable identity/auth fields through from the existing row.
+        # Dropping these previously defaulted auth_provider to "password", so a
+        # Google account (empty hashed_password) tripped User.__init__'s guard and
+        # 500'd; it also silently demoted admins on any profile save.
+        google_sub=existing.google_sub,
+        auth_provider=existing.auth_provider,
+        is_admin=existing.is_admin,
     )
 
     try:
         result = user_service.update_user(updated_user)
-        return result.to_dict()
+        data = result.to_dict()
+        # Never echo secrets back to the client — to_dict() includes these for
+        # internal/DB use, but the response must match get_user's stripped shape
+        # (a profile save should not ship the password hash into browser memory).
+        data.pop("hashed_password", None)
+        data.pop("google_sub", None)
+        return data
     except Exception:
         logger.exception("update_user failed for user_id=%s", user_id)
         raise HTTPException(status_code=400, detail="Could not update the account.")

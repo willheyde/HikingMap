@@ -60,7 +60,8 @@ def _row_to_item(row) -> Item:
         attrs = attrs or {}
 
     def mk(cls, **kwargs):
-        obj = cls(id=id_, name=name, weight=float(weight), cost=float(cost), item_type=item_type, **kwargs)
+        # NULL weight/cost in the DB must not crash the read (legacy rows).
+        obj = cls(id=id_, name=name, weight=float(weight or 0), cost=float(cost or 0), item_type=item_type, **kwargs)
         obj.image_url = image_url
         obj.attributes = attrs        # preserve the full jsonb (gear_category, level, …)
         return obj
@@ -256,6 +257,11 @@ class ItemRepository:
         For a shell, waterproof is stamped True so the legacy waterproof-aware
         presence checks (rain_gear) still recognize it.
         """
+        # Callers may pass weight/cost as None (the inline gear form omits them);
+        # the column is numeric and float(None) would blow up, so floor to 0.
+        weight = weight or 0.0
+        cost   = cost or 0.0
+
         item_type = GEAR_CATEGORY_TO_ITEM_TYPE.get(gear_category, "misc")
         attrs: dict = {"gear_category": gear_category}
         if level:

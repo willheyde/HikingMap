@@ -115,7 +115,8 @@ export default function FilterBar({ filters, onChange }) {
             <option value="">Any</option>
             <option value="EASY">Easy</option>
             <option value="MODERATE">Moderate</option>
-            <option value="HARD">Hard</option>
+            <option value="DIFFICULT">Difficult</option>
+            <option value="EXPERT">Expert</option>
           </select>
         </div>
       </div>

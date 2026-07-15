@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Depends
 from pydantic import BaseModel, Field
 from typing import List, Optional, Any
 from uuid import UUID, uuid4
@@ -10,10 +10,19 @@ from PyObjects.Items import (
 )
 from Repos.ItemRepo import ItemRepository
 from Services.ItemService import ItemService
+from Auth.authentication import get_current_user_id
 
 router = APIRouter(tags=["Items"])
 repo   = ItemRepository()
 service = ItemService(repo)
+
+# The items catalog is world-readable (GETs below are open), but every write is
+# gated to an authenticated user — items are user-customizable, so any logged-in
+# user may add/edit them. NOTE: `items` is still a shared global table (no
+# per-row owner), so one user editing/deleting a catalog item affects everyone
+# who references it. That's an accepted trade-off for launch, not a redesign;
+# admin-only or per-user ownership would be the next step if abuse appears.
+_require_auth = [Depends(get_current_user_id)]
 
 
 # =============================================================================
@@ -240,7 +249,7 @@ def get_item(item_id: UUID):
 
 # ── Image update ───────────────────────────────────────────────────────────────
 
-@router.patch("/{item_id}/image", response_model=ItemResponseSchema)
+@router.patch("/{item_id}/image", response_model=ItemResponseSchema, dependencies=_require_auth)
 def update_item_image(item_id: UUID, payload: ImageUpdateSchema):
     if not service.get_item(item_id):
         raise HTTPException(status_code=404, detail="Item not found")
@@ -249,7 +258,7 @@ def update_item_image(item_id: UUID, payload: ImageUpdateSchema):
 
 # ── Delete ─────────────────────────────────────────────────────────────────────
 
-@router.delete("/{item_id}", status_code=204)
+@router.delete("/{item_id}", status_code=204, dependencies=_require_auth)
 def delete_item(item_id: UUID):
     if not service.get_item(item_id):
         raise HTTPException(status_code=404, detail="Item not found")
@@ -262,70 +271,70 @@ def _create(item: Item) -> ItemResponseSchema:
     item.id = item_id
     return item_to_response(item)
 
-@router.post("/backpacks", response_model=ItemResponseSchema)
+@router.post("/backpacks", response_model=ItemResponseSchema, dependencies=_require_auth)
 def create_backpack(p: BackpackCreateSchema):
     return _create(Backpack(id=uuid4(), name=p.name, weight=p.weight, cost=p.cost,
                             capacity_liters=p.capacity_liters, frame_type=p.frame_type))
 
-@router.post("/footwear", response_model=ItemResponseSchema)
+@router.post("/footwear", response_model=ItemResponseSchema, dependencies=_require_auth)
 def create_footwear(p: FootwearCreateSchema):
     return _create(Footwear(id=uuid4(), name=p.name, weight=p.weight, cost=p.cost,
                             waterproof=p.waterproof, crampon_compatible=p.crampon_compatible,
                             ankle_support=p.ankle_support))
 
-@router.post("/shelters", response_model=ItemResponseSchema)
+@router.post("/shelters", response_model=ItemResponseSchema, dependencies=_require_auth)
 def create_shelter(p: ShelterCreateSchema):
     return _create(Shelter(id=uuid4(), name=p.name, weight=p.weight, cost=p.cost,
                            capacity_persons=p.capacity_persons, season_rating=p.season_rating,
                            shelter_type=p.shelter_type))
 
-@router.post("/sleeping-bags", response_model=ItemResponseSchema)
+@router.post("/sleeping-bags", response_model=ItemResponseSchema, dependencies=_require_auth)
 def create_sleeping_bag(p: SleepingBagCreateSchema):
     return _create(SleepingBag(id=uuid4(), name=p.name, weight=p.weight, cost=p.cost,
                                temp_rating_f=p.temp_rating_f, fill_type=p.fill_type))
 
-@router.post("/sleeping-pads", response_model=ItemResponseSchema)
+@router.post("/sleeping-pads", response_model=ItemResponseSchema, dependencies=_require_auth)
 def create_sleeping_pad(p: SleepingPadCreateSchema):
     return _create(SleepingPad(id=uuid4(), name=p.name, weight=p.weight, cost=p.cost,
                                r_value=p.r_value, pad_type=p.pad_type))
 
-@router.post("/clothing", response_model=ItemResponseSchema)
+@router.post("/clothing", response_model=ItemResponseSchema, dependencies=_require_auth)
 def create_clothing(p: ClothingCreateSchema):
     return _create(Clothing(id=uuid4(), name=p.name, weight=p.weight, cost=p.cost,
                             layer_type=p.layer_type, waterproof=p.waterproof, min_temp_f=p.min_temp_f))
 
-@router.post("/water", response_model=ItemResponseSchema)
+@router.post("/water", response_model=ItemResponseSchema, dependencies=_require_auth)
 def create_water_system(p: WaterSystemCreateSchema):
     return _create(WaterSystem(id=uuid4(), name=p.name, weight=p.weight, cost=p.cost,
                                system_type=p.system_type, flow_rate_lpm=p.flow_rate_lpm))
 
-@router.post("/kitchen", response_model=ItemResponseSchema)
+@router.post("/kitchen", response_model=ItemResponseSchema, dependencies=_require_auth)
 def create_kitchen(p: KitchenCreateSchema):
     return _create(Kitchen(id=uuid4(), name=p.name, weight=p.weight, cost=p.cost,
                            stove_type=p.stove_type, cookware_included=p.cookware_included,
                            boil_time_min=p.boil_time_min))
 
-@router.post("/navigation", response_model=ItemResponseSchema)
+@router.post("/navigation", response_model=ItemResponseSchema, dependencies=_require_auth)
 def create_navigation(p: NavigationCreateSchema):
     return _create(NavigationTool(id=uuid4(), name=p.name, weight=p.weight, cost=p.cost,
                                   nav_type=p.nav_type))
 
-@router.post("/lighting", response_model=ItemResponseSchema)
+@router.post("/lighting", response_model=ItemResponseSchema, dependencies=_require_auth)
 def create_lighting(p: LightingCreateSchema):
     return _create(Lighting(id=uuid4(), name=p.name, weight=p.weight, cost=p.cost,
                             lumens=p.lumens, lighting_type=p.lighting_type))
 
-@router.post("/safety", response_model=ItemResponseSchema)
+@router.post("/safety", response_model=ItemResponseSchema, dependencies=_require_auth)
 def create_safety(p: SafetyCreateSchema):
     return _create(SafetyGear(id=uuid4(), name=p.name, weight=p.weight, cost=p.cost,
                               safety_type=p.safety_type, avalanche_rated=p.avalanche_rated))
 
-@router.post("/technical", response_model=ItemResponseSchema)
+@router.post("/technical", response_model=ItemResponseSchema, dependencies=_require_auth)
 def create_technical(p: TechnicalCreateSchema):
     return _create(TechnicalGear(id=uuid4(), name=p.name, weight=p.weight, cost=p.cost,
                                  technical_type=p.technical_type))
 
-@router.post("/trekking-poles", response_model=ItemResponseSchema)
+@router.post("/trekking-poles", response_model=ItemResponseSchema, dependencies=_require_auth)
 def create_trekking_poles(p: TrekkingPolesCreateSchema):
     return _create(TrekkingPoles(id=uuid4(), name=p.name, weight=p.weight, cost=p.cost,
                                  adjustable=p.adjustable, material=p.material))

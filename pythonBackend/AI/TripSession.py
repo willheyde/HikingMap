@@ -82,6 +82,19 @@ class TripSession:
         self._prune_window()
         self._touch()
 
+    def add_assistant_note(self, content: str) -> None:
+        """
+        Append a system-generated assistant confirmation (e.g. after an inline
+        gear-form submit) to the window WITHOUT counting it as a full turn.
+
+        Keeps Groq's next turn coherent — it sees that the item was already
+        acknowledged and won't re-flag the resolved gap — without a Groq call and
+        without perturbing the summarization cadence (total_turns is untouched).
+        """
+        self.messages.append(_msg("assistant", content))
+        self._prune_window()
+        self._touch()
+
     def _prune_window(self) -> None:
         """
         Keep only the most recent MESSAGE_WINDOW turns (each turn = 2 messages).
