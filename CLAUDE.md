@@ -53,7 +53,7 @@ Two HTTP integration runners, both hit a **running** server, both plain `request
 **CI** (`.github/workflows/ci.yml`, runs on every push + PR): a **backend** job (installs `requirements.txt`, byte-compiles, runs `UnitTest.py`, then boots the app against throwaway Postgres+Redis service containers and runs `IntegrationTest.py --register`) and a **frontend** job (`npm ci` → lint → build). `SystemTest.py` is deliberately **not** in CI — it spends Groq quota.
 
 ### Database migrations
-Numbered SQL files in `pythonBackend/migrations/` (currently through `008_admin_flag.sql`), applied by the `migrate.py` runner, which tracks applied versions in a `schema_migrations` table:
+Numbered SQL files in `pythonBackend/migrations/` (currently through `010_scrub_future_trails.sql`), applied by the `migrate.py` runner, which tracks applied versions in a `schema_migrations` table:
 ```bash
 python migrate.py status     # applied vs pending
 python migrate.py up         # apply pending migrations
