@@ -21,12 +21,56 @@ SKIP_NAME_FRAGMENTS = {
     "driveway", "parking", "road", "street", "avenue", "boulevard",
 }
 
+# Planned / unbuilt trails: OSM mappers label these "Future - <name>",
+# "Proposed <name>", "Construction <name>". They aren't walkable and were leaking
+# into results verbatim (e.g. "Future - High Knob Trail"). Matched as a name
+# PREFIX (not substring) so a legitimately-named trail isn't dropped.
+SKIP_NAME_PREFIXES = ("future ", "future-", "future -", "proposed ", "construction ")
+
 # ── Difficulty ─────────────────────────────────────────────────────────────────
 
 def infer_difficulty(tags: dict) -> DifficultyLevel:
     """Tag-based difficulty — used when OSM sac_scale is present."""
     sac = tags.get("sac_scale")
     return SAC_SCALE_MAP.get(sac, DifficultyLevel.MODERATE)
+
+
+# Shenandoah rating tier cutoffs. Retuned looser than canonical (50/100/150) to
+# remove the systematic over-rating QA found. SINGLE SOURCE OF TRUTH — imported
+# by backfill_difficulty.py as its CLI defaults so ingest and the backfill agree.
+RATING_EASY_MAX      = 50.0
+RATING_MODERATE_MAX  = 110.0
+RATING_DIFFICULT_MAX = 210.0
+
+# Grade (metres of gain per km) thresholds for the average-person "feel"
+# adjustment that the length×gain rating can't see:
+#   * A genuinely FLAT trail is an endurance walk, not a hard hike, so it's
+#     capped at Moderate however long it is — a 71 km / 400 m rail-trail (grade
+#     ~6) is NOT "Expert".
+#   * A short, STEEP grind feels harder than its modest length×gain rating (a
+#     300 m wall in 2 km rates "Easy"), so it's bumped one tier.
+FLAT_GRADE_M_PER_KM  = 25.0
+STEEP_GRADE_M_PER_KM = 80.0
+
+
+def apply_grade_feel(
+    diff: DifficultyLevel,
+    length_km: float,
+    gain_m: float,
+    flat_grade: float = FLAT_GRADE_M_PER_KM,
+    steep_grade: float = STEEP_GRADE_M_PER_KM,
+) -> DifficultyLevel:
+    """Adjust a length×gain difficulty for GRADE (steepness) so it matches how a
+    hike actually feels. Flat → cap at Moderate; steep → bump one tier. Leaves
+    mid-grade trails (where distance and gain correlate) untouched."""
+    if length_km <= 0 or gain_m <= 0:
+        return diff
+    grade = gain_m / length_km
+    if grade < flat_grade and diff.value > DifficultyLevel.MODERATE.value:
+        return DifficultyLevel.MODERATE
+    if grade >= steep_grade and diff.value < DifficultyLevel.EXPERT.value:
+        return DifficultyLevel(diff.value + 1)
+    return diff
 
 
 # new
@@ -50,10 +94,14 @@ def calculate_difficulty(
     feet_gain = gain_m    * 3.28084
     rating    = math.sqrt(2 * miles * feet_gain) if (miles > 0 and feet_gain > 0) else 0.0
 
-    if rating < 50:  return DifficultyLevel.EASY
-    if rating < 100: return DifficultyLevel.MODERATE
-    if rating < 150: return DifficultyLevel.DIFFICULT
-    return DifficultyLevel.EXPERT
+    if   rating < RATING_EASY_MAX:      base = DifficultyLevel.EASY
+    elif rating < RATING_MODERATE_MAX:  base = DifficultyLevel.MODERATE
+    elif rating < RATING_DIFFICULT_MAX: base = DifficultyLevel.DIFFICULT
+    else:                               base = DifficultyLevel.EXPERT
+    # Grade-feel correction (flat→cap Moderate, steep→bump) so a flat rail-trail
+    # isn't "Expert" and a short wall isn't "Easy". sac_scale (returned above)
+    # is authoritative and deliberately NOT adjusted.
+    return apply_grade_feel(base, length_km, gain_m)
 
 
 # ── Distance / Elevation ───────────────────────────────────────────────────────
@@ -101,6 +149,16 @@ TRAIL_SHAPE_OUT_AND_BACK = "out_and_back"
 # from geometry — a degenerate/empty coordinate list. Stamped rather than left
 # NULL so the row is not re-scanned on every future run; length is left as-is.
 TRAIL_SHAPE_UNKNOWN      = "unknown"
+# A long OPEN trail whose stored one-way length already exceeds
+# MAX_OUT_AND_BACK_ONEWAY_KM. Doubling it (endpoint gap can't tell an
+# out-and-back from a thru-trail, so open defaults to out-and-back) would turn a
+# genuine linear thru-trail segment (AT / MST / PCT — the MST already reads
+# 49 km) into an absurd ~2× figure. Above the threshold a real out-and-back
+# (>50 km round trip) is far rarer than a linear corridor, so we DON'T double:
+# stamp this, leave length as-is, and let a human confirm if needed.
+TRAIL_SHAPE_POINT_TO_POINT = "point_to_point"
+# Stored one-way km above which an OPEN trail is treated as linear, not doubled.
+MAX_OUT_AND_BACK_ONEWAY_KM = 25.0
 
 
 def classify_trail_shape(
@@ -498,9 +556,12 @@ def is_valid_hike(distance_m: float, elevation_gain_m: float) -> bool:
 
 
 def is_noise(name: str, tags: dict) -> bool:
-    lower = name.lower()
+    lower = name.lower().strip()
+    if lower.startswith(SKIP_NAME_PREFIXES):
+        return True
     if any(frag in lower for frag in SKIP_NAME_FRAGMENTS):
         return True
-    if tags.get("highway") in {"residential", "unclassified", "tertiary"}:
+    if tags.get("highway") in {"residential", "unclassified", "tertiary",
+                               "proposed", "construction"}:
         return True
     return False

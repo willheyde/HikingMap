@@ -51,6 +51,7 @@ from typing import TYPE_CHECKING, List, Optional, Tuple
 from AI.rigor import rigor_tier, TIER_BLURB
 from PyObjects.Hike import DifficultyLevel, Hike
 from Services.HikeService import HikeService
+from trip_metrics import MAX_KM_PER_DAY
 
 if TYPE_CHECKING:
     from AI.TripInputParser import TripIntent
@@ -89,6 +90,16 @@ EXPANDED_RADIUS_KM: float = 350.0
 # weight), so tag-rich long trails that merely pass nearby still won. The search
 # still *returns* trails out to DEFAULT_RADIUS_KM — this only shapes ranking.
 POINT_PROXIMITY_FALLOFF_KM: float = 30.0
+
+# Weight of the length-proximity term for an approximate-length request ("about
+# 3 miles"). Was effectively 0.3 (the helper default), which is ~10x smaller than
+# the 3.0 point-proximity weight — so a correct-length trail could never overcome
+# a nearer-but-shorter one and "about 3 miles near me" returned ~2-mile trails. At
+# 1.0 a perfect-length match is worth ~10 km of proximity-equivalence: enough to
+# reorder near-but-wrong-length results without overriding proximity outright.
+# Tunable — raise it if length should matter more, lower it if it over-pulls far
+# trails.
+LENGTH_PROXIMITY_WEIGHT: float = 1.0
 _DIFFICULTY_HINT_TO_ENUM: dict[str, DifficultyLevel] = {
     "easy":     DifficultyLevel.EASY,
     "moderate": DifficultyLevel.MODERATE,
@@ -244,12 +255,22 @@ class HikeSearchService:
 
         permits_required: Optional[bool] = False if intent.avoid_permits else None
 
+        # Per-day feasibility ceiling: when the user named no explicit max length,
+        # cap the trail at what fits in the trip's day count (MAX_KM_PER_DAY per
+        # day) so a 182 km through-trail isn't offered for a 1- or 2-day trip. A
+        # user-typed ceiling always wins; setting intent.max_km_per_day_cap = None
+        # disables the derivation (find_hikes_with_fallback's last-resort pass).
+        max_length_km = getattr(intent, "max_length_km", None)
+        cap_per_day = getattr(intent, "max_km_per_day_cap", MAX_KM_PER_DAY)
+        if max_length_km is None and cap_per_day:
+            max_length_km = cap_per_day * max(1, int(getattr(intent, "duration_days", 1) or 1))
+
         candidates: List[Hike] = self.hike_service.search_hikes(
             user_lat=intent.lat,
             user_lon=intent.lng,
             max_distance_km=max_distance_km,
             min_length_km=getattr(intent, "min_length_km", None),   # ← NEW: floor
-            max_length_km=getattr(intent, "max_length_km", None),
+            max_length_km=max_length_km,
             can_camp=can_camp,
             permits_required=permits_required,
             required_tags=tag_required or None,
@@ -282,17 +303,20 @@ class HikeSearchService:
                 _tag_match_score(set(hike.tags or []), preferred_expanded)
                 + _difficulty_score(hike, intent.difficulty_hint)
                 + _proximity_bonus(hike, proximity_falloff, weight=proximity_weight)
-                + _length_proximity_bonus(hike, getattr(intent, "target_length_km", None)),   # ← NEW
+                + _length_proximity_bonus(hike, getattr(intent, "target_length_km", None), weight=LENGTH_PROXIMITY_WEIGHT),   # ← NEW
             )
             for hike in candidates
         ]
 
-        scored.sort(
-            key=lambda x: (
-                -x[1],
-                getattr(x[0], "distance_km", None) or float("inf"),
-            )
-        )
+        # Primary ranking dimension (from TripIntent.primary_priority, decided by
+        # the parser's rules or TripChat's hybrid Groq step). When set, it becomes
+        # the PRIMARY sort key and the composite score is only the tiebreak, so a
+        # request that's really "about" distance orders by closeness-to-target and
+        # one that's "about" a feature puts feature-matching trails first — while
+        # never collapsing to a single dimension (score/geo still break ties).
+        primary = getattr(intent, "primary_priority", None)
+        target  = getattr(intent, "target_length_km", None)
+        scored.sort(key=lambda pair: _primary_sort_key(pair, primary, target))
 
         # ── Champion / priority filter ──────────────────────────────────────
         # A feature the user explicitly emphasized ("I really want a water
@@ -411,17 +435,21 @@ class HikeSearchService:
         }
 
         if not fallback_map:
+            # No substitutable tags left to try — but the empty result may be the
+            # derived per-day ceiling, not the tags. Relax the cap as a last resort
+            # before giving up, so a sparse region returns something.
+            relaxed = self._search_uncapped(intent, intent, top_n, search_radius)
             return SearchResult(
-                scored                    = [],
+                scored                    = relaxed,
                 requested_concept_tags    = requested_concepts,
-                unmatched_concept_tags    = requested_concepts,
+                unmatched_concept_tags    = _unmatched(relaxed) if relaxed else requested_concepts,
                 unmatched_preferred_tags  = _get_unmatched_preferred_tags(
-                    [], intent.preferred_tags, requested_concepts
+                    relaxed, intent.preferred_tags, requested_concepts
                 ),
                 difficulty_hint           = intent.difficulty_hint,
                 radius_expanded           = search_radius != max_distance_km,
-                difficulty_mismatch       = _difficulty_unmatched([], intent.difficulty_hint),
-            )   
+                difficulty_mismatch       = _difficulty_unmatched(relaxed, intent.difficulty_hint),
+            )
 
         failed_tags     = list(fallback_map.keys())
         substitute_tags = [t for alts in fallback_map.values() for t in alts]
@@ -436,6 +464,7 @@ class HikeSearchService:
             min_length_km     = getattr(intent, "min_length_km", None),      # ← NEW: floor
             max_length_km     = getattr(intent, "max_length_km", None),
             target_length_km  = getattr(intent, "target_length_km", None),   # ← NEW
+            duration_days     = getattr(intent, "duration_days", None),       # ← per-day cap
             avoid_permits     = intent.avoid_permits,
             region_tag        = getattr(intent, "region_tag", None),
             state             = getattr(intent, "state", None),
@@ -444,6 +473,8 @@ class HikeSearchService:
         fallback_scored = self.find_hikes_for_intent(
             fallback_intent, top_n, search_radius
         )
+        if not fallback_scored:
+            fallback_scored = self._search_uncapped(intent, fallback_intent, top_n, search_radius)
 
         return SearchResult(
             scored                    = fallback_scored,
@@ -459,6 +490,24 @@ class HikeSearchService:
             radius_expanded            = search_radius != max_distance_km,
             difficulty_mismatch        = _difficulty_unmatched(fallback_scored, intent.difficulty_hint),
         )
+
+    def _search_uncapped(self, gate_intent, source, top_n, search_radius):
+        """Last-resort retry with the per-day distance ceiling disabled.
+
+        Only fires when the ceiling was *derived* (the user typed no explicit max)
+        — a user's own max is never overridden. Lets a sparse region return trails
+        longer than the reasonable per-day cap rather than nothing; the itinerary
+        auto-extends the day count for whatever the user then selects.
+        """
+        if getattr(gate_intent, "max_length_km", None) is not None:
+            return []
+        prev = getattr(source, "max_km_per_day_cap", MAX_KM_PER_DAY)
+        source.max_km_per_day_cap = None
+        try:
+            return self.find_hikes_for_intent(source, top_n, search_radius)
+        finally:
+            source.max_km_per_day_cap = prev
+
     @staticmethod
     def _format_state_label(state: Optional[str]) -> Optional[str]:
         """
@@ -674,6 +723,28 @@ def _length_proximity_bonus(hike: Hike, target_length_km: Optional[float], weigh
     delta = abs(hike.length_km - target_length_km)
     window = max(target_length_km * 0.5, 0.1)  # zero bonus past ±50% of target
     return weight * max(0.0, 1.0 - delta / window)
+
+
+def _primary_sort_key(pair, primary: Optional[str], target: Optional[float]):
+    """
+    Sort key for the ranked hikes, honoring TripIntent.primary_priority (the AI-
+    /rule-decided single most-important dimension). The primary dimension leads;
+    the composite score (and geographic distance) only break ties, so ranking is
+    never one-dimensional.
+
+    - primary == "distance" (needs a target): closest-to-target length first.
+    - primary is a feature tag: trails carrying that tag first.
+    - primary is None ("balanced"): the previous behavior — composite score desc,
+      then geographic distance asc.
+    """
+    hike, score = pair
+    geo = getattr(hike, "distance_km", None) or float("inf")
+    if primary == "distance" and target is not None:
+        return (abs((hike.length_km or 0.0) - target), -score, geo)
+    if primary and primary != "distance":
+        has_feature = primary in set(hike.tags or [])
+        return (0 if has_feature else 1, -score, geo)
+    return (0.0, -score, geo)
 def _expand_concept_tags(
     required_tags: list[str],
     preferred_tags: list[str],

@@ -77,8 +77,10 @@ from characterizations import (
     haversine,
     length_bucket_tag,
     LENGTH_BUCKET_TAGS,
+    MAX_OUT_AND_BACK_ONEWAY_KM,
     TRAIL_SHAPE_LOOP,
     TRAIL_SHAPE_OUT_AND_BACK,
+    TRAIL_SHAPE_POINT_TO_POINT,
     TRAIL_SHAPE_UNKNOWN,
 )
 
@@ -208,6 +210,25 @@ def backfill(dry_run: bool = False) -> None:
                                 (TRAIL_SHAPE_LOOP, str(row["id"])),
                             )
                         loops += 1
+                        continue
+
+                    # ── Long linear guard: an OPEN trail already longer one-way
+                    # than MAX_OUT_AND_BACK_ONEWAY_KM is far more likely a thru/
+                    # linear corridor (AT/MST/PCT segment) than a >50 km round-trip
+                    # out-and-back. Doubling would fabricate a ~2× distance, so
+                    # stamp point_to_point and leave length untouched.
+                    if stored_len > MAX_OUT_AND_BACK_ONEWAY_KM:
+                        print(f"  [dry-run] LINEAR {row['name']}: {stored_len:.2f} km one-way "
+                              f"> {MAX_OUT_AND_BACK_ONEWAY_KM:.0f} km — NOT doubled"
+                              if dry_run else
+                              f"  LINEAR {row['name']}: {stored_len:.2f} km one-way "
+                              f"> {MAX_OUT_AND_BACK_ONEWAY_KM:.0f} km — stamped 'point_to_point', not doubled")
+                        if not dry_run:
+                            cur.execute(
+                                "UPDATE hikes SET trail_shape = %s WHERE id = %s",
+                                (TRAIL_SHAPE_POINT_TO_POINT, str(row["id"])),
+                            )
+                        unknown += 1
                         continue
 
                     # ── OUT_AND_BACK: double the stored length, keep row consistent ──

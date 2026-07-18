@@ -68,7 +68,8 @@ from Repos.TripRepo             import TripRepository
 from Services.TripService       import TripService
 from AI.TripInputParser import (
     TripInputParser, TripIntent, RefinementIntent, ALL_FEATURE_KEYWORDS,
-    DestinationNotFound,
+    DestinationNotFound, LocationRequired, NoDestinationProvided, is_near_me,
+    _FEATURE_TAGS, _infer_primary_priority, _default_duration_days,
 )
 from AI.GearGapAnalyzer import GearGapAnalyzer
 from AI.rigor import rigor_tier
@@ -81,7 +82,7 @@ from AI.PhaseController         import PhaseController
 from AI.GroqClient              import GroqClient
 from AI.TripSession         import TripSession
 from AI.TripPlan            import GearGap
-from trip_metrics           import estimate_hike_duration, reverse_geocode, split_days
+from trip_metrics           import estimate_hike_duration, reverse_geocode, split_days, min_days_for_length
 from gear_levels            import (
     resolve_gear_category, resolve_level,
     GEAR_CATEGORIES, is_valid_level, valid_levels,
@@ -420,6 +421,12 @@ async def trip_chat(
     intent: Optional[TripIntent] = None
     hike_context: str = ""
 
+    # Whether options were presented on a PRIOR turn. A message can only be a
+    # numbered selection if the user has already SEEN the options — otherwise the
+    # search-triggering description gets mis-read as a pick (e.g. the "3" in
+    # "3 day trip" → "option 3"). Captured before step 4 flips the flag this turn.
+    hikes_already_presented = bool(session.phase_data.get("hikes_presented"))
+
     if session.phase == "destination":
         # Bug fix: this used to guard on `not session.plan.is_destination_set()`,
         # which also requires hike_id — but hike_id isn't set until step 5,
@@ -526,6 +533,51 @@ async def trip_chat(
                         created        = created,
                         hike_options   = [],
                     )
+                except NoDestinationProvided:
+                    # The message named NO place at all — an activity/feature-only
+                    # line ("a stroll in a forest, at least 3 miles") the
+                    # no-destination gate didn't catch, or "I didn't name a place".
+                    # Don't surface a "couldn't find X" error for a phantom place.
+                    # Accumulate any tags/length and fall through with intent=None
+                    # so the assistant asks where they'd like to hike.
+                    logger.info(
+                        "Session %s: no destination named — will ask for a place.",
+                        session.session_id,
+                    )
+                    text = req.message.lower().strip()
+                    required, preferred, avoid_permits, priority = _parser._extract_tags(
+                        text, _parser._extract_activity(text), _parser._extract_difficulty(text)
+                    )
+                    min_len, max_len, target_len = _parser._extract_length_constraints(text)
+                    _merge_accum_tags(
+                        session, required, preferred, priority,
+                        _parser._extract_difficulty(text),
+                        min_len, max_len, target_len,
+                    )
+                except LocationRequired:
+                    # "near me" but no coordinates were shared (GPS denied, no
+                    # saved home_location). Ask for a place rather than geocoding
+                    # the pronoun "me" (→ Maine). Deterministic — no Groq call.
+                    need_loc = (
+                        "I don't have your location yet — turn on location sharing, "
+                        "or tell me a town, park, or state to search near."
+                    )
+                    logger.info(
+                        "Session %s: 'near me' with no coordinates — asked for a place.",
+                        session.session_id,
+                    )
+                    session.add_turn(req.message, need_loc)
+                    if not _store.save(session):
+                        logger.error("Redis save failed for session %s", session.session_id)
+                    return ChatResponse(
+                        session_id     = session.session_id,
+                        response       = need_loc,
+                        phase          = session.phase,
+                        plan           = session.plan.to_dict(),
+                        advanced       = False,
+                        created        = created,
+                        hike_options   = [],
+                    )
                 if intent is not None:
                     _merge_accum_tags(
                         session, intent.required_tags, intent.preferred_tags,
@@ -566,7 +618,7 @@ async def trip_chat(
     just_selected_hike = False
     if (
         session.phase == "destination"
-        and session.phase_data.get("hikes_presented")
+        and hikes_already_presented          # ← was session.phase_data.get("hikes_presented")
         and session.plan.hike_id is None
     ):
         idx = PhaseController.extract_hike_selection(
@@ -610,7 +662,13 @@ async def trip_chat(
     if reset:
         _reset_destination(session)
         advanced = False
-        new_intent = _parse_intent(req)
+        # On the reset path an unresolvable / "near me"-without-coords message
+        # degrades to no new intent (the destination was just cleared, so the
+        # normal flow will prompt for one) rather than 500-ing.
+        try:
+            new_intent = _parse_intent(req)
+        except (DestinationNotFound, LocationRequired, NoDestinationProvided):
+            new_intent = None
         if new_intent is not None:
             intent = new_intent
             # Bug 1 fix: same logging + trail-system guard on the reset path.
@@ -892,6 +950,12 @@ async def trip_chat(
         if refinement.max_length_km is not None:
             session.phase_data["refine_max_length_km"]    = refinement.max_length_km
             session.phase_data["refine_target_length_km"] = refinement.target_length_km
+        # A restated trip length ("actually make it a 3 day trip") updates the
+        # plan so the rigor tier (Expedition) and itinerary split use it, not just
+        # this turn's search. Only when explicitly given, so an unrelated refine
+        # doesn't reset it.
+        if refinement.duration_days is not None:
+            session.plan.duration_days = refinement.duration_days
 
         if _looks_like_affirmation(req.message):
             pivot = session.phase_data.pop("pivot_difficulty", None)
@@ -917,6 +981,7 @@ async def trip_chat(
             session.plan,
             SimpleNamespace(
                 activity_type     = getattr(refinement, "activity_type", None),
+                duration_days     = getattr(refinement, "duration_days", None),
                 difficulty_hint   = session.plan.difficulty,
                 required_tags     = session.phase_data.get("refine_required_tags", []),
                 preferred_tags    = session.phase_data.get("refine_preferred_tags", []),
@@ -1145,6 +1210,22 @@ async def trip_chat(
                 "on any presented card",
                 session.session_id, fabricated,
             )
+
+    # ── 9h. Final control-token safety net ─────────────────────────────────────
+    # SEARCH_REFINE is normally consumed + stripped by step 9e, but only on the
+    # refine path (not reset, not relocated, not a fresh selection). If Groq emits
+    # it on any OTHER path — e.g. a message that also tripped a destination reset —
+    # nothing above strips it and the raw token leaks into the reply. Scrub it
+    # (and a stray DESTINATION RESET) unconditionally here so the token can never
+    # reach the user regardless of which branch handled the turn.
+    if "SEARCH_REFINE" in ai_response:
+        ai_response = _strip_signal(ai_response, "SEARCH_REFINE")
+    if "DESTINATION RESET" in ai_response:
+        ai_response = _strip_signal(ai_response, "DESTINATION RESET")
+
+    # ── 9i. Strip stray markdown Groq emitted (chat renders raw text, so any
+    #        "**bold**" it added around a re-typed name shows literal asterisks).
+    ai_response = _strip_markdown_emphasis(ai_response)
 
     # ── 10. Append turn + async summarize if threshold crossed ─────────────
     session.add_turn(req.message, ai_response)
@@ -1662,20 +1743,32 @@ def _try_relocate(session: TripSession, req: "ChatRequest", user_gear: list[dict
     plan = session.plan
     if plan.lat is None or plan.lng is None:
         return None                          # no existing search to move
-    place = _parser.extract_relocation_place(req.message)
-    if not place:
-        return None
-    coords = _parser._geocode(place, state=plan.state)
-    if not coords:
-        return None
+
+    # "move it near me" mid-chat: relocate to the user's OWN coordinates instead
+    # of geocoding the pronoun ("me" → the state of Maine). Requires coords on the
+    # request; without them, fall through so the normal flow can ask for a place.
+    if is_near_me(req.message) and req.user_lat is not None and req.user_lng is not None:
+        coords       = {"lat": req.user_lat, "lng": req.user_lng, "state": None}
+        place_display = "Near your current location"
+        new_state     = None
+    else:
+        place = _parser.extract_relocation_place(req.message)
+        if not place:
+            return None
+        coords = _parser._geocode(place, state=plan.state)
+        if not coords:
+            return None
+        place_display = place.title()
+        new_state     = coords.get("state") or plan.state
+
     # Must be a real move (~>20 km / 0.2°), else it's just the same area restated.
     if abs(coords["lat"] - plan.lat) < 0.2 and abs(coords["lng"] - plan.lng) < 0.2:
         return None
 
     plan.lat              = coords["lat"]
     plan.lng              = coords["lng"]
-    plan.destination_full = place.title()
-    plan.state            = coords.get("state") or plan.state
+    plan.destination_full = place_display
+    plan.state            = new_state
 
     _soft_reset_hike_selection(session)      # clears selection + search state, keeps filters
 
@@ -1747,6 +1840,7 @@ def _intent_from_plan(plan) -> TripIntent:
         min_length_km     = plan.min_length_km,       # ← NEW
         max_length_km     = plan.max_length_km,       # ← NEW
         target_length_km  = plan.target_length_km,
+        primary_priority  = _infer_primary_priority([], [], [], plan.target_length_km),
     )
 
 
@@ -1770,7 +1864,10 @@ def _intent_from_plan_with_override(plan, refinement: "RefinementIntent"):
         raw_goal          = "",
         destination_type  = "region",
         activity_type     = refinement.activity_type or plan.activity_type or "hiking",
-        duration_days     = plan.duration_days,
+        # A refine turn that restates trip length ("make it a 3 day trip") adopts
+        # it; otherwise keep the plan's persisted duration. getattr: some callers
+        # pass a SimpleNamespace without a duration_days field.
+        duration_days     = getattr(refinement, "duration_days", None) or plan.duration_days,
         difficulty_hint   = refinement.difficulty_hint or plan.difficulty,
         required_tags     = list(refinement.required_tags or []),
         preferred_tags    = list(refinement.preferred_tags or []),
@@ -1780,6 +1877,15 @@ def _intent_from_plan_with_override(plan, refinement: "RefinementIntent"):
         min_length_km     = getattr(refinement, "min_length_km", None) or plan.min_length_km,        # ← NEW
         max_length_km     = getattr(refinement, "max_length_km", None) or plan.max_length_km,        # ← NEW
         target_length_km  = getattr(refinement, "target_length_km", None) or plan.target_length_km,  # ← NEW
+        # Rule-based priority for the refined criteria (emphasized feature, or a
+        # sole distance). raw_goal is "" on this path so the Groq tie-breaker in
+        # _search_and_analyse stays inert — deterministic only.
+        primary_priority  = _infer_primary_priority(
+            list(refinement.priority_tags or []),
+            list(refinement.required_tags or []),
+            list(refinement.preferred_tags or []),
+            getattr(refinement, "target_length_km", None) or plan.target_length_km,
+        ),
     )
 def _build_gear_prompt(session: TripSession, raw_category: str) -> Optional[dict]:
     """
@@ -1824,6 +1930,22 @@ def _strip_signal(text: str, token: str) -> str:
     """
     cleaned = re.sub(rf"\s*{re.escape(token)}\s*[—–\-:]*\s*", " ", text)
     return cleaned.strip()
+
+
+def _strip_markdown_emphasis(text: str) -> str:
+    """
+    Groq sometimes wraps a trail name (or a whole re-typed hike line) in markdown
+    bold — "**Future - High Knob Trail**", or even a mis-placed "**Name (ID**:" —
+    when it echoes the list despite being told not to. The chat renders raw text
+    (whiteSpace: pre-wrap, no markdown), so those asterisks show up literally.
+    Remove the **…** / __…__ emphasis markers, keeping the inner text, then drop
+    any leftover stray markers. Single '*' is left alone (bullets / legit prose).
+    """
+    if not text:
+        return text
+    out = re.sub(r"\*\*(.+?)\*\*", r"\1", text, flags=re.DOTALL)
+    out = re.sub(r"__(.+?)__", r"\1", out, flags=re.DOTALL)
+    return out.replace("**", "")
 
 
 def _apply_split_to_prose(text: str, splits: list) -> str:
@@ -1873,6 +1995,15 @@ def _parse_intent(req: ChatRequest) -> Optional[TripIntent]:
         # Propagate so the caller can surface a deterministic "did you mean…?"
         # reply instead of silently returning None and dead-ending in Groq.
         raise
+    except LocationRequired:
+        # "near me" but no coordinates shared. Propagate so the caller can ask
+        # the user to share location or name a place — never geocode the pronoun.
+        raise
+    except NoDestinationProvided:
+        # No place named at all. Propagate (must precede the generic ValueError
+        # arm, since it subclasses ValueError) so the caller accumulates tags and
+        # asks "where would you like to hike?" rather than dead-ending in Groq.
+        raise
     except ValueError as e:
         logger.info("Parser could not resolve destination: %s", e)
     except Exception as e:
@@ -1880,11 +2011,74 @@ def _parse_intent(req: ChatRequest) -> Optional[TripIntent]:
     return None
 
 
+_PRIMARY_PRIORITY_SYS_PROMPT = (
+    "You rank hiking-trail search results. Given a user's request, decide the "
+    "SINGLE attribute that matters most for ordering the results. Reply with "
+    "EXACTLY ONE token and nothing else, chosen from this allowed set:\n"
+    "{options}\n"
+    "Use 'distance' if the trail's length (how many miles) is what the user "
+    "cares about most; use a feature name if that scenery/feature matters most; "
+    "use 'balanced' if no single one clearly dominates. Output only the token."
+)
+
+
+def _classify_primary_priority(intent: TripIntent) -> Optional[str]:
+    """
+    Hybrid tie-breaker: the parser (_infer_primary_priority) leaves
+    primary_priority None only when the request is genuinely ambiguous (a
+    distance AND a feature, or two+ features, none emphasized). Here we spend
+    ONE cheap llama-3.1-8b-instant call to pick the primary dimension.
+
+    Returns a token from the candidate set ("distance" or a feature tag), or
+    None for "balanced"/unresolved. Never raises — any Groq failure degrades to
+    balanced ranking, matching the best-effort posture of the search itself.
+    """
+    text = (getattr(intent, "raw_goal", "") or "").strip()
+    if not text:
+        return None
+
+    features = sorted(
+        (set(intent.required_tags) | set(intent.preferred_tags)) & _FEATURE_TAGS
+    )
+    has_distance = getattr(intent, "target_length_km", None) is not None
+
+    # Only ambiguous requests reach a Groq call: a distance + ≥1 feature, or ≥2
+    # features. Anything the parser could already resolve never gets here.
+    ambiguous = (has_distance and len(features) >= 1) or (len(features) >= 2)
+    if not ambiguous:
+        return None
+
+    candidates = (["distance"] if has_distance else []) + features
+    if len(candidates) < 2:
+        return None
+
+    options = ", ".join(candidates + ["balanced"])
+    try:
+        reply = _groq.extract(
+            _PRIMARY_PRIORITY_SYS_PROMPT.format(options=options),
+            text,
+        )
+    except Exception as e:                     # Groq down / quota / timeout
+        logger.warning("primary-priority classification failed: %s", e)
+        return None
+
+    token = (reply or "").strip().strip(".'\"").lower()
+    if token in candidates:
+        return token
+    return None                                # "balanced" or any off-menu reply
+
+
 def _search_and_analyse(
     session:   TripSession,
     user_gear: list[dict],
     intent:    TripIntent,
 ) -> str:
+    # Hybrid step: resolve an ambiguous ranking priority with one Groq call
+    # before searching. The rule-based parser leaves this None only when it
+    # genuinely can't tell (distance + a feature, or several features).
+    if getattr(intent, "primary_priority", None) is None:
+        intent.primary_priority = _classify_primary_priority(intent)
+
     try:
         result = _hike_search.find_hikes_with_fallback(intent)
     except Exception as e:
@@ -2109,7 +2303,10 @@ def _select_named_hike(session: TripSession, user_gear: list[dict], hike) -> Non
     session.plan.lat       = hike.lat
     session.plan.lng       = hike.lng
     if not session.plan.duration_days:
-        session.plan.duration_days = 1
+        # No prior day count on this one-shot named-trail path: an overnight
+        # activity implies ≥2 days; _capture_selected_hike_facts then extends
+        # further if the trail's length demands it.
+        session.plan.duration_days = _default_duration_days(session.plan.activity_type, None)
 
     _promote_hike_gaps(session, str(hike.id))
     _capture_selected_hike_facts(session)
@@ -2194,6 +2391,20 @@ def _capture_selected_hike_facts(session: TripSession) -> None:
     # itinerary prompt so day plans name real camps instead of inventing them.
     plan.campsites             = getattr(hike, "campsites", []) or []
 
+    # Auto-extend the day count so the trail splits into realistic per-day legs
+    # (<= MAX_KM_PER_DAY). A long trail selected directly — bypassing the per-day
+    # -capped search options, or surfaced by the uncapped last-resort search — must
+    # not be crammed into one day by split_days. Done BEFORE rigor_tier below so the
+    # prep band reflects the true span; the extended count then flows into the
+    # gear-review + itinerary prompts, where the user confirms or adjusts it.
+    needed_days = min_days_for_length(hike.length_km)
+    if needed_days > (plan.duration_days or 1):
+        logger.info(
+            "Session %s: extended duration %s → %s days for %.1f km trail",
+            getattr(session, "session_id", "?"), plan.duration_days, needed_days, hike.length_km,
+        )
+        plan.duration_days = needed_days
+
     # Real trail difficulty is authoritative for a single-hike trip — the user's
     # difficulty filter was only ever a search hint.
     try:
@@ -2275,7 +2486,12 @@ def _apply_intent_to_plan(
     plan.max_length_km      = getattr(intent, "max_length_km", None)      # ← NEW
     plan.target_length_km   = getattr(intent, "target_length_km", None)   # ← NEW
     plan.activity_type      = intent.activity_type
-    plan.duration_days      = intent.duration_days
+    # Only overwrite a known duration when THIS turn stated one explicitly. A
+    # place-disambiguation turn ("Asheville NC") carries no day count and would
+    # otherwise clobber the "3 day" from the prior turn back down to the default,
+    # dropping the multi-day search floor and the Expedition rigor tier.
+    if getattr(intent, "duration_explicit", False) or not plan.duration_days:
+        plan.duration_days  = intent.duration_days
     plan.difficulty         = intent.difficulty_hint or plan.difficulty
     # Overnight implied but no explicit day count — duration_days is a guess, so
     # flag it for the destination phase to confirm the trip length with the user
@@ -2391,6 +2607,26 @@ def _drop_phantom_days(days: list) -> list:
     ]
 
 
+# Swap phrases that fire on a LENGTH/DIFFICULTY refinement just as readily as on
+# a real place change: "instead of an 8 mile hike, a 4 mile one" is a length
+# refine, not a destination move. For these, only treat the message as a
+# destination change when a place is actually named — otherwise it's
+# SEARCH_REFINE territory and blowing away the destination re-geocodes a phantom
+# place (the "…a 4 mile one" → "A One, IL" bug). Unambiguous phrases like
+# "start over" / "different trail" are NOT in here and always trigger a reset.
+# These don't inherently point at a place — "can we look at a 4 mile one" /
+# "actually can we do something easier" are refinements. Adding a phrase here is
+# safe: it only diverts to SEARCH_REFINE when the SAME message also carries a
+# length/difficulty refinement; with no such refinement it still hard-resets.
+# The place-committed phrases ("can we go to X", "what about hikes in X", "back
+# to destination") stay OUT so they always reset.
+_AMBIGUOUS_CHANGE_PHRASES: frozenset[str] = frozenset({
+    "instead of", "actually, let", "actually let",
+    "actually, can we", "actually can we",
+    "can we look at", "can we check",
+})
+
+
 def _detect_destination_change(message: str, phase: str) -> bool:
     """
     Returns True if the user message almost certainly signals a desire to
@@ -2406,7 +2642,26 @@ def _detect_destination_change(message: str, phase: str) -> bool:
     if phase == "destination":
         return False
     msg = message.lower()
-    return any(phrase in msg for phrase in _DESTINATION_CHANGE_PHRASES)
+    matched = [phrase for phrase in _DESTINATION_CHANGE_PHRASES if phrase in msg]
+    if not matched:
+        return False
+    # An unambiguous change phrase always counts.
+    if any(phrase not in _AMBIGUOUS_CHANGE_PHRASES for phrase in matched):
+        return True
+    # Only an ambiguous swap phrase ("instead of", "actually let") matched. If
+    # the message is really about trail LENGTH or DIFFICULTY, it's a refinement —
+    # let the SEARCH_REFINE path handle it in-area rather than resetting the
+    # destination and geocoding a leftover word as a place ("…a 4 mile one" →
+    # "A One, IL"). A genuine new place named in the SAME breath still resolves:
+    # _try_relocate (step 6c) re-centers on "near/closer to X" keeping filters,
+    # and Groq's own DESTINATION RESET (step 9) is the backstop for the rest —
+    # so suppressing the blunt phrase-reset here loses no real relocation.
+    mn, mx, tg = _parser._extract_length_constraints(msg)
+    is_length_refine = any(v is not None for v in (mn, mx, tg))
+    is_diff_refine   = _parser._extract_difficulty(msg) is not None
+    if is_length_refine or is_diff_refine:
+        return False
+    return True
 
 # ── Cause 1 fix: no-location pre-parse check ─────────────────────────────────
 #

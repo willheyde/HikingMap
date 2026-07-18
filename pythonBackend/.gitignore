@@ -3,6 +3,10 @@ __pycache__/
 *.pyc
 *.osm.pbf
 
+# Copernicus GLO-30 DEM tile cache for ingestion/backfill_elevation.py — a
+# large (~1 GB) reusable download, not source. Kept on disk for re-runs.
+ingestion/copernicus_dem/
+
 # One-shot migration data snapshots (recoverable backups, not source)
 migrations/*_purge_backup_*.json
 

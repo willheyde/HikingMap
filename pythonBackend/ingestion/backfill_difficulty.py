@@ -36,9 +36,16 @@ so you can tune against the real distribution the dry-run prints:
     Difficult   < difficult_max 210
     Expert      >= difficult_max
 
-Caveat: the formula sees only length × gain, not terrain/technicality (that's
-what OSM sac_scale would give and it's rarely present in this dataset). A retune
-removes the SYSTEMATIC over-rating but won't match every public rating exactly.
+GRADE FEEL
+──────────
+The rating sees only length × gain, so it can't tell a flat 71 km rail-trail
+from a mountain: √(2·miles·feet) grows with distance even when the trail is
+dead flat, pushing long-but-flat greenways to Expert, while a short steep wall
+(300 m in 2 km) rates "Easy". A shared grade adjustment (characterizations.
+apply_grade_feel) fixes both: gain-per-km below --flat-grade caps difficulty at
+Moderate (flat = endurance, not hard); at/above --steep-grade bumps it one tier.
+Terrain/technicality proper still needs OSM sac_scale, rarely present here.
+
 This recomputes purely from the formula, so it CAN move a trail down as well as
 up — the dry-run reports both directions.
 
@@ -59,11 +66,17 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from DBConnection import get_connection, close_pool
 from PyObjects.Hike import DifficultyLevel
 from gear_inference import GearInferenceEngine
-from characterizations import GAIN_TIER_TAGS, gain_tier_tag
+from characterizations import (
+    GAIN_TIER_TAGS, gain_tier_tag, apply_grade_feel,
+    RATING_EASY_MAX, RATING_MODERATE_MAX, RATING_DIFFICULT_MAX,
+    FLAT_GRADE_M_PER_KM, STEEP_GRADE_M_PER_KM,
+)
 
-DEFAULT_EASY_MAX = 50.0
-DEFAULT_MODERATE_MAX = 110.0
-DEFAULT_DIFFICULT_MAX = 210.0
+# Bands live in characterizations (single source of truth shared with ingest's
+# calculate_difficulty) so ingest and this backfill can't drift apart.
+DEFAULT_EASY_MAX = RATING_EASY_MAX
+DEFAULT_MODERATE_MAX = RATING_MODERATE_MAX
+DEFAULT_DIFFICULT_MAX = RATING_DIFFICULT_MAX
 
 
 def _rating(length_km: float, gain_m: float) -> float:
@@ -91,6 +104,8 @@ def backfill(
     easy_max: float,
     moderate_max: float,
     difficult_max: float,
+    flat_grade: float,
+    steep_grade: float,
     limit: Optional[int],
 ) -> None:
     with get_connection() as conn:
@@ -119,8 +134,11 @@ def backfill(
                 max_alt = float(row["max_altitude_m"] or 0)
 
                 old_diff = _difficulty(row["difficulty"])
-                new_diff = _difficulty_from_rating(
-                    _rating(length_km, gain_m), easy_max, moderate_max, difficult_max
+                new_diff = apply_grade_feel(
+                    _difficulty_from_rating(
+                        _rating(length_km, gain_m), easy_max, moderate_max, difficult_max
+                    ),
+                    length_km, gain_m, flat_grade, steep_grade,
                 )
 
                 # Swap ONLY the gain-tier tag; keep feature tags + markers.
@@ -144,7 +162,7 @@ def backfill(
                     moves[(old_diff.name, new_diff.name)] += 1
 
                 if dry_run:
-                    d = "" if new_diff == old_diff else f"  {old_diff.name}→{new_diff.name}"
+                    d = "" if new_diff == old_diff else f"  {old_diff.name}->{new_diff.name}"
                     t = "  (gain-tier tag refreshed)" if tags_changed and new_diff == old_diff else ""
                     print(f"  [dry-run] {row['name']} "
                           f"({length_km:.1f} km / {gain_m:.0f} m, rating {_rating(length_km, gain_m):.0f}){d}{t}")
@@ -168,8 +186,8 @@ def backfill(
     if moves:
         print("Difficulty moves:")
         for (old, new), n in sorted(moves.items(), key=lambda x: -x[1]):
-            arrow = "↑" if DifficultyLevel[new].value > DifficultyLevel[old].value else "↓"
-            print(f"  {arrow} {old:9}→ {new:9} : {n}")
+            arrow = "up  " if DifficultyLevel[new].value > DifficultyLevel[old].value else "down"
+            print(f"  {arrow} {old:9}-> {new:9} : {n}")
 
 
 if __name__ == "__main__":
@@ -184,6 +202,10 @@ if __name__ == "__main__":
                     help="Rating below this = Moderate.")
     ap.add_argument("--difficult-max", type=float, default=DEFAULT_DIFFICULT_MAX,
                     help="Rating below this = Difficult; at/above = Expert.")
+    ap.add_argument("--flat-grade", type=float, default=FLAT_GRADE_M_PER_KM,
+                    help="Gain m/km below this caps difficulty at Moderate (flat=endurance, not hard).")
+    ap.add_argument("--steep-grade", type=float, default=STEEP_GRADE_M_PER_KM,
+                    help="Gain m/km at/above this bumps difficulty up one tier (short-steep grind).")
     ap.add_argument("--batch", type=int, default=None, metavar="N",
                     help="Process at most N hikes this run.")
     args = ap.parse_args()
@@ -191,6 +213,7 @@ if __name__ == "__main__":
         backfill(
             dry_run=args.dry_run, easy_max=args.easy_max,
             moderate_max=args.moderate_max, difficult_max=args.difficult_max,
+            flat_grade=args.flat_grade, steep_grade=args.steep_grade,
             limit=args.batch,
         )
     finally:

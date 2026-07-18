@@ -354,6 +354,31 @@ const RIGOR_META = {
   expedition: { label: "Expedition", color: C.errorText },
 };
 
+/* ─── Option-card tag curation ───────────────────────────────────────────── */
+// The option cards only have room for a few tag chips. Two rules so the chips
+// that show are the ones the user cares about:
+//   1. Hide ingestion/internal bookkeeping tags — they're noise to a hiker and
+//      waste a slot (they'd otherwise sort ahead of real features alphabetically).
+//   2. Surface FEATURE tags (lake, waterfall, summit, forest…) ahead of generic
+//      terrain/season descriptors, so a hike that genuinely matches "a hike with
+//      a lake" shows its `lake` chip instead of truncating it off behind
+//      `dem_elevation`/`flat`/`forest`/`full_day` (the bug that made two real
+//      lake trails look like non-matches). Stable-sorts within each group.
+const HIDDEN_CARD_TAGS = new Set([
+  "dem_elevation", "overpass_enriched", "osm_ele",
+]);
+const FEATURE_CARD_TAGS = new Set([
+  "lake", "river", "stream", "waterfall", "pond", "wetland",
+  "summit", "viewpoint", "ridge", "meadow", "forest", "beach",
+  "cave", "canyon", "wildlife", "historic", "shelter",
+]);
+function curateCardTags(tags, limit = 4) {
+  const visible = (tags || []).filter(t => !HIDDEN_CARD_TAGS.has(t));
+  const features = visible.filter(t => FEATURE_CARD_TAGS.has(t));
+  const rest     = visible.filter(t => !FEATURE_CARD_TAGS.has(t));
+  return [...features, ...rest].slice(0, limit);
+}
+
 /* ─── Message bubble ─────────────────────────────────────────────────── */
 const Message = ({ msg }) => {
   const isUser = msg.role === "user";
@@ -618,7 +643,7 @@ const HikeOptionCards = ({ options, onPick }) => {
           )}
           {opt.tags?.length > 0 && (
             <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginTop: 2 }}>
-              {opt.tags.slice(0, 4).map(tag => (
+              {curateCardTags(opt.tags).map(tag => (
                 <span key={tag} style={{
                   fontFamily: sans, fontSize: 10, color: C.label,
                   background: C.amberDim, border: `1px solid ${C.amberBorder}`,

@@ -126,9 +126,41 @@ def test_trip_input_parser(s: Suite) -> None:
     s.check("'around 3 miles' → target set + loosened ceiling",
             mn is None and tg == _mi(3) and mx == round(_mi(3) * 1.2, 1))
 
-    # Bare single number → hard ceiling; approximate word absent.
+    # Bare single number → TARGET with a hard band (floor+ceiling), NOT a bare
+    # ceiling: "an 8 mile hike" must never surface a 2-mile trail, and the target
+    # turns on length-proximity ranking. Band = target * 0.7 .. target * 1.3.
+    from AI.TripInputParser import SINGLE_MILE_FLOOR_FACTOR, SINGLE_MILE_CEIL_FACTOR
     mn, mx, tg = elc("a 3 mile hike")
-    s.check("'a 3 mile hike' → max only", mn is None and mx == _mi(3) and tg is None)
+    s.check("'a 3 mile hike' → banded target (floor+ceiling+target)",
+            mn == round(_mi(3) * SINGLE_MILE_FLOOR_FACTOR, 1)
+            and mx == round(_mi(3) * SINGLE_MILE_CEIL_FACTOR, 1)
+            and tg == _mi(3))
+    mn, mx, tg = elc("an 8 mile hike near me")
+    s.check("'8 mile' floor excludes a 2-mile trail (floor > 3.2 km)",
+            mn is not None and mn > 3.2 and tg == _mi(8))
+    # The gradient: "around N" stays looser (no floor, +20% ceiling) than bare N.
+    mn_a, _, _ = elc("around 8 miles")
+    mn_b, _, _ = elc("8 miles")
+    s.check("'around 8' has no floor but bare '8 miles' does",
+            mn_a is None and mn_b is not None)
+
+    # Rejected length: a mid-chat refine that discards one distance for another
+    # ("8 miles is too long, look at 4 mile instead") must target the number the
+    # user WANTS (4), not the FIRST number it sees (8) — else the re-search just
+    # re-runs the distance the user asked to move away from.
+    _, _, tg = elc("wait actually 8 miles is too long, can we look at 4 mile hikes instead")
+    s.check("'8 mi too long, look at 4 mile' → target 4 (not 8)", tg == _mi(4))
+    _, _, tg = elc("that 8 mile hike is too far, show me 3 mile trails instead")
+    s.check("'8 mi too far, show me 3 mile' → target 3 (not 8)", tg == _mi(3))
+    _, _, tg = elc("not 8 miles, i want 5 miles")
+    s.check("'not 8 miles, want 5 miles' → target 5 (not 8)", tg == _mi(5))
+    # The rejection may carry an article ("instead of AN 8 mile hike").
+    _, _, tg = elc("wait instead of an 8 mile hike can we look at a 4 mile one")
+    s.check("'instead of an 8 mile … a 4 mile one' → target 4 (not 8)", tg == _mi(4))
+    # Regression guard: the rejection strip must NOT eat a legitimate ceiling.
+    mn, mx, tg = elc("no more than 6 miles")
+    s.check("rejection strip leaves 'no more than 6 miles' as a ceiling",
+            mn is None and mx == _mi(6) and tg is None)
 
     # Time budget only fires when no mile phrase present (pace = 3.0 km/h).
     mn, mx, tg = elc("i want to be back in 2 hours")
@@ -141,6 +173,10 @@ def test_trip_input_parser(s: Suite) -> None:
     s.check("'really hard climb' → hard", d("a really hard climb") == "hard")
     s.check("'easy beginner hike' → easy", d("an easy beginner hike") == "easy")
     s.check("no difficulty words → None", d("a hike by the water") is None)
+    # Comparative forms show up in refine turns ("can we do something easier?").
+    s.check("'something easier' → easy", d("can we do something easier") == "easy")
+    s.check("'a bit tougher' → hard", d("something a bit tougher") == "hard")
+    s.check("'harder' → hard (base-substring)", d("id like it harder") == "hard")
 
     # Duration: "N nights" → N+1 days; bare weekend/week phrases.
     du = p._extract_duration
@@ -213,6 +249,14 @@ def test_phase_controller(s: Suite) -> None:
     s.check("out-of-range '5' of 3 → None", sel("5", 3) is None)
     s.check("count 0 → None", sel("1", 0) is None)
     s.check("no selection → None", sel("tell me more about these", 3) is None)
+    # A duration/length digit is NOT a numbered pick: the "3" in "3 day" must not
+    # select option 3 (the auto-jump-to-gear bug). Guard both the reported phrase
+    # and a length variant, and confirm real selections still resolve.
+    s.check("'3 day … trip near me' is NOT a selection (was picking option 3)",
+            sel("i want to go on a 3 day hiking trip near me", 5) is None)
+    s.check("'let's do a 2 mile loop' is NOT a selection", sel("let's do a 2 mile loop", 5) is None)
+    s.check("'i want 3' (no unit) still selects index 2", sel("i want 3", 5) == 2)
+    s.check("bare '3' still selects index 2", sel("3", 5) == 2)
 
     ma = PhaseController._matches_any
     s.check("'looks good' is a gear-done signal", ma("looks good", GEAR_DONE_SIGNALS))
@@ -444,6 +488,104 @@ def test_location_fixes(s: Suite) -> None:
     s.check("relocate rejects a feature",           reloc("closer to a lake") is None)
     s.check("relocate rejects a length",            reloc("around 5 miles") is None)
     s.check("relocate rejects a pure refinement",   reloc("make it easier") is None)
+    # "near me" mid-chat must NOT geocode the pronoun ("me" → Maine); it's routed
+    # to the user's own coords in _try_relocate, so the extractor rejects it.
+    s.check("relocate rejects 'near me'",           reloc("actually move it near me") is None)
+    s.check("relocate rejects 'to here'",           reloc("something closer to here") is None)
+    s.check("relocate rejects 'my location'",       reloc("how about near my location") is None)
+
+    # ── is_near_me: the shared "search my own location" detector ────────────
+    from AI.TripInputParser import (
+        is_near_me, _strip_constraint_phrases, LocationRequired,
+    )
+    s.check("is_near_me 'near me'",        is_near_me("a 5 mile hike near me") is True)
+    s.check("is_near_me 'around me'",      is_near_me("trails around me") is True)
+    s.check("is_near_me 'close by'",       is_near_me("something close by") is True)
+    s.check("is_near_me 'closest to me'",  is_near_me("closest to me please") is True)
+    s.check("is_near_me 'near here'",      is_near_me("hikes near here") is True)
+    # Must NOT false-match a real place that merely starts with "me".
+    s.check("is_near_me rejects 'near Mendocino'", is_near_me("hike near Mendocino") is False)
+    s.check("is_near_me rejects plain place",      is_near_me("hike near Asheville") is False)
+
+    # near-me routes to the passed coords (no geocode, no Groq) …
+    intent = p.parse("a 5 mile hike near me", user_lat=35.2, user_lng=-80.8)
+    s.check("near-me uses user coords",     intent.lat == 35.2 and intent.lng == -80.8)
+    s.check("near-me sets destination_raw", intent.destination_raw == "near me")
+    # … and with no coords raises LocationRequired (caller asks for a place).
+    try:
+        p.parse("a hike near me", user_lat=None, user_lng=None)
+        loc_raised = False
+    except LocationRequired:
+        loc_raised = True
+    except Exception:
+        loc_raised = False
+    s.check("near-me without coords → LocationRequired", loc_raised)
+
+    # ── _strip_constraint_phrases: length/feature clauses must not leak a
+    #    destination token ("at least 4 miles" → the preposition "at") ───────
+    cleaned = _strip_constraint_phrases(
+        "i want to go on a hike near raleigh, that has a water fall and is at least 4 miles long"
+    )
+    s.check("strip removes 'at least'",  "at least" not in cleaned)
+    s.check("strip removes '4 miles'",   "4 mile" not in cleaned)
+    s.check("strip removes 'that' clause", "that has" not in cleaned)
+    s.check("destination extracts to 'raleigh', not 'at'",
+            (p._extract_destination_regex(cleaned) or "").lower() == "raleigh",
+            f"got {p._extract_destination_regex(cleaned)!r}")
+    # A place can come AFTER the feature clause ("a hike with a waterfall near
+    # Asheville") — the trailing-clause strip must stop at the destination
+    # preposition, not swallow the place to end-of-line (regression: it did).
+    for phrase, want in (
+        ("a hike with a waterfall near asheville",  "asheville"),
+        ("trails with a lake near boone",           "boone"),
+        ("hikes where i can swim near brevard",      "brevard"),
+    ):
+        got = (p._extract_destination_regex(_strip_constraint_phrases(phrase)) or "").lower()
+        s.check(f"clause-before-place keeps the place ({want})", got == want, f"got {got!r}")
+
+    # ── Invalid-token guard: a bare preposition the LLM latched onto never
+    #    reaches the geocoder — it's "no place named", so NoDestinationProvided ─
+    from AI.TripInputParser import (
+        DestinationNotFound, NoDestinationProvided, _INVALID_DESTINATION_TOKENS,
+    )
+    s.check("'at' is an invalid destination token", "at" in _INVALID_DESTINATION_TOKENS)
+    # Mock geocode so the guard is what's under test, not a network failure — a
+    # miss here MUST come from the token guard, not an unreachable Nominatim.
+    p._geocode = lambda place, state=None: {"lat": 35.7, "lng": -79.0, "state": "NC"}
+    p._llm_extract = lambda text: {"destination": "at", "features": []}
+    try:
+        p.parse("i want a hike that is at least 4 miles long", user_lat=None, user_lng=None)
+        tok_raised = False
+    except NoDestinationProvided:
+        tok_raised = True
+    except Exception:
+        tok_raised = False
+    s.check("stray 'at' token → NoDestinationProvided (not geocoded)", tok_raised)
+
+    # ── _is_named_wilderness: only a park/wilderness skips the overnight floor;
+    #    a plain city keeps it (Bent Creek day-strolls must not be shown as
+    #    backpacking legs near Asheville) ─────────────────────────────────────
+    s.check("city 'Asheville' is NOT a wilderness", p._is_named_wilderness("Asheville", "asheville") is False)
+    s.check("'Linville Gorge' IS a wilderness",     p._is_named_wilderness("Linville Gorge", None) is True)
+    s.check("'Pisgah National Forest' IS a wilderness", p._is_named_wilderness("Pisgah National Forest", None) is True)
+    # Town names that merely CONTAIN a wilderness word must not skip the floor —
+    # bare "mountain"/"forest"/"range" form ordinary place names (regression).
+    s.check("town 'Black Mountain' is NOT a wilderness", p._is_named_wilderness("Black Mountain", None) is False)
+    s.check("town 'Forest City' is NOT a wilderness",    p._is_named_wilderness("Forest City", None) is False)
+    s.check("town 'Mountain View' is NOT a wilderness",  p._is_named_wilderness("Mountain View", None) is False)
+    s.check("'Great Smoky Mountains' IS a wilderness",   p._is_named_wilderness("Great Smoky Mountains", None) is True)
+
+    # ── near-me + a concrete place: the named place wins over the pronoun ──────
+    # "a waterfall hike near Brevard, close to me" must resolve Brevard (geocoded),
+    # not silently return the user's own coordinates (regression). Geocode mocked.
+    p._geocode = lambda place, state=None: {"lat": 35.6, "lng": -82.55, "state": "NC"}
+    both = p.parse("a waterfall hike near Brevard, close to me", user_lat=99.9, user_lng=99.9)
+    s.check("near-me + named place → resolves the place", both.destination_raw == "brevard",
+            f"got {both.destination_raw!r}")
+    s.check("near-me + named place → ignores the user coords", both.lat == 35.6)
+    # A pure near-me ask (no place) still uses the user's coordinates.
+    pure = p.parse("a 5 mile hike near me", user_lat=35.2, user_lng=-80.8)
+    s.check("pure 'near me' still uses user coords", pure.destination_raw == "near me" and pure.lat == 35.2)
 
     # ── "anywhere in <state>" resolves to the state, not filler ────────────
     s.check("state-only 'nc is fine'",              _is_state_only_candidate("nc is fine", "NC") is True)
@@ -491,6 +633,92 @@ def test_location_fixes(s: Suite) -> None:
             not _strip_signal("DESTINATION RESET — near Asheville?", "DESTINATION RESET").startswith("—"))
 
 
+def test_phantom_place_and_multiday(s: Suite) -> None:
+    print("\n[phantom-place + multi-day fixes]")
+    from AI.TripInputParser import (
+        TripInputParser, NoDestinationProvided, _is_feature_only_phrase,
+        _strip_constraint_phrases, _effective_min_length, OVERNIGHT_MIN_KM_PER_DAY,
+    )
+    p = TripInputParser()
+
+    # ── 1a. The "at" park-key trap is closed ───────────────────────────────
+    s.check("'at' still resolves as an exact park key", "at" in p.national_parks)
+    s.check("'at' is NOT in the bare-word scan keys", "at" not in p.park_scan_keys)
+    # "at least 3" (no unit — the unit rode on an earlier "6 miles") is stripped
+    # so the bare "at" never reaches the destination extractor.
+    cleaned = _strip_constraint_phrases("no more than 6 miles, but at least 3")
+    s.check("unit-less 'at least 3' stripped", "at least" not in cleaned, f"got {cleaned!r}")
+
+    # ── 1b. Feature-only phrase is not a place ─────────────────────────────
+    s.check("'a forest' is a feature-only phrase", _is_feature_only_phrase("a forest") is True)
+    s.check("'a lake' is a feature-only phrase",   _is_feature_only_phrase("a lake") is True)
+    s.check("'asheville' is NOT feature-only",     _is_feature_only_phrase("asheville") is False)
+    # "in a forest" must not extract as a place.
+    dest_text = _strip_constraint_phrases(
+        "i've been wanting to go for a stroll in a forest, no more than 6 miles but at least 3"
+    )
+    s.check("'stroll in a forest' → no regex destination",
+            p._extract_destination_regex(dest_text) is None,
+            f"got {p._extract_destination_regex(dest_text)!r}")
+
+    # The full placeless message raises NoDestinationProvided (ask "where?"),
+    # never the phantom "at" / "that location". LLM is mocked (no Groq).
+    p._llm_extract = lambda text: {"destination": None, "features": ["forest"]}
+    for msg in (
+        "i've been wanting to go for a stroll in a forest, no more than 6 miles but at least 3",
+        "I didn't name a place",
+    ):
+        try:
+            p.parse(msg, user_lat=None, user_lng=None)
+            raised = "none"
+        except NoDestinationProvided:
+            raised = "no_dest"
+        except Exception as e:
+            raised = type(e).__name__
+        s.check(f"placeless msg → NoDestinationProvided ({msg[:24]!r})", raised == "no_dest", f"got {raised}")
+
+    # An LLM that still latches onto a feature is also treated as no-destination.
+    p._llm_extract = lambda text: {"destination": "a forest", "features": []}
+    try:
+        p.parse("something with lots of trees", user_lat=None, user_lng=None)
+        feat_raised = False
+    except NoDestinationProvided:
+        feat_raised = True
+    except Exception:
+        feat_raised = False
+    s.check("LLM feature-only destination → NoDestinationProvided", feat_raised)
+
+    # ── 2. Multi-day duration drives the search floor + duration_explicit ──
+    s.check("explicit 3-day day_hike (region) → 30 km floor",
+            _effective_min_length(None, None, None, "day_hike", 3, is_specific_place=False, duration_explicit=True)
+            == OVERNIGHT_MIN_KM_PER_DAY * 3)
+    s.check("1-day day_hike → still no floor",
+            _effective_min_length(None, None, None, "day_hike", 1, is_specific_place=False, duration_explicit=True) is None)
+    # A DEFAULTED (non-explicit) 2-day count must NOT impose a floor — that's the
+    # regex path's "no activity keyword → assume 2" default, not a user request.
+    s.check("defaulted (non-explicit) 2-day → no floor",
+            _effective_min_length(None, None, None, "day_hike", 2, is_specific_place=False, duration_explicit=False) is None)
+    s.check("explicit 3-day at a named wilderness still skips the floor",
+            _effective_min_length(None, None, None, "day_hike", 3, is_specific_place=True, duration_explicit=True) is None)
+
+    # parse() carries an explicit day count + flags it explicit; a bare place
+    # doesn't. Mock geocode so no HTTP is needed.
+    p._geocode = lambda place, state=None: {"lat": 35.6, "lng": -82.55, "state": "NC"}
+    multi = p.parse("a 3 day hiking trip in Asheville")
+    s.check("'3 day … Asheville' → duration_days 3", multi.duration_days == 3, f"got {multi.duration_days}")
+    s.check("'3 day …' flagged duration_explicit", multi.duration_explicit is True)
+    s.check("'3 day … Asheville' (city) gets the 30 km floor",
+            multi.min_length_km == OVERNIGHT_MIN_KM_PER_DAY * 3, f"got {multi.min_length_km}")
+    plain = p.parse("a hike in Asheville")
+    s.check("bare 'hike in Asheville' → duration_explicit False", plain.duration_explicit is False)
+    s.check("bare 'hike in Asheville' → no auto floor", plain.min_length_km is None, f"got {plain.min_length_km}")
+
+    # A 3-day trip is Expedition rigor even on a short trail.
+    from AI.rigor import rigor_tier
+    s.check("short trail but 3-day trip → expedition",
+            rigor_tier(4.0, 65, difficulty="EASY", duration_days=3) == "expedition")
+
+
 def test_feature_honesty(s: Suite) -> None:
     print("\n[feature-honesty: unbacked feature claims vs card tags]")
     from AI.feature_honesty import unbacked_feature_claims
@@ -535,6 +763,218 @@ def test_feature_honesty(s: Suite) -> None:
             unbacked_feature_claims("a nice forest walk", [_card(["lake"])]) == [])
 
 
+def test_data_quality_fixes(s: Suite) -> None:
+    print("\n[batch 2: parser typo, length ranking, markdown, Future filter, DEM denoise]")
+
+    # ── Fix 1: DESTINATION_PREPS word boundaries — a preposition hidden inside a
+    #    typo ("wn[at]" for "want") must not be captured as a place. ───────────
+    import re as _re
+    from AI.TripInputParser import DESTINATION_PREPS
+    m_typo = _re.search(DESTINATION_PREPS, "i wnat to go backpacking in linville gorge")
+    s.check("typo 'wnat' no longer donates 'at' as a preposition",
+            bool(m_typo) and m_typo.group(1) == "linville gorge",
+            f"got {m_typo.group(1)!r}" if m_typo else "no match")
+    m_ok = _re.search(DESTINATION_PREPS, "i want to go backpacking in linville gorge")
+    s.check("correct spelling still extracts the place",
+            bool(m_ok) and m_ok.group(1) == "linville gorge")
+
+    # ── Fix 5: length-proximity weight lets a correct-length trail beat a
+    #    nearer-but-shorter one for "about 3 miles" (target 4.8 km). ───────────
+    from types import SimpleNamespace
+    from Services.HikeSearchService import (
+        _proximity_bonus, _length_proximity_bonus,
+        LENGTH_PROXIMITY_WEIGHT, POINT_PROXIMITY_FALLOFF_KM,
+    )
+    def _score(h, target):
+        return (_proximity_bonus(h, POINT_PROXIMITY_FALLOFF_KM, weight=3.0)
+                + _length_proximity_bonus(h, target, weight=LENGTH_PROXIMITY_WEIGHT))
+    correct_far  = SimpleNamespace(length_km=4.8, distance_km=6.0, tags=[])   # ideal length, a bit farther
+    short_near   = SimpleNamespace(length_km=1.71, distance_km=2.0, tags=[])  # too short, closer
+    s.check("correct-length farther trail outranks short closer one (target 4.8)",
+            _score(correct_far, 4.8) > _score(short_near, 4.8))
+    s.check("length term is inert when no target given",
+            _length_proximity_bonus(correct_far, None, weight=LENGTH_PROXIMITY_WEIGHT) == 0.0)
+
+    # ── AI-driven ranking priority: rule-based determination (hybrid's cheap half)
+    from AI.TripInputParser import _infer_primary_priority
+    s.check("emphasized feature is primary",
+            _infer_primary_priority(["lake"], ["lake"], [], _mi(8)) == "lake")
+    s.check("sole distance (no feature) → distance is primary",
+            _infer_primary_priority([], [], [], _mi(8)) == "distance")
+    s.check("distance + a feature, none emphasized → ambiguous (None, Groq decides)",
+            _infer_primary_priority([], ["lake"], [], _mi(8)) is None)
+    s.check("two features, none emphasized → ambiguous (None)",
+            _infer_primary_priority([], ["lake", "waterfall"], [], None) is None)
+    s.check("nothing stated → balanced (None)",
+            _infer_primary_priority([], [], [], None) is None)
+
+    # ── Primary-driven sort: the chosen dimension leads, composite breaks ties ──
+    from Services.HikeSearchService import _primary_sort_key
+    far_on_len   = SimpleNamespace(length_km=12.9, distance_km=8.0, tags=["lake"])  # on target, farther
+    near_off_len = SimpleNamespace(length_km=2.0,  distance_km=1.0, tags=[])        # off target, closer
+    # distance-primary (target 12.9 km ≈ 8 mi): on-length wins despite being farther.
+    order = sorted([(near_off_len, 5.0), (far_on_len, 1.0)],
+                   key=lambda p: _primary_sort_key(p, "distance", 12.9))
+    s.check("distance-primary ranks the on-target trail first",
+            order[0][0] is far_on_len)
+    # feature-primary ("lake"): the trail carrying the tag wins even with a lower score.
+    order2 = sorted([(near_off_len, 9.0), (far_on_len, 1.0)],
+                    key=lambda p: _primary_sort_key(p, "lake", None))
+    s.check("feature-primary ranks the tag-matching trail first",
+            order2[0][0] is far_on_len)
+    # balanced (None): unchanged — higher composite score first.
+    order3 = sorted([(far_on_len, 1.0), (near_off_len, 9.0)],
+                    key=lambda p: _primary_sort_key(p, None, None))
+    s.check("balanced falls back to composite score desc",
+            order3[0][0] is near_off_len)
+
+    # ── Fix 4a: strip stray markdown emphasis Groq emits around re-typed names ─
+    from AI.TripChat import _strip_markdown_emphasis
+    s.check("'**Future - High Knob Trail**' loses its asterisks",
+            "*" not in _strip_markdown_emphasis("1. **Future - High Knob Trail**: 11 km"))
+    s.check("inner name text is preserved",
+            "Future - High Knob Trail" in _strip_markdown_emphasis("**Future - High Knob Trail**"))
+    s.check("mis-placed bold ('Name (ID**:') is cleaned",
+            "*" not in _strip_markdown_emphasis("**Tower Trail (ID**: e729)"))
+    s.check("a lone '*' (bullet/prose) is left alone",
+            _strip_markdown_emphasis("a * b") == "a * b")
+
+    # ── Fix 4b: planned/unbuilt OSM trails are treated as noise ────────────────
+    from ingestion.characterizations import is_noise
+    s.check("'Future - High Knob Trail' is noise", is_noise("Future - High Knob Trail", {}) is True)
+    s.check("'Proposed Greenway' is noise",        is_noise("Proposed Greenway", {}) is True)
+    s.check("highway=proposed is noise",           is_noise("Some Trail", {"highway": "proposed"}) is True)
+    s.check("a normal trail name is NOT noise",    is_noise("Boyd Branch Trail", {}) is False)
+    s.check("a mid-word 'future' is NOT noise (prefix only)",
+            is_noise("The Future Farms Loop", {}) is False)
+
+    # ── Fix 2/3: DEM gain hysteresis denoising (_recompute is pure) ────────────
+    _ing = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ingestion")
+    if _ing not in sys.path:
+        sys.path.insert(0, _ing)
+    import backfill_elevation
+    rec, pk = backfill_elevation._recompute, backfill_elevation._point_key
+    def _seg(eles):
+        pts = [[0.0, i * 0.001] for i in range(len(eles))]  # distinct keys at 5dp
+        ebk = {pk(p[0], p[1]): e for p, e in zip(pts, eles)}
+        return [[list(p) for p in pts]], ebk
+    # Flat + noise (±3 m around 100): the old raw sum inflated this; hysteresis → 0.
+    noisy = [100, 102, 99, 101, 98, 101, 100, 103, 98, 100, 102, 99]
+    seg, ebk = _seg(noisy)
+    s.check("flat noisy profile → 0 gain at 8 m band", rec(seg, ebk, 8.0)[0] == 0.0)
+    s.check("same profile, raw sum (band 0) DOES inflate", rec(seg, ebk, 0.0)[0] > 8.0)
+    # Clean staircase climb of 30 m is counted in full.
+    seg2, ebk2 = _seg([100, 110, 120, 130])
+    s.check("clean 30 m climb counted in full", rec(seg2, ebk2, 8.0)[0] == 30.0)
+    # Climb then descent: only the climb counts.
+    seg3, ebk3 = _seg([100, 120, 100])
+    s.check("climb-then-descent counts only the climb", rec(seg3, ebk3, 8.0)[0] == 20.0)
+    # A void (None — what sampling now returns for a 0 m DEM void) breaks the
+    # delta chain, so a 200 m trail dropping into a void and back does NOT book a
+    # phantom ~400 m spike (the Academy Loop / Field Trip inflation).
+    _pts = [[0.0, 0.0], [0.0, 0.001], [0.0, 0.002]]
+    _ebk = {pk(0.0, 0.0): 200.0, pk(0.0, 0.001): None, pk(0.0, 0.002): 200.0}
+    s.check("a void (None) breaks the chain — no phantom spike",
+            rec([[list(p) for p in _pts]], _ebk, 8.0)[0] == 0.0)
+
+    # ── Difficulty grade-feel: the rating is length×gain blind to steepness, so
+    #    a flat rail-trail must not read "Expert" and a short wall not "Easy". ──
+    from ingestion.characterizations import calculate_difficulty, apply_grade_feel
+    from PyObjects.Hike import DifficultyLevel as DL
+    # Flat 44-mile rail-trail: rating alone → Expert; grade ~6 m/km → capped Moderate.
+    s.check("flat 71km/400m rail-trail → Moderate (not Expert)",
+            calculate_difficulty(71.2, 400) == DL.MODERATE)
+    s.check("flat greenway 22km/214m → Moderate (not Difficult)",
+            calculate_difficulty(22.4, 214) == DL.MODERATE)
+    # Short steep wall: rating alone → Easy; grade 150 m/km → bumped up.
+    s.check("steep 2km/300m → Moderate (bumped up from Easy)",
+            calculate_difficulty(2.0, 300) == DL.MODERATE)
+    s.check("short-steep 3km/500m → Difficult",
+            calculate_difficulty(3.0, 500) == DL.DIFFICULT)
+    # Mid-grade trails (distance & gain correlate) are left alone.
+    s.check("real mountain 15km/900m stays Expert",
+            calculate_difficulty(15.0, 900) == DL.EXPERT)
+    s.check("Spence-like 4.6km/266m → Moderate", calculate_difficulty(4.58, 266) == DL.MODERATE)
+    # apply_grade_feel in isolation: flat caps, steep bumps, mid untouched.
+    s.check("apply_grade_feel: flat caps Expert→Moderate",
+            apply_grade_feel(DL.EXPERT, 70.0, 400) == DL.MODERATE)
+    s.check("apply_grade_feel: steep bumps Easy→Moderate",
+            apply_grade_feel(DL.EASY, 2.0, 300) == DL.MODERATE)
+    s.check("apply_grade_feel: mid-grade untouched",
+            apply_grade_feel(DL.DIFFICULT, 15.0, 900) == DL.DIFFICULT)
+
+
+def test_per_day_distance_caps(s: Suite) -> None:
+    print("\n[per-day distance cap: backpacking multi-day + over-long trails hidden]")
+    from types import SimpleNamespace
+    from AI.TripInputParser import TripInputParser, _default_duration_days, OVERNIGHT_ACTIVITIES
+    from trip_metrics import min_days_for_length, MAX_KM_PER_DAY
+    from Services.HikeSearchService import HikeSearchService
+
+    # ── _default_duration_days: overnight ⇒ ≥2 days, else 1; explicit always wins ─
+    s.check("backpacking (no count) → 2 days", _default_duration_days("backpacking", None) == 2)
+    s.check("overnight (no count) → 2 days",   _default_duration_days("overnight", None) == 2)
+    s.check("day_hike (no count) → 1 day",     _default_duration_days("day_hike", None) == 1)
+    s.check("unknown activity (no count) → 1 day", _default_duration_days(None, None) == 1)
+    s.check("explicit count overrides activity", _default_duration_days("backpacking", 4) == 4)
+    s.check("every overnight activity implies ≥2",
+            all(_default_duration_days(a, None) >= 2 for a in OVERNIGHT_ACTIVITIES))
+
+    # ── min_days_for_length: fewest days to stay within MAX_KM_PER_DAY (24 km) ──
+    s.check("24 km fits in 1 day",   min_days_for_length(24.0) == 1)
+    s.check("25 km needs 2 days",    min_days_for_length(25.0) == 2)
+    s.check("48 km fits in 2 days",  min_days_for_length(48.0) == 2)
+    s.check("90 km needs 4 days",    min_days_for_length(90.0) == 4)
+    s.check("182 km needs 8 days",   min_days_for_length(182.0) == 8)  # the Falls Lake bug
+    s.check("None/0 length → 1 day", min_days_for_length(None) == 1 and min_days_for_length(0) == 1)
+
+    # An extended day count keeps every split leg within the cap — the whole point
+    # (a 113-mile trail no longer crammed into one day). Assert via split_days.
+    from trip_metrics import split_days, km_to_miles
+    legs = split_days(182.0, 0, min_days_for_length(182.0))
+    cap_mi = km_to_miles(MAX_KM_PER_DAY)
+    s.check("182 km split over its min days → every leg ≤ cap",
+            all(mi <= cap_mi + 0.1 for mi, _ in legs), f"legs={legs} cap={cap_mi}")
+
+    # ── "backpacking near me" now defaults to a multi-day trip (was 1 day) ──────
+    p = TripInputParser()
+    bp = p.parse("i want to go on a backpacking trip near me", user_lat=35.2, user_lng=-80.8)
+    s.check("'backpacking near me' → 2 days", bp.duration_days == 2, f"got {bp.duration_days}")
+    s.check("'backpacking near me' activity backpacking", bp.activity_type == "backpacking")
+    s.check("'backpacking near me' flagged ambiguous (confirm the count)", bp.duration_ambiguous is True)
+    s.check("'backpacking near me' not duration_explicit", bp.duration_explicit is False)
+
+    # ── find_hikes_for_intent derives a per-day ceiling from duration when the
+    #    user named none (stub the DB so we assert the max_length_km it passes). ─
+    calls: list[dict] = []
+    fake_hs = SimpleNamespace(search_hikes=lambda **kw: (calls.append(kw), [])[1])
+    svc = HikeSearchService(fake_hs)
+
+    def _intent(duration_days=2, max_length_km=None, **extra):
+        base = dict(
+            lat=35.0, lng=-80.0, avoid_permits=False, difficulty_hint=None,
+            destination_type="point", duration_days=duration_days,
+            required_tags=[], preferred_tags=[], priority_tags=[],
+            min_length_km=None, max_length_km=max_length_km, target_length_km=None,
+            region_tag=None, state=None, primary_priority=None,
+        )
+        base.update(extra)
+        return SimpleNamespace(**base)
+
+    calls.clear(); svc.find_hikes_for_intent(_intent(duration_days=2))
+    s.check("2-day trip caps trail at 2 × MAX_KM_PER_DAY",
+            calls[-1]["max_length_km"] == MAX_KM_PER_DAY * 2, f"got {calls[-1]['max_length_km']}")
+    calls.clear(); svc.find_hikes_for_intent(_intent(duration_days=1))
+    s.check("1-day trip caps trail at MAX_KM_PER_DAY (≈15 mi)",
+            calls[-1]["max_length_km"] == MAX_KM_PER_DAY, f"got {calls[-1]['max_length_km']}")
+    calls.clear(); svc.find_hikes_for_intent(_intent(duration_days=1, max_length_km=10.0))
+    s.check("a user-typed max is never overridden by the cap",
+            calls[-1]["max_length_km"] == 10.0, f"got {calls[-1]['max_length_km']}")
+    calls.clear(); svc.find_hikes_for_intent(_intent(duration_days=2, max_km_per_day_cap=None))
+    s.check("cap disabled (last-resort pass) → no derived ceiling",
+            calls[-1]["max_length_km"] is None, f"got {calls[-1]['max_length_km']}")
+
+
 def main() -> None:
     s = Suite("UnitTest (pure logic, no server / Groq / DB)")
     print("HikeBuilder unit tests — deterministic pure-logic checks")
@@ -549,7 +989,10 @@ def main() -> None:
     test_split_days(s)
     test_gear_gap_metadata(s)
     test_location_fixes(s)
+    test_phantom_place_and_multiday(s)
     test_feature_honesty(s)
+    test_data_quality_fixes(s)
+    test_per_day_distance_caps(s)
 
     s.summary()
     sys.exit(s.exit_code())

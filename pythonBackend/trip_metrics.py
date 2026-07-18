@@ -16,12 +16,20 @@ so the save/summary path can depend on these without pulling in the parser.
 """
 
 import logging
+import math
+
 import httpx
 
 logger = logging.getLogger(__name__)
 
 KM_PER_MILE = 1.60934
 FT_PER_M    = 3.28084
+
+# The "reasonable" ceiling on how far a hiker covers in a single day (~15 mi).
+# Used two ways: to hide trails too long for the trip's day count from the search
+# options, and to auto-extend the day count when a long trail is selected — so the
+# even split in split_days() never assigns an unrealistic per-day distance.
+MAX_KM_PER_DAY = 24.0
 
 
 def km_to_miles(km):
@@ -30,6 +38,17 @@ def km_to_miles(km):
 
 def m_to_feet(m):
     return round(m * FT_PER_M) if m is not None else None
+
+
+def min_days_for_length(length_km):
+    """Fewest days needed to keep per-day distance within MAX_KM_PER_DAY.
+
+    A 24 km trail fits in 1 day; a 25 km trail needs 2; a 182 km trail needs 8.
+    Always at least 1 (a zero/None length is a 1-day trip, not zero days).
+    """
+    if not length_km or length_km <= 0:
+        return 1
+    return max(1, math.ceil(length_km / MAX_KM_PER_DAY))
 
 
 def split_days(total_km, total_gain_m, duration_days):

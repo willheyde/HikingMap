@@ -226,6 +226,10 @@ def _destination_phase_block(session: TripSession) -> str:
                 "a vague sentence that could describe any trail (e.g. 'a good option "
                 "with a gentle gain and nice scenery') — if you can't name a real, "
                 "specific reason for a pick, don't call it out as one of the three. "
+                "If you state a trail's distance or elevation gain, quote the EXACT "
+                "figure shown on its option card — never round, restate, or recompute "
+                "it (the same trail must never show two different gain numbers). "
+                "Prefer naming a tag or feature over repeating the raw number. "
             )
         else:
             picks_line = (
@@ -237,10 +241,11 @@ def _destination_phase_block(session: TripSession) -> str:
         assumed_days = session.phase_data.get("duration_assumed")
         duration_line = ""
         if assumed_days:
+            day_word = "day" if assumed_days == 1 else "days"
             duration_line = (
                 f"NOTE: the user mentioned an overnight/multi-day trip but no specific "
-                f"length, so the plan currently assumes {assumed_days} days. Briefly confirm "
-                f"that day count with them (e.g. 'I've planned for {assumed_days} days — does "
+                f"length, so the plan currently assumes {assumed_days} {day_word}. Briefly confirm "
+                f"that day count with them (e.g. 'I've planned for {assumed_days} {day_word} — does "
                 f"that sound right?') while presenting the options, so they can adjust it. "
             )
         goal = (
@@ -590,6 +595,9 @@ def _hike_context_block(hike_context: str) -> str:
         "real fact drawn from this data (a real tag, its length, its gain — not vague "
         "filler). If a requested feature (e.g. water) is absent from a hike's tags, say "
         "so honestly in your prose rather than inventing a tag.\n"
+        "Write plain prose only — NO markdown formatting: no **bold**, no _italics_, "
+        "no bullet lists or headings. Trail names go in plain text; the asterisks "
+        "would render literally in the chat.\n"
         + hike_context
     )
 
@@ -731,6 +739,9 @@ _RULES_GENERAL = (
     "- Keep responses under 220 words unless building or revising an itinerary.\n"
     "- Never fabricate gear specs, trail distances, or elevation figures — write "
     "'approx.' before any estimate.\n"
+    "- When you state a trail's distance or elevation gain, copy the EXACT figure "
+    "from its option card verbatim; never round or recompute it, and never give "
+    "the same trail two different numbers across messages.\n"
     "- Do not repeat the full gear list back to the user unprompted.\n"
     "- Be direct. Avoid filler like 'Great question!' or 'Certainly!'."
 )

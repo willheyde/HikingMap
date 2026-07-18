@@ -22,6 +22,7 @@ from ingestion.characterizations import (
     infer_season,
     infer_region,
     is_valid_hike,
+    is_noise,
     derive_tags,
 )
 from ingestion.gear_inference import GearInferenceEngine
@@ -33,6 +34,11 @@ def parse_hike(osm_relation: dict) -> tuple[Hike, list[dict]] | None:
     points = osm_relation.get("points")
 
     if not points or len(points) < 2:
+        return None
+
+    # Drop road/pavement noise and planned/unbuilt trails ("Future - …",
+    # "Proposed …", highway=proposed/construction) before doing any work.
+    if is_noise(tags.get("name", "Unnamed Trail"), tags):
         return None
 
     distance_m, gain_m = compute_metrics(points)

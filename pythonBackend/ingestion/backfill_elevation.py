@@ -96,6 +96,21 @@ from characterizations import haversine
 # "overpass_enriched" already in the dataset. Preserved by backfill_difficulty.py.
 DEM_MARKER = "dem_elevation"
 
+# Hysteresis noise band for _recompute (metres). GLO-30 vertical noise is a few
+# metres RMS; 8 m is comfortably above it while still catching real gentle climbs.
+# This is the DEFAULT for --min-delta (was 0.0, which summed all DEM noise and
+# inflated gain ~7-30x). Tunable per-run via --min-delta.
+DEFAULT_NOISE_BAND_M = 8.0
+
+# GLO-30 marks voids over land by FILLING them with 0 — and the COG declares no
+# nodata value, so rasterio.sample can't flag them. A 0 m reading on an inland
+# trail is a void, not real sea level, and each one injects a ~2×elevation false
+# spike into gain (a 200 m Charlotte trail dropping to 0 and back = +400 m of
+# phantom gain). Treat readings at/below this floor as nodata (a coverage hole,
+# which breaks the delta chain so no spurious step is counted). Genuine near-sea
+# land reads a few metres positive, not exactly 0, so this is safe.
+VOID_FLOOR_M = 0.0
+
 DEFAULT_ELEVATION_URL = "http://localhost:5000/v1/srtm30m"
 # opentopodata's per-request location cap (public instance = 100). Self-hosted
 # can go higher, but 100 is a safe default that works everywhere.
@@ -234,34 +249,55 @@ def _sample_elevations_local(keys: list[tuple], tiles: "_DemTiles") -> dict[tupl
         xys = [(lon, lat) for (lat, lon) in klist]   # rasterio wants (x=lon, y=lat)
         for key, val in zip(klist, ds.sample(xys)):
             v = float(val[0])
-            result[key] = None if (nodata is not None and v == nodata) else v
+            is_void = v <= VOID_FLOOR_M or (nodata is not None and v == nodata)
+            result[key] = None if is_void else v
     return result
 
 
 def _recompute(segments: list, ele_by_key: dict, min_delta: float):
     """
     (gain_m, min_alt_m, max_alt_m, covered, total) from sampled elevations.
-    Positive deltas only, per segment (never across a MultiLineString gap);
-    deltas below min_delta are ignored as DEM noise.
+    Gain is summed per segment (never across a MultiLineString gap).
+
+    Denoising — this is the whole point of the rewrite. A 30 m DEM sampled at the
+    geometry's (often sub-cell) vertex spacing carries several metres of vertical
+    noise per sample; naively summing every positive step-to-step delta (the old
+    behaviour, with min_delta=0) accumulates that noise into massively inflated
+    gain — a flat paved greenway came out at 290 m, a 5 km trail at 1558 m.
+
+    Instead we use a HYSTERESIS accumulator against a moving baseline: a climb is
+    only committed once the rise from the baseline reaches `min_delta` (the noise
+    band), and a descent past `min_delta` resets the baseline. Excursions smaller
+    than the band — i.e. DEM noise — are ignored, while a genuine sustained climb
+    still accrues (in band-sized chunks, so gentle real grades are preserved).
+    The only cost is a conservative under-count of up to ~min_delta at the end of
+    each monotonic run, which is negligible next to the noise it removes.
+
+    min_delta == 0 reproduces the old raw-sum behaviour (escape hatch).
     """
     gain = 0.0
     alts: list[float] = []
     covered = total = 0
     for seg in segments:
-        prev: Optional[float] = None
+        base: Optional[float] = None   # moving baseline for hysteresis
         for pt in seg:
             total += 1
             ele = ele_by_key.get(_point_key(pt[0], pt[1]))
             if ele is None:
-                prev = None  # break the delta chain across a coverage hole
+                base = None  # break the chain across a coverage hole
                 continue
             covered += 1
             alts.append(ele)
-            if prev is not None:
-                delta = ele - prev
-                if delta >= min_delta:
-                    gain += delta
-            prev = ele
+            if base is None:
+                base = ele
+                continue
+            diff = ele - base
+            if diff >= min_delta:        # committed climb (>= noise band)
+                gain += diff
+                base = ele
+            elif diff <= -min_delta:     # real descent → drop the baseline
+                base = ele
+            # |diff| < min_delta: within the noise band, ignore (keep base)
     if not alts:
         return None, None, None, covered, total
     return gain, min(alts), max(alts), covered, total
@@ -355,7 +391,7 @@ def backfill(
                     cov_pct = 100 * covered / total if total else 0
 
                     if dry_run:
-                        print(f"  [dry-run] {row['name']}: gain {old_gain:.0f}→{new_gain:.0f} m "
+                        print(f"  [dry-run] {row['name']}: gain {old_gain:.0f}->{new_gain:.0f} m "
                               f"| alt {min_alt:.0f}–{max_alt:.0f} m | coverage {cov_pct:.0f}%")
                         updated += 1
                         continue
@@ -373,7 +409,7 @@ def backfill(
                         (new_gain, round(min_alt, 1), round(max_alt, 1),
                          new_tags, str(row["id"])),
                     )
-                    print(f"  OK    {row['name']}: gain {old_gain:.0f}→{new_gain:.0f} m "
+                    print(f"  OK    {row['name']}: gain {old_gain:.0f}->{new_gain:.0f} m "
                           f"(coverage {cov_pct:.0f}%)")
                     updated += 1
 
@@ -407,8 +443,10 @@ if __name__ == "__main__":
                     help="Coordinates per elevation request.")
     ap.add_argument("--sleep", type=float, default=0.0, metavar="SEC",
                     help="Seconds between elevation requests (use 1.0 for the public API).")
-    ap.add_argument("--min-delta", type=float, default=0.0, metavar="M",
-                    help="Ignore per-step gains below this (m) as DEM noise.")
+    ap.add_argument("--min-delta", type=float, default=DEFAULT_NOISE_BAND_M, metavar="M",
+                    help="Hysteresis noise band (m): climbs/descents smaller than "
+                         "this are treated as DEM noise and ignored. 0 = raw sum "
+                         "(the old, noise-inflated behaviour).")
     # ── DEM mode is the DEFAULT (recommended): Copernicus GLO-30 tiles, read
     #    locally from --dem-dir and/or remotely via /vsicurl. Use --http to fall
     #    back to an opentopodata HTTP endpoint instead. ──────────────────────────

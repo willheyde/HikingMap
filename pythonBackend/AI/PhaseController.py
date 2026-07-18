@@ -302,7 +302,10 @@ class PhaseController:
             r" (?:look at|see|check(?: out)?|try|do|go with|pick|choose)"
             r"|(?:what|how) about"
             r"|show me)\b"
-            r".{0,20}\b([1-5])\b",
+            # Negative lookahead: a digit that's part of a duration/length phrase
+            # ("i want to go on a 3 DAY trip", "let's do a 2 MILE loop") is NOT a
+            # numbered selection — don't let the "3" in "3 day" pick option 3.
+            r".{0,20}\b([1-5])\b(?!\s*(?:day|week|hour|hr|night|mile|mi|km|kilomet|person|people|min|mph|mo)\w*)",
             text_lower,
         )
         if verb_match:
