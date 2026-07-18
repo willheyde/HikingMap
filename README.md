@@ -103,7 +103,13 @@ cd pythonBackend
 docker compose up -d          # PostgreSQL on :5432
 ```
 
-Apply the SQL migrations in `pythonBackend/migrations/` (they are applied by hand — there is no migration runner yet).
+Apply the schema and migrations. For a brand-new empty DB, `schema.sql` is the full from-scratch schema; the numbered files in `pythonBackend/migrations/` are applied by the `migrate.py` runner (which tracks applied versions in a `schema_migrations` table):
+
+```bash
+python migrate.py status     # applied vs pending
+python migrate.py up         # apply pending migrations
+python migrate.py baseline   # stamp existing .sql as applied WITHOUT running them (for a DB already hand-migrated)
+```
 
 ### 2. Configure Environment Variables
 
@@ -114,7 +120,7 @@ Create `pythonBackend/.env`:
 HOST=localhost
 PORT=5432
 DBNAME=HikingAppDB
-USER=your_db_user
+DB_USER=your_db_user        # DB_USER is read first, so it never collides with the shell's USER
 PASSWORD=your_db_password
 
 # Services
@@ -123,10 +129,16 @@ REDIS_URL=redis://localhost:6379/0
 JWT_SECRET_KEY=your_hs256_signing_key
 
 # Optional — rate limiting / AI usage quota (defaults shown; all env-tunable)
-# AI_QUOTA_LIMIT=40          # AI chat messages per account per window (~2 hikes)
+# AI_QUOTA_LIMIT=20          # AI chat messages per account per window
 # AI_QUOTA_WINDOW_SEC=86400  # quota window (86400 = 24h; 18000 = 5h)
-# AI_BURST_LIMIT=10          # per-account burst cap (messages per minute)
+# AI_BURST_LIMIT=6           # per-account burst cap (messages per minute)
 # AUTH_RATE_LIMIT=10         # login/registration attempts per IP per 5 min
+
+# Optional — production hardening (see CLAUDE.md)
+# APP_ENV=production         # refuses to boot on an unset/localhost ALLOWED_ORIGINS
+# ALLOWED_ORIGINS=https://your.app
+# ENABLE_HSTS=true
+# GOOGLE_CLIENT_ID=...       # verifies "Sign in with Google" ID tokens
 ```
 
 Create `hiking-frontend/.env`:
@@ -142,10 +154,11 @@ VITE_API_BASE_URL=http://localhost:8000
 
 ```bash
 cd pythonBackend
-# No requirements.txt yet — install runtime deps by hand:
-pip install fastapi uvicorn "psycopg[binary]" pydantic python-dotenv apscheduler groq redis "python-jose[cryptography]" bcrypt httpx
-# (the ingestion pipeline additionally needs: requests geopy)
-uvicorn main:app --reload     # serves on :8000
+pip install -r requirements.txt   # pinned runtime deps
+uvicorn main:app --reload         # serves on :8000
+
+# Or build the production image (single uvicorn worker, no --reload):
+# docker build -t hikebuilder-api .
 ```
 
 ### 4. Run the Frontend
@@ -158,17 +171,32 @@ npm run dev                   # Vite dev server on :5173
 
 ---
 
+## Tests
+
+Three runners, all sharing a small harness (`_testkit.py`) with a CI-ready exit code (0 = pass, 1 = failure). They assert the **contract** (status codes, JSON shape, documented invariants), never LLM content quality.
+
+```bash
+python UnitTest.py                                   # pure logic — no server / DB / Redis / Groq
+python IntegrationTest.py --register --base-url http://localhost:8000   # non-Groq HTTP surface (CI-safe)
+python SystemTest.py --token <JWT> --base-url http://localhost:8000     # multi-turn trip-chat (spends Groq quota)
+```
+
+**CI** (`.github/workflows/ci.yml`, every push + PR): a backend job (install → byte-compile → `UnitTest.py` → boot against throwaway Postgres+Redis → `IntegrationTest.py --register`) and a frontend job (`npm ci` → lint → build). `SystemTest.py` is deliberately excluded from CI since it spends Groq quota.
+
+---
+
 ## Roadmap — Working Toward Deployment
 
 The current focus is getting HikeBuilder onto **AWS** as a public soft launch. Tracked work, roughly in order:
 
 **Deployment blockers**
-- [x] Pin dependencies (`requirements.txt`) for reproducible builds — *Dockerfile still to come*
+- [x] Pin dependencies (`requirements.txt`) for reproducible builds
 - [x] Connection pooling for PostgreSQL (`psycopg_pool`, with a per-call fallback)
 - [x] Environment-driven CORS (`ALLOWED_ORIGINS`, defaults to local)
 - [x] Harden the `USER` env resolution (`DB_USER` preferred, `.env` override) — *secrets are now a deploy-time step; code is env-ready*
 - [x] A migration runner (`migrate.py`: up / status / baseline)
-- [ ] Dockerfile + AWS deploy config (App Runner / ECS task definition)
+- [x] Dockerfile (single uvicorn worker, prod-hardened boot)
+- [ ] AWS deploy config (App Runner / ECS task definition)
 
 **Before public**
 - [x] Rate limiting (per-IP on auth, per-account burst on AI)
