@@ -70,6 +70,7 @@ from AI.TripInputParser import (
     TripInputParser, TripIntent, RefinementIntent, ALL_FEATURE_KEYWORDS,
     DestinationNotFound, LocationRequired, NoDestinationProvided, is_near_me,
     _FEATURE_TAGS, _infer_primary_priority, _default_duration_days,
+    STATE_KEYWORDS, REGION_KEYWORDS,
 )
 from AI.GearGapAnalyzer import GearGapAnalyzer
 from AI.rigor import rigor_tier
@@ -2220,6 +2221,8 @@ def _extract_hike_name_query(message: str) -> Optional[str]:
             return None
         if _BARE_REGION_RE.match(candidate):                       # "the mountains" → region
             return None
+        if _normalize_name(candidate) in _STATE_REGION_DESTINATION_NAMES:
+            return None                                            # "North Carolina" / "Smoky Mountains" → region
         if not re.search(r"[a-zA-Z]{3,}", candidate):              # needs a real word
             return None
         return candidate
@@ -2229,6 +2232,24 @@ def _extract_hike_name_query(message: str) -> Optional[str]:
 def _normalize_name(s: str) -> str:
     """Lowercase, drop punctuation, collapse whitespace — for name comparison."""
     return re.sub(r"[^a-z0-9]+", " ", (s or "").lower()).strip()
+
+
+# Whole-candidate matches to a known US state name or macro-region/mountain-range
+# name are DESTINATIONS, not specific trails ("plan a trip to North Carolina" /
+# "…the Smoky Mountains"). Reject them from the named-trail lookup so they flow to
+# the normal region/geocode search instead of confidently auto-selecting one
+# arbitrary trail whose name merely happens to contain the region word (e.g.
+# "North Carolina" → "Western North Carolina Sculpture Park Trail"). Whole-string
+# only: a real trail that CONTAINS a region word ("Blue Ridge Parkway Trail") is
+# untouched, since it never equals the bare region name. Built from
+# TripInputParser's canonical lists so it grows with them automatically. Each key
+# is stored both as-is and with a leading "the " stripped, to mirror the same
+# strip the candidate goes through above ("the Rockies" → "Rockies") so a keyed
+# region like "the rockies" still matches the bare candidate.
+_STATE_REGION_DESTINATION_NAMES: frozenset[str] = frozenset(
+    _normalize_name(re.sub(r"^the\s+", "", k))
+    for k in (*STATE_KEYWORDS, *REGION_KEYWORDS)
+)
 
 
 def _resolve_named_hike(query: str):

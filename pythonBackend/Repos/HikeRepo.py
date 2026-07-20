@@ -139,9 +139,25 @@ class HikeRepository(BaseRepository[Hike]):
           - the user's phrase contains the trail name
             ("the Mount Sterling Trail, please" → "Mount Sterling Trail")
 
-        Shorter names rank first so a tight/exact match beats an incidental
-        substring. Collapsing several rows into a single confident pick (vs a
-        disambiguation set) is the caller's job.
+        Results are ordered by MATCH QUALITY, not raw name length: an exact
+        (trimmed, case-insensitive) name match first, then forward-containment
+        (name contains the query), then the weaker reverse-containment (query
+        contains the name) last — with shorter names breaking ties within a
+        tier. Ordering by length alone was a real bug: the DB is full of ultra-
+        generic OSM names ("Trail", "Rail", "Red"), and the reverse-containment
+        clause matches every one of them as a substring of a real query
+        ("Weiss Main Trail" contains "Trail" and "rail"). Length-ASC then floated
+        that junk to the top and LIMIT truncated the actual trail away before the
+        caller ever saw it, so "plan a trip to Weiss Main Trail" resolved to a
+        pile of nameless "Trail" rows.
+
+        The reverse-containment clause is additionally guarded to names of >= 5
+        chars so the shortest generic tokens ("Red", "Rail") can't hijack a query
+        by appearing as an incidental substring; a genuine name the user typed
+        still matches forward regardless of length.
+
+        Collapsing several rows into a single confident pick (vs a disambiguation
+        set) is the caller's job.
         """
         q = (query or "").strip()
         if not q:
@@ -152,8 +168,22 @@ class HikeRepository(BaseRepository[Hike]):
                     """
                     SELECT * FROM hikes
                     WHERE name ILIKE %(contains)s
-                       OR %(q)s ILIKE '%%' || name || '%%'
-                    ORDER BY length(name) ASC
+                       OR (char_length(name) >= 5 AND %(q)s ILIKE '%%' || name || '%%')
+                    ORDER BY
+                        CASE
+                            WHEN lower(btrim(name)) = lower(btrim(%(q)s)) THEN 0
+                            WHEN name ILIKE %(contains)s                  THEN 1
+                            ELSE                                               2
+                        END ASC,
+                        -- Tie-break within a tier: for exact/forward matches the
+                        -- SHORTER name is the tighter fit ("Sterling" → prefer
+                        -- "Mount Sterling Trail" over "…Ridge Trail"); for a
+                        -- reverse match the LONGER name covers more of the query
+                        -- and is the better hit, so flip the sign there.
+                        CASE WHEN name ILIKE %(contains)s
+                             THEN  length(name)
+                             ELSE -length(name)
+                        END ASC
                     LIMIT %(limit)s
                     """,
                     {"contains": f"%{q}%", "q": q, "limit": limit},
