@@ -1229,7 +1229,14 @@ export default function TripPlanner() {
   } = useTrip();
 
   const { messages, phase, serviceReady } = chat;
-  const { user, refreshItems } = useUser();
+  const { user, items, refreshItems } = useUser();
+
+  // Sidebar footer: derive the signed-in user's display name, avatar initial,
+  // and kit summary from live context instead of hardcoded placeholders.
+  const displayName = user?.name || user?.email?.split("@")[0] || "Guest";
+  const avatarInitial = displayName.charAt(0).toUpperCase();
+  const kitItems = items || [];
+  const kitWeightKg = kitItems.reduce((sum, i) => sum + (Number(i.weight) || 0), 0) / 1000;
 
   // Persist an item from an inline gear-review form, then re-pull the user's kit
   // so the gear page reflects it. addGearFromChat also clears the resolved gap
@@ -1600,10 +1607,12 @@ export default function TripPlanner() {
               background: C.fieldBg, border: `1px solid ${C.amberBorder}`,
               display: "flex", alignItems: "center", justifyContent: "center",
               fontSize: 11, color: C.amber, fontWeight: 700,
-            }}>W</div>
+            }}>{avatarInitial}</div>
             <div>
-              <div style={{ fontSize: 12, color: C.heading }}>Will</div>
-              <div style={{ fontSize: 10.5, color: C.muted }}>3 items · 2.87 kg</div>
+              <div style={{ fontSize: 12, color: C.heading }}>{displayName}</div>
+              <div style={{ fontSize: 10.5, color: C.muted }}>
+                {kitItems.length} item{kitItems.length === 1 ? "" : "s"} · {kitWeightKg.toFixed(2)} kg
+              </div>
             </div>
           </div>
         </aside>
