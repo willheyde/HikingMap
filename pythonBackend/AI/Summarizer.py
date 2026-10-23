@@ -5,7 +5,7 @@ Condenses the current sliding window of messages into a ~100-word
 summary that gets stored on the session and injected into future
 system prompts.
 
-Uses llama-3.1-8b-instant (cheap + fast) — this should be fired
+Uses the cheap + fast extraction model — this should be fired
 async so it never blocks the main chat response.
 """
 
@@ -13,9 +13,11 @@ import logging
 from groq import Groq
 import os
 
+from .GroqClient import EXTRACT_MODEL, REASONING_EFFORT
+
 logger = logging.getLogger(__name__)
 
-SUMMARIZER_MODEL   = "llama-3.1-8b-instant"
+SUMMARIZER_MODEL   = EXTRACT_MODEL
 SUMMARIZER_TOKENS  = 180     # enough for ~100 words with some headroom
 SUMMARIZER_TEMP    = 0.1     # near-deterministic; we want facts, not creativity
 
@@ -64,6 +66,7 @@ class Summarizer:
                 model      = SUMMARIZER_MODEL,
                 max_tokens = SUMMARIZER_TOKENS,
                 temperature= SUMMARIZER_TEMP,
+                reasoning_effort = REASONING_EFFORT,
                 messages   = [
                     {"role": "system", "content": SYSTEM_PROMPT},
                     {"role": "user",   "content": USER_TEMPLATE.format(

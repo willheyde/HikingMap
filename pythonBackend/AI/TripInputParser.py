@@ -5,6 +5,7 @@ import httpx
 from dataclasses import dataclass, field
 from typing import Optional
 from groq import Groq
+from .GroqClient import EXTRACT_MODEL, REASONING_EFFORT
 import json
 import os
 
@@ -1377,7 +1378,8 @@ class TripInputParser:
     def _llm_extract(self, text: str) -> dict:
         valid_features = sorted(FEATURE_KEYWORD_MAP.keys())
         response = self._groq.chat.completions.create(
-            model="llama-3.1-8b-instant",
+            model=EXTRACT_MODEL,
+            reasoning_effort=REASONING_EFFORT,
             messages=[
                 {
                     "role": "system",

@@ -22,8 +22,13 @@ from groq import Groq
 
 logger = logging.getLogger(__name__)
 
-CHAT_MODEL = "llama-3.3-70b-versatile"
-EXTRACT_MODEL = "llama-3.1-8b-instant"  
+# Groq retired the Llama 3.x chat models (Oct 2026) — gpt-oss are the closest
+# replacements. They're reasoning models: hidden reasoning tokens count against
+# max_tokens, so keep effort "low" or the tight per-phase budgets can leave the
+# visible reply empty.
+CHAT_MODEL       = "openai/gpt-oss-120b"
+EXTRACT_MODEL    = "openai/gpt-oss-20b"
+REASONING_EFFORT = "low"
 
 # Per-call defaults used by chat().
 # extract() overrides these internally with tighter values.
@@ -63,13 +68,14 @@ class GroqClient:
         messages = self._assemble(system_prompt, summary, window_messages, user_message)
 
         response = self._groq.chat.completions.create(
-            model       = CHAT_MODEL,
-            max_tokens  = max_tokens,
-            temperature = temperature,
-            messages    = messages,
+            model            = CHAT_MODEL,
+            max_tokens       = max_tokens,
+            temperature      = temperature,
+            reasoning_effort = REASONING_EFFORT,
+            messages         = messages,
         )
 
-        text        = response.choices[0].message.content.strip()
+        text        = (response.choices[0].message.content or "").strip()
         tokens_used = response.usage.total_tokens if response.usage else 0
 
         logger.info("GroqClient.chat: %d tokens used this turn.", tokens_used)
@@ -101,13 +107,14 @@ class GroqClient:
         ]
 
         response = self._groq.chat.completions.create(
-            model       = EXTRACT_MODEL,
-            max_tokens  = _EXTRACT_MAX_TOKENS,
-            temperature = _EXTRACT_TEMPERATURE,
-            messages    = messages,
+            model            = EXTRACT_MODEL,
+            max_tokens       = _EXTRACT_MAX_TOKENS,
+            temperature      = _EXTRACT_TEMPERATURE,
+            reasoning_effort = REASONING_EFFORT,
+            messages         = messages,
         )
 
-        text        = response.choices[0].message.content.strip()
+        text        = (response.choices[0].message.content or "").strip()
         tokens_used = response.usage.total_tokens if response.usage else 0
 
         logger.info("GroqClient.extract: %d tokens used.", tokens_used)
